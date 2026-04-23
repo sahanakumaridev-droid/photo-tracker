@@ -1,0 +1,17 @@
+# Backend
+backend/__pycache__/
+backend/*.pyc
+backend/photo_tracker.db
+backend/uploads/*.jpg
+backend/uploads/*.png
+backend/uploads/*.webp
+!backend/uploads/sample*.jpg
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+
+# General
+.DS_Store
+*.log
