@@ -49,7 +49,7 @@ export default function EditLocationModal({ photo, onClose, onSaved }) {
     return () => window.removeEventListener('keydown', fn)
   }, [onClose])
 
-  const center = valid ? [numLat, numLng] : [37.7749, -122.4194]
+  const center = valid ? [numLat, numLng] : [32.7157, -117.1611]
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -78,7 +78,7 @@ export default function EditLocationModal({ photo, onClose, onSaved }) {
         {/* Map */}
         <div className="modal-map">
           <MapContainer center={center} zoom={13} style={{height:'100%',width:'100%'}}>
-            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="© OpenStreetMap" />
+            <TileLayer url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" attribution='&copy; OpenStreetMap contributors' />
             <ClickPicker onPick={handlePick} />
             <LocationSearch onPick={handlePick} />
             {valid && <Marker position={[numLat, numLng]} icon={pinIcon} />}

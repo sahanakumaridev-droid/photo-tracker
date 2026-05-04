@@ -6,6 +6,7 @@ import Profiles from './pages/Profiles'
 import Upload from './pages/Upload'
 import ProfileDetail from './pages/ProfileDetail'
 import Login from './pages/Login'
+import Log from './pages/Log'
 
 export default function App() {
   const [user,  setUser]  = useState(null)
@@ -27,6 +28,7 @@ export default function App() {
           <Route path="/profiles"     element={<Profiles showToast={showToast} />} />
           <Route path="/profiles/:id" element={<ProfileDetail />} />
           <Route path="/upload"       element={<Upload showToast={showToast} />} />
+          <Route path="/log"          element={<Log />} />
         </Routes>
       </main>
 

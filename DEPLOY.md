@@ -27,7 +27,7 @@ git push -u origin main
    - Runtime: Python 3
    - Build Command: `pip install -r requirements.txt`
    - Start Command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
-4. Deploy — you get a URL like `https://phototracker-backend.onrender.com`
+4. Deploy — you get a URL like `https://geotagging-backend.onrender.com`
 
 ---
 
@@ -43,7 +43,7 @@ git push -u origin main
 4. Add Environment Variable:
    - Key: `VITE_API_URL`
    - Value: your Render URL from Step 2
-5. Deploy — you get a URL like `https://photo-tracker.vercel.app`
+5. Deploy — you get a URL like `https://geotagging.vercel.app`
 
 ---
 

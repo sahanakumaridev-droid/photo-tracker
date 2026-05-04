@@ -1,4 +1,4 @@
-# 📍 PhotoTracker — Full Stack App
+# 📍 GeoTagging — Full Stack App
 
 ## Quick Start (2 terminals)
 
