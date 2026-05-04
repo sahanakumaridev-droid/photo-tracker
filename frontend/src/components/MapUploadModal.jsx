@@ -42,7 +42,7 @@ export default function MapUploadModal({ lat, lng, onClose, onUploaded }) {
         <div className="modal-header">
           <div>
             <div className="modal-title">📍 Upload at this location</div>
-            <div className="modal-sub" style={{fontFamily:'Geist Mono, monospace'}}>
+            <div className="modal-sub">
               {lat.toFixed(5)}, {lng.toFixed(5)}
             </div>
           </div>
@@ -66,10 +66,10 @@ export default function MapUploadModal({ lat, lng, onClose, onUploaded }) {
                     {p.name.charAt(0)}
                   </div>
                   <div style={{flex:1}}>
-                    <div style={{fontWeight:700, fontSize:13, color:'#fff'}}>{p.name}</div>
+                    <div style={{fontWeight:700, fontSize:13}}>{p.name}</div>
                   </div>
                   <span className={`badge badge-${p.service_type}`}>{p.service_type}</span>
-                  {selected?.id === p.id && <span style={{fontWeight:800, color:'#a5b4fc', marginLeft:4}}>✓</span>}
+                  {selected?.id === p.id && <span style={{fontWeight:800, color:'var(--accent)', marginLeft:4}}>✓</span>}
                 </div>
               ))}
             </div>
@@ -78,22 +78,13 @@ export default function MapUploadModal({ lat, lng, onClose, onUploaded }) {
           {/* File drop */}
           <div>
             <div className="card-label" style={{marginBottom:8}}>Photo</div>
-            <label style={{
-              display:'block',
-              border:'1.5px dashed rgba(255,255,255,0.15)',
-              borderRadius:10,
-              padding: preview ? 8 : '20px 16px',
-              textAlign:'center',
-              cursor:'pointer',
-              background:'rgba(255,255,255,0.04)',
-              transition:'all 0.15s',
-            }}>
+            <label className={`drop-zone ${preview ? 'filled' : ''}`}>
               {preview
                 ? <img src={preview} alt="" style={{width:'100%', maxHeight:160, objectFit:'cover', borderRadius:8, display:'block'}} />
                 : <>
-                    <div style={{fontSize:24, marginBottom:6}}>🖼</div>
-                    <div style={{fontSize:13, fontWeight:600, color:'rgba(255,255,255,0.7)'}}>Click to choose image</div>
-                    <div style={{fontSize:11, color:'rgba(255,255,255,0.35)', marginTop:3}}>PNG · JPG · WEBP</div>
+                    <div className="drop-icon">🖼</div>
+                    <div className="drop-title">Click to choose image</div>
+                    <div className="drop-sub">PNG · JPG · WEBP</div>
                   </>
               }
               <input type="file" accept="image/*" style={{display:'none'}}

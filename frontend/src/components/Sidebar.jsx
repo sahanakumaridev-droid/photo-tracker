@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
-import { getPhotos, getProfiles } from '../api'
+import { getProfiles } from '../api'
+import SettingsPanel from './SettingsPanel'
+import { useTheme } from '../context/ThemeContext'
 
 const NAV = [
   {
@@ -22,8 +24,9 @@ const NAV = [
 ]
 
 export default function Sidebar({ user, onLogout }) {
-  const [rush, setRush] = useState(null)
-  const location = useLocation()
+  const [rush, setRush]           = useState(null)
+  const location                  = useLocation()
+  const { accentPreset, settingsOpen, setSettings } = useTheme()
 
   useEffect(() => {
     const load = async () => {
@@ -36,52 +39,73 @@ export default function Sidebar({ user, onLogout }) {
   }, [location])
 
   return (
-    <aside className="sidebar sidebar-open">
-      {/* Logo */}
-      <div className="sb-brand">
-        <div className="sb-brand-mark">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-            <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="currentColor"/>
-          </svg>
+    <>
+      <aside className="sidebar sidebar-open">
+        {/* Logo */}
+        <div className="sb-brand">
+          <div className="sb-brand-mark">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="currentColor"/>
+            </svg>
+          </div>
+          <span className="sb-brand-name">GeoTagging</span>
         </div>
-        <span style={{fontSize:14, fontWeight:800, color:'rgba(255,255,255,0.9)', letterSpacing:'-0.3px'}}>GeoTagging</span>
-      </div>
 
-      {/* Nav */}
-      <nav className="sb-nav">
-        <div className="sb-nav-label">Navigation</div>
-        {NAV.map(({ to, icon, label }) => {
-          const active = to === '/' ? location.pathname === '/' : location.pathname.startsWith(to)
-          return (
-            <NavLink key={to} to={to} className={`sb-link ${active ? 'sb-active' : ''}`} title={label}>
-              <span className="sb-icon">{icon}</span>
-              <span className="sb-label">{label}</span>
-              {active && label === 'Dashboard' && rush > 0 && (
-                <span className="sb-badge">{rush}</span>
-              )}
-              {active && <span className="sb-active-bar"/>}
-            </NavLink>
-          )
-        })}
-      </nav>
+        {/* Nav */}
+        <nav className="sb-nav">
+          <div className="sb-nav-label">Navigation</div>
+          {NAV.map(({ to, icon, label }) => {
+            const active = to === '/' ? location.pathname === '/' : location.pathname.startsWith(to)
+            return (
+              <NavLink key={to} to={to} className={`sb-link ${active ? 'sb-active' : ''}`} title={label}>
+                <span className="sb-icon">{icon}</span>
+                <span className="sb-label">{label}</span>
+                {active && label === 'Dashboard' && rush > 0 && (
+                  <span className="sb-badge">{rush}</span>
+                )}
+                {active && <span className="sb-active-bar"/>}
+              </NavLink>
+            )
+          })}
+        </nav>
 
-      <div style={{ flex: 1 }} />
+        <div style={{ flex: 1 }} />
 
-      {/* User footer */}
-      <div className="sb-footer">
-        <div className="sb-user-avatar">{user?.name?.charAt(0) || 'U'}</div>
-        <div className="sb-user-info">
-          <div className="sb-user-name">{user?.name || 'User'}</div>
-          <div className="sb-user-email">{user?.email || ''}</div>
+        {/* User footer — settings trigger */}
+        <div className="sb-footer" style={{ position: 'relative' }}>
+
+          {/* Settings popover — sits above the footer */}
+          <SettingsPanel
+            open={settingsOpen}
+            onClose={() => setSettings(false)}
+            user={user}
+            onLogout={onLogout}
+          />
+
+          <button
+            className="sb-settings-trigger"
+            onClick={() => setSettings(v => !v)}
+            title="Settings"
+          >
+            <div
+              className="sb-user-avatar"
+              style={{ background: `linear-gradient(135deg, ${accentPreset.primary}, ${accentPreset.secondary})` }}
+            >
+              {user?.name?.charAt(0)?.toUpperCase() || 'U'}
+            </div>
+            <div className="sb-user-info">
+              <div className="sb-user-name">{user?.name || 'User'}</div>
+              <div className="sb-user-email">{user?.email || ''}</div>
+            </div>
+            <div className="sb-settings-icon">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" stroke="currentColor" strokeWidth="2"/>
+              </svg>
+            </div>
+          </button>
         </div>
-        <button className="sb-logout" onClick={onLogout} title="Sign out">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            <polyline points="16 17 21 12 16 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            <line x1="21" y1="12" x2="9" y2="12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-          </svg>
-        </button>
-      </div>
-    </aside>
+      </aside>
+    </>
   )
 }

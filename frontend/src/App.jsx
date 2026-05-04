@@ -7,6 +7,7 @@ import Upload from './pages/Upload'
 import ProfileDetail from './pages/ProfileDetail'
 import Login from './pages/Login'
 import Log from './pages/Log'
+import { ThemeProvider } from './context/ThemeContext'
 
 export default function App() {
   const [user,  setUser]  = useState(null)
@@ -17,26 +18,32 @@ export default function App() {
     setTimeout(() => setToast(null), 3500)
   }
 
-  if (!user) return <Login onLogin={setUser} />
+  if (!user) return (
+    <ThemeProvider>
+      <Login onLogin={setUser} />
+    </ThemeProvider>
+  )
 
   return (
-    <div className="app-shell">
-      <Sidebar user={user} onLogout={() => setUser(null)} />
-      <main className="app-main">
-        <Routes>
-          <Route path="/"             element={<Dashboard />} />
-          <Route path="/profiles"     element={<Profiles showToast={showToast} />} />
-          <Route path="/profiles/:id" element={<ProfileDetail />} />
-          <Route path="/upload"       element={<Upload showToast={showToast} />} />
-          <Route path="/log"          element={<Log />} />
-        </Routes>
-      </main>
+    <ThemeProvider>
+      <div className="app-shell">
+        <Sidebar user={user} onLogout={() => setUser(null)} />
+        <main className="app-main">
+          <Routes>
+            <Route path="/"             element={<Dashboard />} />
+            <Route path="/profiles"     element={<Profiles showToast={showToast} />} />
+            <Route path="/profiles/:id" element={<ProfileDetail />} />
+            <Route path="/upload"       element={<Upload showToast={showToast} />} />
+            <Route path="/log"          element={<Log />} />
+          </Routes>
+        </main>
 
-      {toast && (
-        <div className={`toast ${toast.type}`}>
-          {toast.type === 'success' ? '✓' : '✕'} {toast.msg}
-        </div>
-      )}
-    </div>
+        {toast && (
+          <div className={`toast ${toast.type}`}>
+            {toast.type === 'success' ? '✓' : '✕'} {toast.msg}
+          </div>
+        )}
+      </div>
+    </ThemeProvider>
   )
 }

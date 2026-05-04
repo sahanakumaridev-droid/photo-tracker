@@ -4,6 +4,7 @@ import L from 'leaflet'
 import { getPhotos, getProfiles, deletePhoto, updatePhotoNote } from '../api'
 import EditLocationModal from '../components/EditLocationModal'
 import MapUploadModal from '../components/MapUploadModal'
+import { useTheme } from '../context/ThemeContext'
 
 delete L.Icon.Default.prototype._getIconUrl
 L.Icon.Default.mergeOptions({
@@ -60,6 +61,8 @@ export default function Dashboard() {
   const [filterProfile, setFilterProfile] = useState('all')
   const [mapUpload,     setMapUpload]     = useState(null)
   const [search,        setSearch]        = useState('')
+
+  const { accentPreset, setSettings } = useTheme()
 
   const load = useCallback(async (silent = false) => {
     silent ? setBusy(true) : setLoading(true)
@@ -147,7 +150,7 @@ export default function Dashboard() {
             </svg>
           </button>
 
-          <div className="dk-header-user">
+          <div className="dk-header-user" onClick={() => setSettings(true)} title="Settings" style={{cursor:'pointer'}}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z" fill="currentColor"/></svg>
           </div>
         </div>
