@@ -214,20 +214,39 @@ export default function Dashboard() {
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="currentColor"/></svg>
                   Click anywhere to upload a photo at that location
                 </div>
-                <MapContainer center={[32.7157,-117.1611]} zoom={13} style={{height:'100%',width:'100%'}} zoomControl={false}>
+                <MapContainer center={[32.7157,-117.1611]} zoom={13} style={{height:'100%',width:'100%'}} zoomControl={true}>
                   <TileLayer
                     url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                     attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                   />
                   <FlyToFilter photos={mapPhotos}/>
                   <MapClickHandler onMapClick={(lat, lng) => setMapUpload({ lat, lng })}/>
-                  {mapPhotos.map(ph => ph.latitude && ph.longitude && (
-                    <Marker key={ph.id} position={[ph.latitude, ph.longitude]} icon={photoIcon(ph.image_url, ph.service_type)}>
-                      <Popup className="dk-popup">
-                        <PinPopup ph={ph} onNoteUpdated={() => load(true)} />
-                      </Popup>
-                    </Marker>
-                  ))}
+                  {/* Group photos by exact lat/lng — show all in one popup */}
+                  {Object.values(
+                    mapPhotos
+                      .filter(ph => ph.latitude && ph.longitude)
+                      .reduce((acc, ph) => {
+                        const key = `${ph.latitude.toFixed(6)}_${ph.longitude.toFixed(6)}`
+                        if (!acc[key]) acc[key] = []
+                        acc[key].push(ph)
+                        return acc
+                      }, {})
+                  ).map(group => {
+                    const first = group[0]
+                    // pick dominant service type for pin color (rush wins)
+                    const svcType = group.some(p => p.service_type === 'rush') ? 'rush' : 'standard'
+                    return (
+                      <Marker
+                        key={`${first.latitude}_${first.longitude}`}
+                        position={[first.latitude, first.longitude]}
+                        icon={photoIcon(first.image_url, svcType)}
+                      >
+                        <Popup className="dk-popup">
+                          <GroupedPinPopup photos={group} onUpdated={() => load(true)} />
+                        </Popup>
+                      </Marker>
+                    )
+                  })}
                 </MapContainer>
               </div>
             )}
@@ -343,6 +362,61 @@ function ProfilePills({ profiles, photos, filterProfile, setFilterProfile }) {
           })}
         </div>
       )}
+    </div>
+  )
+}
+
+/* ── Grouped Pin Popup — multiple photos at same location ── */
+function GroupedPinPopup({ photos, onUpdated }) {
+  const [activeIdx, setActiveIdx] = useState(0)
+  const ph = photos[activeIdx]
+
+  return (
+    <div style={{ minWidth: 240, maxWidth: 280 }}>
+      {/* If multiple photos — show tab strip */}
+      {photos.length > 1 && (
+        <div style={{
+          display: 'flex', gap: 4, padding: '8px 10px 0',
+          background: '#0f0e1a', flexWrap: 'wrap',
+          borderRadius: '6px 6px 0 0',
+        }}>
+          {photos.map((p, i) => {
+            const color = p.service_type === 'rush' ? '#ef4444' : '#10b981'
+            return (
+              <button
+                key={p.id}
+                onClick={() => setActiveIdx(i)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 5,
+                  padding: '4px 8px', borderRadius: 6, border: 'none',
+                  background: activeIdx === i ? color : 'rgba(255,255,255,0.08)',
+                  color: activeIdx === i ? '#fff' : 'rgba(255,255,255,0.5)',
+                  fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                  fontFamily: 'Geist, sans-serif',
+                  transition: 'all 0.12s',
+                }}
+              >
+                <img
+                  src={p.image_url}
+                  style={{ width: 18, height: 18, borderRadius: '50%', objectFit: 'cover' }}
+                  onError={e => { e.target.style.display = 'none' }}
+                />
+                {p.profile_name?.split(' ')[0] || `#${p.id}`}
+              </button>
+            )
+          })}
+          <span style={{
+            marginLeft: 'auto', fontSize: 10,
+            color: 'rgba(255,255,255,0.3)',
+            alignSelf: 'center', fontFamily: 'Geist Mono, monospace',
+          }}>
+            {photos.length} at this pin
+          </span>
+        </div>
+      )}
+
+      {/* Active photo detail */}
+      <PinPopup ph={ph} onNoteUpdated={onUpdated} />
     </div>
   )
 }

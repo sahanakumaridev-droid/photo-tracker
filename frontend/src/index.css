@@ -377,6 +377,14 @@ body {
 .dk-map-wrap {
   position: absolute;
   inset: 0;
+  min-height: 0;
+}
+
+.dk-map-wrap .leaflet-container {
+  height: 100% !important;
+  width: 100% !important;
+  position: absolute !important;
+  inset: 0 !important;
 }
 
 .dk-map-hint {
@@ -3366,4 +3374,53 @@ select option { background: #1e1b4b; color: #e2e8f0; }
 .dk-dropdown-item-active {
   background: rgba(99,102,241,0.15) !important;
   color: #a5b4fc !important;
+}
+
+/* ─── GROUPED PIN POPUP ─── */
+.dk-popup .leaflet-popup-content {
+  margin: 0 !important;
+  width: auto !important;
+}
+
+.dk-popup .leaflet-popup-content-wrapper {
+  padding: 0 !important;
+  overflow: hidden;
+  border-radius: 10px !important;
+}
+
+/* ─── LEAFLET ZOOM CONTROLS — dark styled, top right ─── */
+.leaflet-top.leaflet-right {
+  top: 12px;
+  right: 12px;
+}
+
+.leaflet-control-zoom {
+  border: none !important;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.35) !important;
+  border-radius: 10px !important;
+  overflow: hidden;
+}
+
+.leaflet-control-zoom-in,
+.leaflet-control-zoom-out {
+  width: 36px !important;
+  height: 36px !important;
+  line-height: 36px !important;
+  font-size: 18px !important;
+  font-weight: 700 !important;
+  background: #1a1830 !important;
+  color: rgba(255,255,255,0.8) !important;
+  border: none !important;
+  border-bottom: 1px solid rgba(255,255,255,0.07) !important;
+  transition: background 0.15s !important;
+}
+
+.leaflet-control-zoom-in:hover,
+.leaflet-control-zoom-out:hover {
+  background: #6366f1 !important;
+  color: #fff !important;
+}
+
+.leaflet-control-zoom-out {
+  border-bottom: none !important;
 }
