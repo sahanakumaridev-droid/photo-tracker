@@ -189,8 +189,8 @@ export default function Upload({ showToast }) {
                   >
                     <div className={`avatar av-${p.service_type}`}>{p.name.charAt(0)}</div>
                     <div style={{flex:1}}>
-                      <div style={{fontWeight:700, fontSize:14, color:'#fff'}}>{p.name}</div>
-                      <div style={{fontSize:11, color:'rgba(255,255,255,0.4)', marginTop:1, fontFamily:'Geist Mono, monospace'}}>#{p.id}</div>
+                      <div style={{fontWeight:700, fontSize:14}}>{p.name}</div>
+                      <div style={{fontSize:11, color:'rgba(100,100,120,0.6)', marginTop:1, fontFamily:'Geist Mono, monospace'}}>#{p.id}</div>
                     </div>
                     <span className={`badge badge-${p.service_type}`}>{p.service_type === 'rush' ? '🔴 ASAP' : '🟢 Standard'}</span>
                     {selected?.id === p.id && <span style={{fontWeight:800, color:'#a5b4fc', marginLeft:4}}>✓</span>}
@@ -349,9 +349,9 @@ export default function Upload({ showToast }) {
               rows={3}
               style={{
                 width:'100%', padding:'10px 13px',
-                background:'rgba(255,255,255,0.06)',
-                border:'1px solid rgba(255,255,255,0.1)',
-                borderRadius:9, fontSize:13.5, color:'#e2e8f0',
+                background:'rgba(0,0,0,0.04)',
+                border:'1px solid rgba(0,0,0,0.12)',
+                borderRadius:9, fontSize:13.5, color:'inherit',
                 outline:'none', resize:'vertical',
                 fontFamily:'Geist, sans-serif', marginBottom:0,
               }}

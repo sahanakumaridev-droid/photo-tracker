@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getProfiles, createProfile, deleteProfile } from '../api'
+import { getProfilesLive, createProfile, deleteProfile } from '../api'
 
 export default function Profiles({ showToast }) {
   const [profiles, setProfiles] = useState([])
@@ -13,9 +13,10 @@ export default function Profiles({ showToast }) {
   const navigate = useNavigate()
 
   const load = async () => {
-    setLoading(true)
-    setProfiles(await getProfiles())
-    setLoading(false)
+    await getProfilesLive(data => {
+      setProfiles(data)
+      setLoading(false)
+    })
   }
 
   useEffect(() => { load() }, [])

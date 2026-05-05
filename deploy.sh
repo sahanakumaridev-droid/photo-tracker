@@ -1,0 +1,114 @@
+#!/bin/bash
+# One-command deploy to DigitalOcean droplet
+# Usage: ./deploy.sh
+# Run from the photo-tracker/ directory
+
+set -e
+
+DROPLET_IP="24.199.85.230"
+REMOTE="root@${DROPLET_IP}"
+
+echo "==> Building frontend..."
+cd frontend
+npm install --legacy-peer-deps
+npm run build
+cd ..
+
+echo "==> Uploading backend files..."
+ssh $REMOTE "mkdir -p /opt/photo-tracker/backend /var/www/photo-tracker"
+scp -r backend/* $REMOTE:/opt/photo-tracker/backend/
+
+echo "==> Uploading frontend build..."
+scp -r frontend/dist/* $REMOTE:/var/www/photo-tracker/
+
+echo "==> Configuring server..."
+ssh $REMOTE bash << 'ENDSSH'
+set -e
+
+# Install deps if not already installed
+if ! command -v uvicorn &> /dev/null && [ ! -d /opt/photo-tracker/backend/venv ]; then
+  echo "--- Installing system packages..."
+  apt-get update -qq
+  apt-get install -y -qq python3 python3-pip python3-venv nginx
+
+  # Node.js 20
+  if ! command -v node &> /dev/null; then
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - > /dev/null
+    apt-get install -y -qq nodejs
+  fi
+fi
+
+# Python venv + deps
+cd /opt/photo-tracker/backend
+if [ ! -d venv ]; then
+  python3 -m venv venv
+fi
+source venv/bin/activate
+pip install -q -r requirements.txt
+
+# Systemd service
+cat > /etc/systemd/system/photo-tracker.service << 'EOF'
+[Unit]
+Description=Photo Tracker FastAPI Backend
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/opt/photo-tracker/backend
+ExecStart=/opt/photo-tracker/backend/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable photo-tracker
+systemctl restart photo-tracker
+
+# Nginx config
+cat > /etc/nginx/sites-available/photo-tracker << 'EOF'
+server {
+    listen 80;
+    server_name _;
+
+    root /var/www/photo-tracker;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        client_max_body_size 20M;
+    }
+
+    location /uploads/ {
+        proxy_pass http://127.0.0.1:8000/uploads/;
+        proxy_set_header Host $host;
+    }
+}
+EOF
+
+ln -sf /etc/nginx/sites-available/photo-tracker /etc/nginx/sites-enabled/photo-tracker
+rm -f /etc/nginx/sites-enabled/default
+
+nginx -t
+systemctl reload nginx
+
+# Firewall
+ufw allow OpenSSH > /dev/null 2>&1 || true
+ufw allow 'Nginx Full' > /dev/null 2>&1 || true
+ufw --force enable > /dev/null 2>&1 || true
+
+echo "--- Done!"
+ENDSSH
+
+echo ""
+echo "✅ Deployed successfully!"
+echo "   Visit: http://${DROPLET_IP}"

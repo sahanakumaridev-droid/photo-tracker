@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, NavLink, useLocation } from 'react-router-dom'
 import Sidebar from './components/Sidebar'
 import Dashboard from './pages/Dashboard'
 import Profiles from './pages/Profiles'
@@ -8,6 +8,31 @@ import ProfileDetail from './pages/ProfileDetail'
 import Login from './pages/Login'
 import Log from './pages/Log'
 import { ThemeProvider } from './context/ThemeContext'
+
+function MobileNav() {
+  const location = useLocation()
+  const links = [
+    { to: '/', label: 'Map', icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M20.5 3l-.16.03L15 5.1 9 3 3.36 4.9c-.21.07-.36.25-.36.48V20.5c0 .28.22.5.5.5l.16-.03L9 18.9l6 2.1 5.64-1.9c.21-.07.36-.25.36-.48V3.5c0-.28-.22-.5-.5-.5zM15 19l-6-2.11V5l6 2.11V19z" fill="currentColor"/></svg> },
+    { to: '/profiles', label: 'Profiles', icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="9" cy="7" r="4" fill="currentColor"/><path d="M2 21v-1a7 7 0 0 1 14 0v1" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><circle cx="19" cy="8" r="3" fill="currentColor" opacity="0.6"/></svg> },
+    { to: '/upload', label: 'Upload', icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><polyline points="17 8 12 3 7 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><line x1="12" y1="3" x2="12" y2="15" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg> },
+    { to: '/log', label: 'Log', icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><line x1="16" y1="13" x2="8" y2="13" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><line x1="16" y1="17" x2="8" y2="17" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg> },
+  ]
+  return (
+    <nav className="mobile-nav">
+      <div className="mobile-nav-inner">
+        {links.map(({ to, label, icon }) => {
+          const active = to === '/' ? location.pathname === '/' : location.pathname.startsWith(to)
+          return (
+            <NavLink key={to} to={to} className={`mobile-nav-btn ${active ? 'active' : ''}`}>
+              {icon}
+              {label}
+            </NavLink>
+          )
+        })}
+      </div>
+    </nav>
+  )
+}
 
 export default function App() {
   const [user,  setUser]  = useState(null)
@@ -37,6 +62,7 @@ export default function App() {
             <Route path="/log"          element={<Log />} />
           </Routes>
         </main>
+        <MobileNav />
 
         {toast && (
           <div className={`toast ${toast.type}`}>

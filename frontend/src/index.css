@@ -3883,3 +3883,221 @@ select option { background: #ffffff; color: #0f172a; }
 [data-theme="dark"] .sp-pop-logout:hover { color: #fda4af; background: rgba(244,63,94,0.15); }
 
 
+
+/* ═══════════════════════════════════════════════════════════
+   MOBILE RESPONSIVE — breakpoints: 768px (tablet), 480px (phone)
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── Bottom nav bar for mobile ── */
+.mobile-nav {
+  display: none;
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  height: 60px;
+  background: #ffffff;
+  border-top: 1px solid #e2e8f0;
+  z-index: 1000;
+  padding: 0 8px;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.mobile-nav-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  height: 100%;
+}
+
+.mobile-nav-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  background: none;
+  border: none;
+  color: #94a3b8;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 10px;
+  transition: all 0.15s;
+  font-family: 'Geist', sans-serif;
+  text-decoration: none;
+  min-width: 56px;
+}
+
+.mobile-nav-btn.active { color: var(--accent); }
+.mobile-nav-btn svg { flex-shrink: 0; }
+
+[data-theme="dark"] .mobile-nav {
+  background: #0f0e1a;
+  border-color: rgba(255,255,255,0.08);
+}
+[data-theme="dark"] .mobile-nav-btn { color: rgba(255,255,255,0.3); }
+[data-theme="dark"] .mobile-nav-btn.active { color: var(--accent-text); }
+
+@media (max-width: 768px) {
+
+  /* ── Hide desktop sidebar, show bottom nav ── */
+  .sidebar { display: none !important; }
+  .mobile-nav { display: flex; }
+
+  /* ── App shell takes full width ── */
+  .app-shell { flex-direction: column; }
+  .app-main {
+    height: calc(100vh - 60px);
+    padding-bottom: 0;
+  }
+
+  /* ── Dashboard header ── */
+  .dk-header {
+    padding: 0 14px;
+    height: 50px;
+  }
+  .dk-header-title { font-size: 13px; }
+  .dk-header-sub { display: none; }
+
+  /* ── Stats — horizontal scroll on mobile ── */
+  .dk-stats {
+    padding: 10px 12px;
+    gap: 8px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .dk-stats::-webkit-scrollbar { display: none; }
+  .dk-stat {
+    min-width: 130px;
+    padding: 10px 12px;
+    flex-shrink: 0;
+  }
+  .dk-stat-val { font-size: 22px; }
+  .dk-stat-label { font-size: 9.5px; }
+  .dk-stat-icon { width: 32px; height: 32px; }
+
+  /* ── Toolbar ── */
+  .dk-toolbar {
+    padding: 8px 12px;
+    gap: 8px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .dk-toolbar::-webkit-scrollbar { display: none; }
+  .dk-search { min-width: 140px; }
+  .dk-legend { display: none; }
+
+  /* ── Map hint ── */
+  .dk-map-hint {
+    font-size: 10px;
+    padding: 5px 12px;
+    bottom: 12px;
+  }
+
+  /* ── Grid view — 2 columns on mobile ── */
+  .dk-photo-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  .dk-photo-card img { height: 110px; }
+  .dk-photo-actions { opacity: 1; } /* always show on mobile */
+
+  /* ── List view ── */
+  .dk-list-row { padding: 8px 10px; gap: 8px; }
+  .dk-list-thumb { width: 36px; height: 36px; }
+  .dk-list-name { font-size: 12px; }
+  .dk-list-meta { font-size: 10px; }
+
+  /* ── Upload page ── */
+  .grid-2 {
+    grid-template-columns: 1fr !important;
+    gap: 12px;
+  }
+  .page-header {
+    padding: 12px 16px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .page-title { font-size: 16px; }
+  .page-sub { font-size: 11px; }
+
+  /* ── Cards ── */
+  .card { padding: 14px; }
+
+  /* ── Upload map ── */
+  .upload-map-wrap { height: 220px !important; }
+
+  /* ── Profiles page ── */
+  .pr-header {
+    padding: 12px 16px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .pr-header-right { width: 100%; }
+  .pr-search { flex: 1; }
+  .pr-stat-row {
+    padding: 10px 12px;
+    gap: 8px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .pr-stat-row::-webkit-scrollbar { display: none; }
+  .pr-stat-pill { min-width: 100px; flex-shrink: 0; }
+  .pr-content { padding: 12px; }
+  .pr-row { padding: 10px 12px; }
+  .pr-row-name { font-size: 13px; }
+
+  /* ── Log page ── */
+  .log-filters {
+    padding: 10px 12px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .log-filter-group { min-width: calc(50% - 4px); }
+  .log-filter-group input,
+  .log-filter-group select { width: 100% !important; }
+  .log-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .log-table { min-width: 600px; }
+
+  /* ── Profile detail ── */
+  .page-header .back-btn { font-size: 11px; padding: 5px 10px; }
+  .dk-photo-grid { grid-template-columns: repeat(2, 1fr); }
+
+  /* ── Modals ── */
+  .modal-box {
+    width: 95vw !important;
+    max-height: 90vh;
+    overflow-y: auto;
+  }
+
+  /* ── Scroll areas ── */
+  .dk-scroll-area { padding: 12px; }
+
+  /* ── Buttons ── */
+  .btn { font-size: 12px; padding: 8px 14px; }
+  .btn-green { font-size: 13px; }
+}
+
+@media (max-width: 480px) {
+  /* ── Single column grid on small phones ── */
+  .dk-photo-grid { grid-template-columns: 1fr; }
+  .dk-photo-card img { height: 180px; }
+
+  /* ── Stats — smaller ── */
+  .dk-stat { min-width: 110px; padding: 8px 10px; }
+  .dk-stat-val { font-size: 20px; }
+
+  /* ── Header ── */
+  .dk-header { padding: 0 10px; }
+  .dk-view-switch { display: none; } /* hide view switcher, default to map */
+
+  /* ── Upload ── */
+  .upload-map-wrap { height: 180px !important; }
+
+  /* ── Log filters stack ── */
+  .log-filter-group { min-width: 100%; }
+}

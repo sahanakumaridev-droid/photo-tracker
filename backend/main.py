@@ -214,6 +214,30 @@ async def upload_photo(
     return result
 
 
+@app.patch("/photos/{photo_id}/image")
+async def replace_photo_image(photo_id: int, file: UploadFile = File(...)):
+    db = SessionLocal()
+    photo = db.query(Photo).filter(Photo.id == photo_id).first()
+    if not photo:
+        db.close()
+        raise HTTPException(status_code=404, detail="Photo not found")
+    # Delete old file
+    old_path = photo.image_url.lstrip("/")
+    if os.path.exists(old_path):
+        os.remove(old_path)
+    # Save new file
+    ext      = os.path.splitext(file.filename)[1] or ".jpg"
+    filename = f"{uuid.uuid4()}{ext}"
+    filepath = os.path.join(UPLOAD_DIR, filename)
+    with open(filepath, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+    photo.image_url = f"/uploads/{filename}"
+    db.commit()
+    result = _photo_dict(photo)
+    db.close()
+    return result
+
+
 @app.patch("/photos/{photo_id}/location")
 def update_photo_location(photo_id: int, data: dict):
     db = SessionLocal()

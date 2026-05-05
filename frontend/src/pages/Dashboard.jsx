@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
-import { getPhotos, getProfiles, deletePhoto, updatePhotoNote } from '../api'
+import { useNavigate } from 'react-router-dom'
+import { getPhotos, getProfiles, getPhotosLive, getProfilesLive, deletePhoto, updatePhotoNote, replacePhotoImage } from '../api'
 import EditLocationModal from '../components/EditLocationModal'
 import MapUploadModal from '../components/MapUploadModal'
 import { useTheme } from '../context/ThemeContext'
@@ -65,10 +66,13 @@ export default function Dashboard() {
   const { accentPreset, setSettings } = useTheme()
 
   const load = useCallback(async (silent = false) => {
-    silent ? setBusy(true) : setLoading(true)
-    const [ph, pr] = await Promise.all([getPhotos(), getProfiles()])
-    setPhotos(ph); setProfiles(pr)
-    setLoading(false); setBusy(false)
+    if (!silent && photos.length === 0 && profiles.length === 0) setLoading(true)
+    setBusy(true)
+    await Promise.all([
+      getPhotosLive(data => { setPhotos(data); setLoading(false) }),
+      getProfilesLive(data => { setProfiles(data) }),
+    ])
+    setBusy(false)
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -429,10 +433,11 @@ function PinPopup({ ph, onNoteUpdated }) {
   const [note,    setNote]    = useState(ph.note || '')
   const [editing, setEditing] = useState(false)
   const [saving,  setSaving]  = useState(false)
+  const navigate = useNavigate()
 
   const profiles = ph.profiles && ph.profiles.length > 0
     ? ph.profiles
-    : [{ name: ph.profile_name, service_type: ph.service_type }]
+    : [{ id: ph.profile_id, name: ph.profile_name, service_type: ph.service_type }]
 
   const saveNote = async () => {
     setSaving(true)
@@ -447,16 +452,27 @@ function PinPopup({ ph, onNoteUpdated }) {
       <img src={ph.image_url} className="popup-img" alt=""
         onError={e => { e.target.style.display = 'none' }} />
       <div className="popup-body">
-        {/* All profiles at this pin */}
+        {/* All profiles at this pin — each clickable */}
         <div className="popup-profiles-label">Profiles at this pin</div>
         <div className="popup-profiles">
           {profiles.map((p, i) => (
-            <div key={i} className="popup-profile-row">
+            <div
+              key={i}
+              className="popup-profile-row"
+              onClick={() => p.id && navigate(`/profiles/${p.id}`)}
+              style={{ cursor: p.id ? 'pointer' : 'default', transition: 'background 0.12s' }}
+              title={p.id ? `View ${p.name}'s profile` : ''}
+            >
               <span className={`popup-profile-dot ${p.service_type === 'rush' ? 'dot-rush' : 'dot-std'}`} />
-              <span className="popup-profile-name">{p.name}</span>
+              <span className="popup-profile-name" style={{ flex: 1 }}>{p.name}</span>
               <span className={`badge badge-${p.service_type}`} style={{ fontSize: 9, padding: '1px 6px' }}>
                 {p.service_type === 'rush' ? 'ASAP' : 'Standard'}
               </span>
+              {p.id && (
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" style={{ marginLeft: 4, opacity: 0.4 }}>
+                  <path d="M9 18l6-6-6-6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              )}
             </div>
           ))}
         </div>
@@ -502,6 +518,16 @@ function PinPopup({ ph, onNoteUpdated }) {
 function PhotoGrid({ photos, empty, onDelete, onEditLocation }) {
   const [confirming, setConfirming] = useState(null)
   const [editing,    setEditing]    = useState(null)
+  const replaceRef = React.useRef()
+  const [replacingId, setReplacingId] = useState(null)
+
+  const handleReplace = async (e, photoId) => {
+    const file = e.target.files[0]
+    if (!file) return
+    await replacePhotoImage(photoId, file)
+    onEditLocation(true)
+    setReplacingId(null)
+  }
 
   if (photos.length === 0) return (
     <div className="dk-empty">
@@ -512,6 +538,11 @@ function PhotoGrid({ photos, empty, onDelete, onEditLocation }) {
   return (
     <>
       {editing && <EditLocationModal photo={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); onEditLocation(true) }}/>}
+      {/* Hidden file input for replace */}
+      <input
+        ref={replaceRef} type="file" accept="image/*" style={{display:'none'}}
+        onChange={e => handleReplace(e, replacingId)}
+      />
       <div className="dk-photo-grid">
         {photos.map(p => (
           <div className="dk-photo-card" key={p.id}>
@@ -521,6 +552,10 @@ function PhotoGrid({ photos, empty, onDelete, onEditLocation }) {
               <div className="dk-photo-actions">
                 <button className="dk-photo-btn" onClick={() => setEditing(p)} title="Edit location">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" fill="currentColor"/></svg>
+                </button>
+                <button className="dk-photo-btn" title="Replace image"
+                  onClick={() => { setReplacingId(p.id); replaceRef.current.click() }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 </button>
                 {confirming === p.id ? (
                   <div className="dk-confirm">
