@@ -1,9 +1,10 @@
-import React, { useEffect, useState, useRef } from 'react'
+import React, { useEffect, useState, useRef, useContext } from 'react'
 import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
 import { getProfiles, createProfile, uploadPhoto } from '../api'
 import { useNavigate } from 'react-router-dom'
 import LocationSearch from '../components/LocationSearch'
+import { GeoContext } from '../context/GeoContext'
 
 const pinIcon = new L.Icon({
   iconUrl:   'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-violet.png',
@@ -16,7 +17,19 @@ function MapPicker({ location, onPick }) {
   return location ? <Marker position={[location.lat, location.lng]} icon={pinIcon} /> : null
 }
 
+// PST formatter
+function toPST(isoString) {
+  if (!isoString) return ''
+  return new Date(isoString).toLocaleString('en-US', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }) + ' PST'
+}
+
 export default function Upload({ showToast }) {
+  const geo = useContext(GeoContext)   // global geo from App
+
   const [profiles,     setProfiles]     = useState([])
   const [selected,     setSelected]     = useState(null)
   const [file,         setFile]         = useState(null)
@@ -30,6 +43,8 @@ export default function Upload({ showToast }) {
   const [manualLng,    setManualLng]    = useState('')
   const [zipCode,      setZipCode]      = useState('')
   const [note,         setNote]         = useState('')
+  const [address,      setAddress]      = useState('')
+  const [addrLoading,  setAddrLoading]  = useState(false)
   // inline new profile
   const [showNewProf,  setShowNewProf]  = useState(false)
   const [newProfName,  setNewProfName]  = useState('')
@@ -42,39 +57,98 @@ export default function Upload({ showToast }) {
 
   const loadProfiles = () => getProfiles().then(setProfiles)
 
-  useEffect(() => { loadProfiles(); grabLocation() }, [])
+  // Use global geo context first, then try to get fresh GPS
+  useEffect(() => {
+    loadProfiles()
+    // If global geo already has location (from app load), use it immediately
+    if (geo.location) {
+      setLocation(geo.location)
+      setLocWarn(null)
+    } else {
+      // Try to grab fresh GPS
+      grabLocation()
+    }
+  }, [])
+
+  // Keep location in sync with global geo context as it updates
+  useEffect(() => {
+    if (geo.location && !location) {
+      setLocation(geo.location)
+      setLocWarn(null)
+    }
+  }, [geo.location])
 
   useEffect(() => {
     if (location) {
       setManualLat(location.lat.toFixed(6))
       setManualLng(location.lng.toFixed(6))
+      reverseGeocode(location.lat, location.lng)
     }
   }, [location])
 
+  // Reverse geocode to get human-readable address
+  const reverseGeocode = async (lat, lng) => {
+    setAddrLoading(true)
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=16`,
+        { headers: { 'Accept-Language': 'en' } }
+      )
+      const data = await res.json()
+      if (data && data.display_name) {
+        // Shorten: take road + city + state
+        const a = data.address || {}
+        const parts = [
+          a.road || a.pedestrian || a.path,
+          a.suburb || a.neighbourhood || a.city_district,
+          a.city || a.town || a.village,
+          a.state,
+        ].filter(Boolean)
+        setAddress(parts.join(', ') || data.display_name)
+        // Auto-fill zip if empty
+        if (!zipCode && (a.postcode)) setZipCode(a.postcode)
+      }
+    } catch { /* silent */ }
+    setAddrLoading(false)
+  }
+
   const grabLocation = () => {
-    setLocBusy(true); setLocWarn(null)
+    setLocBusy(true)
+    setLocWarn(null)
     if (!navigator.geolocation) {
-      setLocWarn('Geolocation unavailable — using default.')
-      setLocation({ lat: 37.7749, lng: -122.4194 })
-      setLocBusy(false); return
+      setLocWarn('Geolocation not supported by this browser.')
+      setLocBusy(false)
+      return
     }
     navigator.geolocation.getCurrentPosition(
-      p => { setLocation({ lat: p.coords.latitude, lng: p.coords.longitude }); setLocBusy(false) },
-      () => {
-        setLocWarn('GPS unavailable — using default location.')
-        setLocation({ lat: 32.7157 + (Math.random()-.5)*.05, lng: -117.1611 + (Math.random()-.5)*.05 })
+      pos => {
+        setLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude })
+        setLocWarn(null)
         setLocBusy(false)
       },
-      { timeout: 8000 }
+      err => {
+        setLocBusy(false)
+        if (err.code === 1) {
+          setLocWarn('Location permission denied. Please enable GPS in your browser settings.')
+        } else {
+          setLocWarn('GPS signal weak. Try moving to an open area or set location manually on the map.')
+        }
+        // Do NOT set any fallback coordinates
+      },
+      { timeout: 12000, enableHighAccuracy: true, maximumAge: 0 }
     )
   }
 
-  const handleMapPick = (lat, lng) => { setLocation({ lat, lng }); setLocWarn(null) }
+  const handleMapPick = (lat, lng) => {
+    setLocation({ lat, lng })
+    setLocWarn(null)
+  }
 
   const handleManualApply = () => {
     const lat = parseFloat(manualLat), lng = parseFloat(manualLng)
     if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) return
-    setLocation({ lat, lng }); setLocWarn(null)
+    setLocation({ lat, lng })
+    setLocWarn(null)
   }
 
   const pickFile = (f) => { setFile(f); setPreview(URL.createObjectURL(f)) }
@@ -111,7 +185,9 @@ export default function Upload({ showToast }) {
     fd.append('note',       note)
     try {
       await uploadPhoto(fd)
-      showToast('Photo uploaded')
+      // Small delay to ensure backend has committed before dashboard re-fetches
+      await new Promise(r => setTimeout(r, 300))
+      showToast('Photo uploaded ✓')
       navigate('/')
     } catch { showToast('Upload failed', 'error') }
     setUploading(false)
@@ -213,9 +289,17 @@ export default function Upload({ showToast }) {
             {!file && (
               <div style={{display:'flex', gap:8, marginBottom:12}}>
                 <button
-                  className="btn btn-outline"
+                  className="btn btn-dark"
                   style={{flex:1, justifyContent:'center', fontSize:13}}
-                  onClick={() => cameraRef.current.click()}
+                  onClick={() => {
+                    // Dynamically create input to force camera on mobile
+                    const input = document.createElement('input')
+                    input.type = 'file'
+                    input.accept = 'image/*'
+                    input.capture = 'environment'
+                    input.onchange = e => { const f = e.target.files[0]; if(f) pickFile(f) }
+                    input.click()
+                  }}
                 >
                   📷 Camera
                 </button>
@@ -247,20 +331,31 @@ export default function Upload({ showToast }) {
               onChange={e => e.target.files[0] && pickFile(e.target.files[0])}
             />
 
+            {/* Drop zone — only for drag-drop, NOT clickable to avoid note conflict */}
             <div
               className={`drop-zone ${file ? 'filled' : ''}`}
-              onClick={() => !file && fileRef.current.click()}
               onDrop={e => { e.preventDefault(); pickFile(e.dataTransfer.files[0]) }}
               onDragOver={e => e.preventDefault()}
             >
               {preview
                 ? <img src={preview} alt="preview"/>
-                : <><div className="drop-icon">🖼</div><div className="drop-title">Or drag & drop here</div><div className="drop-sub">PNG · JPG · WEBP</div></>
+                : <><div className="drop-icon">🖼</div><div className="drop-title">Drag & drop here</div><div className="drop-sub">PNG · JPG · WEBP</div></>
               }
             </div>
 
+            {/* Dedicated upload button — separate from notes */}
+            {!file && (
+              <button
+                className="btn btn-outline"
+                style={{width:'100%', justifyContent:'center', fontSize:13, marginTop:8}}
+                onClick={() => fileRef.current.click()}
+              >
+                ↑ Select Photo to Upload
+              </button>
+            )}
+
             {file && (
-              <button className="btn btn-outline" style={{fontSize:12, padding:'5px 12px'}}
+              <button className="btn btn-outline" style={{fontSize:12, padding:'5px 12px', marginTop:8}}
                 onClick={() => { setFile(null); setPreview(null); fileRef.current.value=''; cameraRef.current.value='' }}>
                 ✕ Remove
               </button>
@@ -281,13 +376,36 @@ export default function Upload({ showToast }) {
               </button>
             </div>
 
-            {locBusy && <div className="loading" style={{padding:12}}><div className="spinner"/>Acquiring GPS…</div>}
+            {locBusy && !location && (
+              <div className="loading" style={{padding:12}}>
+                <div className="spinner"/>
+                <span style={{fontSize:12}}>Acquiring GPS… please allow location access</span>
+              </div>
+            )}
+
+            {!location && !locBusy && locWarn && (
+              <div style={{
+                background:'rgba(239,68,68,0.08)', border:'1px solid rgba(239,68,68,0.2)',
+                borderRadius:8, padding:'10px 14px', fontSize:12, color:'#ef4444', marginBottom:8,
+              }}>
+                ⚠️ {locWarn}
+                <br/>
+                <span style={{opacity:0.7, fontSize:11}}>Use the map below to set your location manually.</span>
+              </div>
+            )}
+
             {location && (
-              <div className={`loc-box ${locWarn ? 'warn' : ''}`}>
-                <div className="loc-head">{locWarn ? '⚠ Fallback location' : '✓ GPS acquired'}</div>
-                {locWarn && <div style={{fontSize:11, color:'#fbbf24', marginBottom:6}}>{locWarn}</div>}
-                <div className="loc-row">📍 {location.lat.toFixed(6)}, {location.lng.toFixed(6)}</div>
-                <div className="loc-row">🕐 {new Date().toLocaleString()}</div>
+              <div className="loc-box">
+                <div className="loc-head">✓ GPS acquired</div>
+                {/* Human-readable address */}
+                {addrLoading
+                  ? <div style={{fontSize:11, color:'#94a3b8', marginBottom:4}}>📍 Resolving address…</div>
+                  : address && <div style={{fontSize:12, fontWeight:600, marginBottom:4}}>📍 {address}</div>
+                }
+                <div className="loc-row" style={{fontFamily:'Geist Mono, monospace', fontSize:11}}>
+                  {location.lat.toFixed(6)}, {location.lng.toFixed(6)}
+                </div>
+                <div className="loc-row">🕐 {toPST(geo.timestamp || new Date().toISOString())}</div>
               </div>
             )}
 
@@ -327,7 +445,7 @@ export default function Upload({ showToast }) {
             )}
           </div>
 
-          {/* Metadata */}
+          {/* Metadata — note is a separate section, not clickable for upload */}
           <div className="card">
             <div className="step-head">
               <div className="step-num">4</div>
@@ -342,11 +460,13 @@ export default function Upload({ showToast }) {
               style={{marginBottom:14}}
             />
             <label>Note</label>
+            {/* Note textarea — standalone, no click-to-upload behavior */}
             <textarea
               placeholder="Add a note about this photo…"
               value={note}
               onChange={e => setNote(e.target.value)}
               rows={3}
+              onClick={e => e.stopPropagation()}
               style={{
                 width:'100%', padding:'10px 13px',
                 background:'rgba(0,0,0,0.04)',
@@ -354,10 +474,12 @@ export default function Upload({ showToast }) {
                 borderRadius:9, fontSize:13.5, color:'inherit',
                 outline:'none', resize:'vertical',
                 fontFamily:'Geist, sans-serif', marginBottom:0,
+                cursor:'text',
               }}
             />
           </div>
 
+          {/* Dedicated Upload Button */}
           <button
             className="btn btn-green"
             style={{width:'100%', padding:'14px', fontSize:15, fontWeight:700, borderRadius:10, justifyContent:'center'}}
@@ -366,14 +488,14 @@ export default function Upload({ showToast }) {
           >
             {uploading
               ? <><div className="spinner" style={{width:15,height:15,borderTopColor:'#fff'}}/>Uploading…</>
-              : '↑ Upload photo'
+              : '↑ Upload Photo'
             }
           </button>
 
           {!ready && !uploading && (
             <div className="hint" style={{textAlign:'center', marginTop:8, fontSize:12, color:'rgba(255,255,255,0.3)'}}>
               {!selected && '← Select or create a profile first'}
-              {selected && !file && '← Choose an image'}
+              {selected && !file && '← Choose an image using Camera or Gallery above'}
             </div>
           )}
         </div>

@@ -1,11 +1,12 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState, useCallback, useContext } from 'react'
 import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
-import { useNavigate } from 'react-router-dom'
-import { getPhotos, getProfiles, getPhotosLive, getProfilesLive, deletePhoto, updatePhotoNote, replacePhotoImage } from '../api'
+import { useNavigate, useLocation } from 'react-router-dom'
+import { getPhotos, getProfiles, getPhotosLive, getProfilesLive, deletePhoto, updatePhotoNote, replacePhotoImage, uploadPhoto } from '../api'
 import EditLocationModal from '../components/EditLocationModal'
 import MapUploadModal from '../components/MapUploadModal'
 import { useTheme } from '../context/ThemeContext'
+import { GeoContext } from '../context/GeoContext'
 
 delete L.Icon.Default.prototype._getIconUrl
 L.Icon.Default.mergeOptions({
@@ -14,21 +15,45 @@ L.Icon.Default.mergeOptions({
   shadowUrl:     'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
 })
 
+// PST formatter
+function toPST(ts) {
+  if (!ts) return ''
+  return new Date(ts).toLocaleString('en-US', {
+    timeZone: 'America/Los_Angeles',
+    month: 'short', day: 'numeric', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  }) + ' PST'
+}
+
+// Haversine distance in miles
+function distanceMiles(lat1, lng1, lat2, lng2) {
+  const R = 3958.8
+  const dLat = (lat2 - lat1) * Math.PI / 180
+  const dLng = (lng2 - lng1) * Math.PI / 180
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
+}
+
+// Pin icon uses the LATEST photo image at that location
 function photoIcon(imageUrl, serviceType) {
-  const color = serviceType === 'rush' ? '#f43f5e' : '#10b981'
-  const glow  = serviceType === 'rush' ? 'rgba(244,63,94,0.5)' : 'rgba(16,185,129,0.5)'
+  const color = serviceType === 'rush' ? '#ef4444' : '#0ea5e9'
+  const glow  = serviceType === 'rush' ? 'rgba(239,68,68,0.35)' : 'rgba(14,165,233,0.35)'
   const html = `
     <div style="position:relative;display:flex;flex-direction:column;align-items:center;">
       <div style="width:48px;height:48px;border-radius:50%;border:2.5px solid ${color};overflow:hidden;
-        box-shadow:0 0 0 4px ${glow},0 4px 16px rgba(0,0,0,0.5);background:#1e1b4b;cursor:pointer;">
+        box-shadow:0 0 0 4px ${glow},0 4px 16px rgba(0,0,0,0.25);background:#e2e8f0;cursor:pointer;">
         <img src="${imageUrl}" style="width:100%;height:100%;object-fit:cover;"
-          onerror="this.src='https://via.placeholder.com/48x48/1e1b4b/6366f1?text=📷'" />
+          onerror="this.src='https://via.placeholder.com/48x48/e2e8f0/64748b?text=📷'" />
       </div>
       <div style="width:2px;height:8px;background:${color};margin-top:-1px;"></div>
       <div style="width:6px;height:6px;border-radius:50%;background:${color};margin-top:-1px;box-shadow:0 0 6px ${color};"></div>
     </div>`
   return L.divIcon({ html, className: '', iconSize: [48, 68], iconAnchor: [24, 68], popupAnchor: [0, -72] })
 }
+
+// Soft map tile — CartoDB Positron (whites, greys, blues)
+const MAP_TILE = 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'
+const MAP_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
 
 function MapClickHandler({ onMapClick }) {
   useMapEvents({ click: e => onMapClick(e.latlng.lat, e.latlng.lng) })
@@ -64,6 +89,8 @@ export default function Dashboard() {
   const [search,        setSearch]        = useState('')
 
   const { accentPreset, setSettings } = useTheme()
+  const geo = useContext(GeoContext)
+  const location = useLocation()
 
   const load = useCallback(async (silent = false) => {
     if (!silent && photos.length === 0 && profiles.length === 0) setLoading(true)
@@ -75,16 +102,42 @@ export default function Dashboard() {
     setBusy(false)
   }, [])
 
+  // Initial load
   useEffect(() => { load() }, [load])
+
+  // Re-fetch every time the user navigates back to the dashboard
+  // This ensures a newly uploaded photo always appears immediately
+  useEffect(() => {
+    if (location.pathname === '/') {
+      load(true)
+    }
+  }, [location.pathname])
 
   const rush     = profiles.filter(p => p.service_type === 'rush').length
   const standard = profiles.filter(p => p.service_type === 'standard').length
 
+  // Sort profiles by proximity to user's current location
+  const sortedProfiles = geo.location
+    ? [...profiles].sort((a, b) => {
+        const aPhoto = photos.find(ph => ph.profile_id === a.id && ph.latitude)
+        const bPhoto = photos.find(ph => ph.profile_id === b.id && ph.latitude)
+        if (!aPhoto && !bPhoto) return 0
+        if (!aPhoto) return 1
+        if (!bPhoto) return -1
+        const dA = distanceMiles(geo.location.lat, geo.location.lng, aPhoto.latitude, aPhoto.longitude)
+        const dB = distanceMiles(geo.location.lat, geo.location.lng, bPhoto.latitude, bPhoto.longitude)
+        return dA - dB
+      })
+    : profiles
+
+  // Center map on user's location when it first arrives
+  const mapCenter = geo.location
+    ? [geo.location.lat, geo.location.lng]
+    : [32.7157, -117.1611]
+
   const mapPhotos = filterProfile === 'all'
     ? photos
     : photos.filter(p => String(p.profile_id) === String(filterProfile))
-
-  const selectedProfile = profiles.find(p => String(p.id) === String(filterProfile))
 
   const filteredPhotos = photos.filter(p =>
     !search || p.profile_name?.toLowerCase().includes(search.toLowerCase())
@@ -148,12 +201,6 @@ export default function Dashboard() {
             ))}
           </div>
 
-          <button className="dk-refresh-btn" onClick={() => load(true)} disabled={busy} title="Refresh">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" style={{transform: busy ? 'rotate(360deg)' : 'none', transition: busy ? 'transform 1s linear' : 'none'}}>
-              <path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" fill="currentColor"/>
-            </svg>
-          </button>
-
           <div className="dk-header-user" onClick={() => setSettings(true)} title="Settings" style={{cursor:'pointer'}}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z" fill="currentColor"/></svg>
           </div>
@@ -187,7 +234,7 @@ export default function Dashboard() {
         </div>
 
         <ProfilePills
-          profiles={profiles}
+          profiles={sortedProfiles}
           photos={photos}
           filterProfile={filterProfile}
           setFilterProfile={setFilterProfile}
@@ -221,14 +268,14 @@ export default function Dashboard() {
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="currentColor"/></svg>
                   Click anywhere to upload a photo at that location
                 </div>
-                <MapContainer center={[32.7157,-117.1611]} zoom={13} style={{height:'100%',width:'100%'}} zoomControl={true}>
+                <MapContainer center={mapCenter} zoom={13} style={{height:'100%',width:'100%'}} zoomControl={true}>
                   <TileLayer
-                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                    url={MAP_TILE}
+                    attribution={MAP_ATTR}
                   />
                   <FlyToFilter photos={mapPhotos}/>
                   <MapClickHandler onMapClick={(lat, lng) => setMapUpload({ lat, lng })}/>
-                  {/* Group photos by exact lat/lng — show all in one popup */}
+                  {/* Group photos by lat/lng, then sub-group by profile */}
                   {Object.values(
                     mapPhotos
                       .filter(ph => ph.latitude && ph.longitude)
@@ -239,17 +286,40 @@ export default function Dashboard() {
                         return acc
                       }, {})
                   ).map(group => {
-                    const first = group[0]
-                    // pick dominant service type for pin color (rush wins)
-                    const svcType = group.some(p => p.service_type === 'rush') ? 'rush' : 'standard'
+                    // Sort all photos newest first
+                    const sorted = [...group].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+                    const latest = sorted[0]
+                    const svcType = sorted.some(p => p.service_type === 'rush') ? 'rush' : 'standard'
+
+                    // Sub-group by profile_id → { profileId: { profile info, photos[] } }
+                    const byProfile = {}
+                    sorted.forEach(ph => {
+                      const pid = ph.profile_id || 'unknown'
+                      if (!byProfile[pid]) {
+                        byProfile[pid] = {
+                          profileId:   pid,
+                          profileName: ph.profile_name || 'Unknown',
+                          serviceType: ph.service_type || 'standard',
+                          photos:      [],
+                        }
+                      }
+                      byProfile[pid].photos.push(ph)
+                    })
+                    const profileGroups = Object.values(byProfile)
+
                     return (
                       <Marker
-                        key={`${first.latitude}_${first.longitude}`}
-                        position={[first.latitude, first.longitude]}
-                        icon={photoIcon(first.image_url, svcType)}
+                        key={`${latest.latitude}_${latest.longitude}`}
+                        position={[latest.latitude, latest.longitude]}
+                        icon={photoIcon(latest.image_url, svcType)}
                       >
                         <Popup className="dk-popup">
-                          <GroupedPinPopup photos={group} onUpdated={() => load(true)} />
+                          <GroupedPinPopup
+                            profileGroups={profileGroups}
+                            lat={latest.latitude}
+                            lng={latest.longitude}
+                            onUpdated={() => load(true)}
+                          />
                         </Popup>
                       </Marker>
                     )
@@ -373,57 +443,327 @@ function ProfilePills({ profiles, photos, filterProfile, setFilterProfile }) {
   )
 }
 
-/* ── Grouped Pin Popup — multiple photos at same location ── */
-function GroupedPinPopup({ photos, onUpdated }) {
-  const [activeIdx, setActiveIdx] = useState(0)
-  const ph = photos[activeIdx]
+/* ── Grouped Pin Popup — profile tabs + per-profile photo carousel ── */
+function GroupedPinPopup({ profileGroups, lat, lng, onUpdated }) {
+  const [activeProfile, setActiveProfile] = useState(0)
+  const [addingPhoto,   setAddingPhoto]   = useState(false)
+
+  const pg = profileGroups[activeProfile]
+
+  // Reset photo index when switching profiles
+  const [photoIdx, setPhotoIdx] = useState(0)
+  useEffect(() => { setPhotoIdx(0); setAddingPhoto(false) }, [activeProfile])
+
+  const photos = pg.photos
+  const ph     = photos[photoIdx]
+
+  const prev = () => setPhotoIdx(i => (i - 1 + photos.length) % photos.length)
+  const next = () => setPhotoIdx(i => (i + 1) % photos.length)
+
+  // Touch swipe
+  const touchStartX = React.useRef(null)
+  const onTouchStart = e => { touchStartX.current = e.touches[0].clientX }
+  const onTouchEnd   = e => {
+    if (touchStartX.current === null) return
+    const dx = e.changedTouches[0].clientX - touchStartX.current
+    if (dx < -40) next()
+    else if (dx > 40) prev()
+    touchStartX.current = null
+  }
+
+  const totalPhotos = profileGroups.reduce((s, g) => s + g.photos.length, 0)
 
   return (
-    <div style={{ minWidth: 240, maxWidth: 280 }}>
-      {/* If multiple photos — show tab strip */}
-      {photos.length > 1 && (
-        <div style={{
-          display: 'flex', gap: 4, padding: '8px 10px 0',
-          background: '#0f0e1a', flexWrap: 'wrap',
-          borderRadius: '6px 6px 0 0',
-        }}>
-          {photos.map((p, i) => {
-            const color = p.service_type === 'rush' ? '#ef4444' : '#10b981'
-            return (
-              <button
-                key={p.id}
-                onClick={() => setActiveIdx(i)}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 5,
-                  padding: '4px 8px', borderRadius: 6, border: 'none',
-                  background: activeIdx === i ? color : 'rgba(255,255,255,0.08)',
-                  color: activeIdx === i ? '#fff' : 'rgba(255,255,255,0.5)',
-                  fontSize: 11, fontWeight: 700, cursor: 'pointer',
-                  fontFamily: 'Geist, sans-serif',
-                  transition: 'all 0.12s',
-                }}
-              >
-                <img
-                  src={p.image_url}
-                  style={{ width: 18, height: 18, borderRadius: '50%', objectFit: 'cover' }}
-                  onError={e => { e.target.style.display = 'none' }}
-                />
-                {p.profile_name?.split(' ')[0] || `#${p.id}`}
-              </button>
-            )
-          })}
-          <span style={{
-            marginLeft: 'auto', fontSize: 10,
-            color: 'rgba(255,255,255,0.3)',
-            alignSelf: 'center', fontFamily: 'Geist Mono, monospace',
+    <div style={{ minWidth: 280, maxWidth: 320 }}>
+
+      {/* ── Profile tabs ── */}
+      <div style={{
+        display: 'flex', background: '#0f0e1a',
+        borderRadius: '6px 6px 0 0', overflow: 'hidden',
+        borderBottom: '1px solid rgba(255,255,255,0.08)',
+      }}>
+        {profileGroups.map((g, i) => {
+          const color   = g.serviceType === 'rush' ? '#ef4444' : g.serviceType === 'airport' ? '#0ea5e9' : '#10b981'
+          const isActive = activeProfile === i
+          return (
+            <button
+              key={g.profileId}
+              onClick={() => setActiveProfile(i)}
+              style={{
+                flex: 1, padding: '8px 6px', border: 'none', cursor: 'pointer',
+                background: isActive ? 'rgba(255,255,255,0.08)' : 'transparent',
+                borderBottom: isActive ? `2px solid ${color}` : '2px solid transparent',
+                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3,
+                transition: 'all 0.15s',
+              }}
+            >
+              {/* Profile avatar */}
+              <div style={{
+                width: 28, height: 28, borderRadius: '50%',
+                background: `linear-gradient(135deg, ${color}cc, ${color}55)`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 12, fontWeight: 800, color: '#fff',
+                border: isActive ? `2px solid ${color}` : '2px solid transparent',
+              }}>
+                {g.profileName.charAt(0).toUpperCase()}
+              </div>
+              {/* Name + photo count badge */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                <span style={{
+                  fontSize: 10, fontWeight: 700,
+                  color: isActive ? '#fff' : 'rgba(255,255,255,0.4)',
+                  maxWidth: 60, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                  {g.profileName.split(' ')[0]}
+                </span>
+                <span style={{
+                  fontSize: 9, fontWeight: 800, padding: '1px 5px',
+                  borderRadius: 99, background: isActive ? color : 'rgba(255,255,255,0.1)',
+                  color: isActive ? '#fff' : 'rgba(255,255,255,0.4)',
+                }}>
+                  {g.photos.length}
+                </span>
+              </div>
+            </button>
+          )
+        })}
+
+        {/* Total count on far right if multiple profiles */}
+        {profileGroups.length > 1 && (
+          <div style={{
+            padding: '8px 8px', display: 'flex', alignItems: 'center',
+            borderLeft: '1px solid rgba(255,255,255,0.06)',
           }}>
-            {photos.length} at this pin
-          </span>
+            <span style={{
+              fontSize: 9, color: 'rgba(255,255,255,0.3)',
+              fontFamily: 'Geist Mono, monospace', whiteSpace: 'nowrap',
+            }}>
+              {totalPhotos} total
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* ── Photo carousel for active profile ── */}
+      <div
+        style={{ position: 'relative', background: '#0f0e1a', overflow: 'hidden' }}
+        onTouchStart={onTouchStart}
+        onTouchEnd={onTouchEnd}
+      >
+        <img
+          src={ph.image_url}
+          alt=""
+          style={{ display: 'block', width: '100%', height: 155, objectFit: 'cover', userSelect: 'none' }}
+          onError={e => { e.target.style.display = 'none' }}
+        />
+
+        {/* Carousel nav — only if this profile has multiple photos */}
+        {photos.length > 1 && (
+          <>
+            <button onClick={prev} style={{
+              position: 'absolute', left: 6, top: '50%', transform: 'translateY(-50%)',
+              background: 'rgba(0,0,0,0.6)', border: 'none', borderRadius: '50%',
+              width: 26, height: 26, color: '#fff', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14,
+            }}>‹</button>
+            <button onClick={next} style={{
+              position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)',
+              background: 'rgba(0,0,0,0.6)', border: 'none', borderRadius: '50%',
+              width: 26, height: 26, color: '#fff', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14,
+            }}>›</button>
+
+            {/* Dots */}
+            <div style={{
+              position: 'absolute', bottom: 6, left: 0, right: 0,
+              display: 'flex', justifyContent: 'center', gap: 4,
+            }}>
+              {photos.map((_, i) => (
+                <button key={i} onClick={() => setPhotoIdx(i)} style={{
+                  width: photoIdx === i ? 14 : 5, height: 5, borderRadius: 99,
+                  background: photoIdx === i ? '#fff' : 'rgba(255,255,255,0.4)',
+                  border: 'none', cursor: 'pointer', padding: 0, transition: 'all 0.2s',
+                }}/>
+              ))}
+            </div>
+
+            {/* Counter */}
+            <div style={{
+              position: 'absolute', top: 6, right: 6,
+              background: 'rgba(0,0,0,0.65)', color: '#fff',
+              fontSize: 10, fontWeight: 700, padding: '2px 6px',
+              borderRadius: 99, fontFamily: 'Geist Mono, monospace',
+            }}>
+              {photoIdx + 1}/{photos.length}
+            </div>
+          </>
+        )}
+
+        {/* + Add Photo button */}
+        <button
+          onClick={() => setAddingPhoto(v => !v)}
+          style={{
+            position: 'absolute', top: 6, left: 6,
+            background: addingPhoto ? 'rgba(239,68,68,0.85)' : 'rgba(99,102,241,0.85)',
+            border: 'none', borderRadius: 5, color: '#fff',
+            fontSize: 10, fontWeight: 700, padding: '3px 8px',
+            cursor: 'pointer', backdropFilter: 'blur(4px)',
+          }}
+        >
+          {addingPhoto ? '✕ Cancel' : '📷 + Add Photo'}
+        </button>
+      </div>
+
+      {/* ── Add photo form ── */}
+      {addingPhoto && (
+        <PinAddPhotoForm
+          lat={lat}
+          lng={lng}
+          profileId={pg.profileId}
+          onDone={() => { setAddingPhoto(false); onUpdated() }}
+        />
+      )}
+
+      {/* ── Photo detail for active photo ── */}
+      {!addingPhoto && <PinPopup ph={ph} onNoteUpdated={onUpdated} />}
+    </div>
+  )
+}
+
+/* ── Inline photo upload form inside pin popup ── */
+function PinAddPhotoForm({ lat, lng, profileId, onDone }) {
+  const [file,      setFile]      = useState(null)
+  const [preview,   setPreview]   = useState(null)
+  const [note,      setNote]      = useState('')
+  const [uploading, setUploading] = useState(false)
+  const [profiles,  setProfiles]  = useState([])
+  const [selProfile, setSelProfile] = useState(profileId)
+
+  useEffect(() => {
+    getProfiles().then(setProfiles)
+  }, [])
+
+  const pickFile = (f) => { setFile(f); setPreview(URL.createObjectURL(f)) }
+
+  const handleUpload = async () => {
+    if (!file) return
+    setUploading(true)
+    const fd = new FormData()
+    fd.append('file',       file)
+    fd.append('profile_id', selProfile)
+    fd.append('latitude',   lat)
+    fd.append('longitude',  lng)
+    fd.append('note',       note)
+    try {
+      await uploadPhoto(fd)
+      onDone()
+    } catch { alert('Upload failed') }
+    setUploading(false)
+  }
+
+  return (
+    <div style={{
+      background: '#1a1830', padding: '12px 14px',
+      borderTop: '1px solid rgba(255,255,255,0.08)',
+    }}>
+      <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', marginBottom: 8 }}>
+        📍 Adding photo at this pin location
+      </div>
+
+      {/* Profile selector */}
+      {profiles.length > 0 && (
+        <div style={{ marginBottom: 8 }}>
+          <label style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 4 }}>Profile</label>
+          <select
+            value={selProfile}
+            onChange={e => setSelProfile(e.target.value)}
+            style={{
+              width: '100%', padding: '6px 8px', fontSize: 12,
+              background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+              borderRadius: 6, color: '#e2e8f0', outline: 'none', marginBottom: 0,
+            }}
+          >
+            {profiles.map(p => (
+              <option key={p.id} value={p.id}>{p.name} ({p.service_type})</option>
+            ))}
+          </select>
         </div>
       )}
 
-      {/* Active photo detail */}
-      <PinPopup ph={ph} onNoteUpdated={onUpdated} />
+      {/* Photo picker */}
+      {!file ? (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+          <button
+            style={{
+              flex: 1, padding: '8px', background: 'rgba(99,102,241,0.2)',
+              border: '1px solid rgba(99,102,241,0.4)', borderRadius: 6,
+              color: '#a5b4fc', fontSize: 12, fontWeight: 700, cursor: 'pointer',
+            }}
+            onClick={() => {
+              const input = document.createElement('input')
+              input.type = 'file'; input.accept = 'image/*'; input.capture = 'environment'
+              input.onchange = e => { const f = e.target.files[0]; if(f) pickFile(f) }
+              input.click()
+            }}
+          >📷 Camera</button>
+          <button
+            style={{
+              flex: 1, padding: '8px', background: 'rgba(255,255,255,0.05)',
+              border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6,
+              color: 'rgba(255,255,255,0.6)', fontSize: 12, fontWeight: 700, cursor: 'pointer',
+            }}
+            onClick={() => {
+              const input = document.createElement('input')
+              input.type = 'file'; input.accept = 'image/*'
+              input.onchange = e => { const f = e.target.files[0]; if(f) pickFile(f) }
+              input.click()
+            }}
+          >🖼 Gallery</button>
+        </div>
+      ) : (
+        <div style={{ position: 'relative', marginBottom: 8 }}>
+          <img src={preview} alt="" style={{ width: '100%', height: 100, objectFit: 'cover', borderRadius: 6, display: 'block' }}/>
+          <button
+            onClick={() => { setFile(null); setPreview(null) }}
+            style={{
+              position: 'absolute', top: 4, right: 4,
+              background: 'rgba(0,0,0,0.7)', border: 'none', color: '#fff',
+              borderRadius: 4, padding: '2px 7px', fontSize: 11, cursor: 'pointer',
+            }}
+          >✕</button>
+        </div>
+      )}
+
+      {/* Note */}
+      <textarea
+        value={note}
+        onChange={e => setNote(e.target.value)}
+        placeholder="Add a note… (optional)"
+        rows={2}
+        style={{
+          width: '100%', padding: '6px 8px', fontSize: 12,
+          background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+          borderRadius: 6, color: '#e2e8f0', outline: 'none', resize: 'none',
+          fontFamily: 'inherit', marginBottom: 8, boxSizing: 'border-box',
+        }}
+      />
+
+      {/* Upload button */}
+      <button
+        onClick={handleUpload}
+        disabled={!file || uploading}
+        style={{
+          width: '100%', padding: '9px', background: file ? '#6366f1' : 'rgba(255,255,255,0.05)',
+          border: 'none', borderRadius: 6, color: file ? '#fff' : 'rgba(255,255,255,0.3)',
+          fontSize: 13, fontWeight: 700, cursor: file ? 'pointer' : 'not-allowed',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+        }}
+      >
+        {uploading
+          ? <><div className="dk-spinner" style={{width:12,height:12}}/>Uploading…</>
+          : '↑ Upload to this pin'
+        }
+      </button>
     </div>
   )
 }
@@ -433,7 +773,31 @@ function PinPopup({ ph, onNoteUpdated }) {
   const [note,    setNote]    = useState(ph.note || '')
   const [editing, setEditing] = useState(false)
   const [saving,  setSaving]  = useState(false)
+  const [address, setAddress] = useState('')
   const navigate = useNavigate()
+
+  // Reverse geocode on mount
+  useEffect(() => {
+    if (!ph.latitude || !ph.longitude) return
+    fetch(
+      `https://nominatim.openstreetmap.org/reverse?format=json&lat=${ph.latitude}&lon=${ph.longitude}&zoom=16`,
+      { headers: { 'Accept-Language': 'en' } }
+    )
+      .then(r => r.json())
+      .then(data => {
+        if (data?.address) {
+          const a = data.address
+          const parts = [
+            a.road || a.pedestrian,
+            a.suburb || a.city_district,
+            a.city || a.town || a.village,
+            a.state,
+          ].filter(Boolean)
+          setAddress(parts.join(', ') || data.display_name || '')
+        }
+      })
+      .catch(() => {})
+  }, [ph.latitude, ph.longitude])
 
   const profiles = ph.profiles && ph.profiles.length > 0
     ? ph.profiles
@@ -449,8 +813,6 @@ function PinPopup({ ph, onNoteUpdated }) {
 
   return (
     <>
-      <img src={ph.image_url} className="popup-img" alt=""
-        onError={e => { e.target.style.display = 'none' }} />
       <div className="popup-body">
         {/* All profiles at this pin — each clickable */}
         <div className="popup-profiles-label">Profiles at this pin</div>
@@ -477,8 +839,16 @@ function PinPopup({ ph, onNoteUpdated }) {
           ))}
         </div>
 
-        <div className="popup-row" style={{ marginTop: 8 }}>🕐 {new Date(ph.timestamp).toLocaleString()}</div>
-        <div className="popup-row">📍 {ph.latitude?.toFixed(4)}, {ph.longitude?.toFixed(4)}</div>
+        <div className="popup-row" style={{ marginTop: 8 }}>🕐 {toPST(ph.timestamp)}</div>
+        {address
+          ? <div className="popup-row">📍 {address}</div>
+          : <div className="popup-row" style={{fontFamily:'monospace', fontSize:10}}>
+              {ph.latitude?.toFixed(5)}, {ph.longitude?.toFixed(5)}
+            </div>
+        }
+        <div className="popup-row" style={{fontFamily:'monospace', fontSize:10, opacity:0.6}}>
+          {ph.latitude?.toFixed(5)}, {ph.longitude?.toFixed(5)}
+        </div>
         {ph.zip_code && <div className="popup-row">📮 {ph.zip_code}</div>}
 
         {/* Editable note */}
@@ -492,6 +862,7 @@ function PinPopup({ ph, onNoteUpdated }) {
                 className="popup-note-input"
                 placeholder="Add a note…"
                 autoFocus
+                onClick={e => e.stopPropagation()}
               />
               <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
                 <button className="popup-save-btn" onClick={saveNote} disabled={saving}>

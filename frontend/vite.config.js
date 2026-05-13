@@ -5,6 +5,8 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 3000,
+    // SPA fallback — all routes serve index.html so refresh stays on current page
+    historyApiFallback: true,
     proxy: {
       '/api': {
         target: 'http://localhost:8000',

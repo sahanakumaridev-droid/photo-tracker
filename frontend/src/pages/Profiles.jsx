@@ -1,22 +1,37 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useContext } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getProfilesLive, createProfile, deleteProfile } from '../api'
+import { getProfilesLive, getPhotosLive, createProfile, deleteProfile } from '../api'
+import { GeoContext } from '../context/GeoContext'
+
+// Haversine distance in miles
+function distanceMiles(lat1, lng1, lat2, lng2) {
+  const R = 3958.8
+  const dLat = (lat2 - lat1) * Math.PI / 180
+  const dLng = (lng2 - lng1) * Math.PI / 180
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
+}
+
+const SERVICE_TYPES = ['standard', 'rush', 'airport']
 
 export default function Profiles({ showToast }) {
   const [profiles, setProfiles] = useState([])
+  const [photos,   setPhotos]   = useState([])
   const [loading,  setLoading]  = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [name,     setName]     = useState('')
   const [svcType,  setSvcType]  = useState('standard')
   const [saving,   setSaving]   = useState(false)
   const [search,   setSearch]   = useState('')
+  const [sortBy,   setSortBy]   = useState('proximity') // 'proximity' | 'status'
   const navigate = useNavigate()
+  const geo = useContext(GeoContext)
 
   const load = async () => {
-    await getProfilesLive(data => {
-      setProfiles(data)
-      setLoading(false)
-    })
+    await Promise.all([
+      getProfilesLive(data => { setProfiles(data); setLoading(false) }),
+      getPhotosLive(data => setPhotos(data)),
+    ])
   }
 
   useEffect(() => { load() }, [])
@@ -47,12 +62,31 @@ export default function Profiles({ showToast }) {
 
   const rush     = profiles.filter(p => p.service_type === 'rush')
   const standard = profiles.filter(p => p.service_type === 'standard')
+  const airport  = profiles.filter(p => p.service_type === 'airport')
+
+  // Sort by proximity or status
+  const sortProfiles = (list) => {
+    if (sortBy === 'proximity' && geo.location) {
+      return [...list].sort((a, b) => {
+        const aPhoto = photos.find(ph => ph.profile_id === a.id && ph.latitude)
+        const bPhoto = photos.find(ph => ph.profile_id === b.id && ph.latitude)
+        if (!aPhoto && !bPhoto) return 0
+        if (!aPhoto) return 1
+        if (!bPhoto) return -1
+        const dA = distanceMiles(geo.location.lat, geo.location.lng, aPhoto.latitude, aPhoto.longitude)
+        const dB = distanceMiles(geo.location.lat, geo.location.lng, bPhoto.latitude, bPhoto.longitude)
+        return dA - dB
+      })
+    }
+    return list
+  }
 
   const filtered = profiles.filter(p =>
     !search || p.name.toLowerCase().includes(search.toLowerCase())
   )
-  const filteredRush     = filtered.filter(p => p.service_type === 'rush')
-  const filteredStandard = filtered.filter(p => p.service_type === 'standard')
+  const filteredRush     = sortProfiles(filtered.filter(p => p.service_type === 'rush'))
+  const filteredStandard = sortProfiles(filtered.filter(p => p.service_type === 'standard'))
+  const filteredAirport  = sortProfiles(filtered.filter(p => p.service_type === 'airport'))
 
   return (
     <div className="pr-shell">
@@ -74,6 +108,7 @@ export default function Profiles({ showToast }) {
               {profiles.length} total ·{' '}
               <span className="pr-sub-rush">{rush.length} rush</span> ·{' '}
               <span className="pr-sub-std">{standard.length} standard</span>
+              {airport.length > 0 && <> · <span style={{color:'#0ea5e9'}}>{airport.length} airport</span></>}
             </p>
           </div>
         </div>
@@ -87,6 +122,16 @@ export default function Profiles({ showToast }) {
             </svg>
             <input placeholder="Search profiles…" value={search} onChange={e => setSearch(e.target.value)}/>
           </div>
+
+          {/* Sort toggle */}
+          <button
+            className="btn btn-outline"
+            style={{ fontSize: 11, padding: '5px 10px' }}
+            onClick={() => setSortBy(v => v === 'proximity' ? 'status' : 'proximity')}
+            title={sortBy === 'proximity' ? 'Sorted by proximity' : 'Sorted by status'}
+          >
+            {sortBy === 'proximity' ? '📍 Proximity' : '⚡ Status'}
+          </button>
 
           <button
             className={`pr-new-btn ${showForm ? 'pr-new-btn-cancel' : ''}`}
@@ -125,6 +170,12 @@ export default function Profiles({ showToast }) {
           <div>
             <div className="pr-stat-pill-val">{standard.length}</div>
             <div className="pr-stat-pill-key">Standard</div>
+          </div>
+        </div>
+        <div className="pr-stat-pill" style={{borderColor:'rgba(14,165,233,0.3)'}}>
+          <div>
+            <div className="pr-stat-pill-val" style={{color:'#0ea5e9'}}>{airport.length}</div>
+            <div className="pr-stat-pill-key">✈️ Airport</div>
           </div>
         </div>
         <div className="pr-stat-pill">
@@ -167,6 +218,13 @@ export default function Profiles({ showToast }) {
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M7 2v11h3v9l7-12h-4l4-8z" fill="currentColor"/></svg>
                   Rush
                 </button>
+                <button
+                  type="button"
+                  className={`pr-type-btn ${svcType === 'airport' ? 'pr-type-airport' : ''}`}
+                  onClick={() => setSvcType('airport')}
+                >
+                  ✈️ Airport
+                </button>
               </div>
             </div>
             <button className="pr-submit-btn" type="submit" disabled={saving}>
@@ -205,6 +263,25 @@ export default function Profiles({ showToast }) {
           </div>
         ) : (
           <div className="pr-list-wrap">
+            {/* Airport section */}
+            {filteredAirport.length > 0 && (
+              <div className="pr-section">
+                <div className="pr-section-header">
+                  <span className="pr-section-dot" style={{background:'#0ea5e9', boxShadow:'0 0 8px rgba(14,165,233,0.6)'}}/>
+                  <span className="pr-section-label">✈️ Airport</span>
+                  <span className="pr-section-count">{filteredAirport.length}</span>
+                  <div className="pr-section-line"/>
+                </div>
+                <div className="pr-list">
+                  {filteredAirport.map(p => (
+                    <ProfileRow key={p.id} p={p}
+                      onClick={() => navigate(`/profiles/${p.id}`)}
+                      onDelete={handleDelete}/>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Rush section */}
             {filteredRush.length > 0 && (
               <div className="pr-section">
@@ -257,9 +334,17 @@ export default function Profiles({ showToast }) {
 
 function ProfileRow({ p, onClick, onDelete }) {
   const [confirming, setConfirming] = useState(false)
-  const isRush   = p.service_type === 'rush'
-  const color    = isRush ? '#f43f5e' : '#10b981'
-  const initials = p.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
+  const isRush    = p.service_type === 'rush'
+  const isAirport = p.service_type === 'airport'
+  const color     = isRush ? '#ef4444' : isAirport ? '#0ea5e9' : '#10b981'
+  const initials  = p.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
+
+  const badgeLabel = isRush ? 'ASAP' : isAirport ? '✈️ Airport' : 'Standard'
+  const badgeIcon  = isRush
+    ? <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M7 2v11h3v9l7-12h-4l4-8z" fill="currentColor"/></svg>
+    : isAirport
+    ? null
+    : <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="currentColor"/></svg>
 
   return (
     <div
@@ -296,13 +381,10 @@ function ProfileRow({ p, onClick, onDelete }) {
       <div className="pr-row-badge" style={{
         background: `${color}18`,
         border: `1px solid ${color}44`,
-        color: isRush ? '#fda4af' : '#6ee7b7',
+        color: isRush ? '#fda4af' : isAirport ? '#7dd3fc' : '#6ee7b7',
       }}>
-        {isRush
-          ? <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M7 2v11h3v9l7-12h-4l4-8z" fill="currentColor"/></svg>
-          : <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="currentColor"/></svg>
-        }
-        {isRush ? 'ASAP' : 'Standard'}
+        {badgeIcon}
+        {badgeLabel}
       </div>
 
       {/* Arrow */}

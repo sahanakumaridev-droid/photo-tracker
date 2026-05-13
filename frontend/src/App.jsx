@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Routes, Route, NavLink, useLocation } from 'react-router-dom'
 import Sidebar from './components/Sidebar'
 import Dashboard from './pages/Dashboard'
@@ -8,6 +8,7 @@ import ProfileDetail from './pages/ProfileDetail'
 import Login from './pages/Login'
 import Log from './pages/Log'
 import { ThemeProvider } from './context/ThemeContext'
+import { GeoContext } from './context/GeoContext'
 
 function MobileNav() {
   const location = useLocation()
@@ -34,9 +35,57 @@ function MobileNav() {
   )
 }
 
+// ── Geo context shared across the app ──────────────────────────────────────
+// (exported from context/GeoContext.js — re-exported here for backward compat)
+export { GeoContext }
+
 export default function App() {
-  const [user,  setUser]  = useState(null)
+  // ── Persist login across refresh using localStorage ──
+  const [user, setUser] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('geo_user')) } catch { return null }
+  })
   const [toast, setToast] = useState(null)
+
+  // ── Global geolocation — watch position so it stays fresh ──
+  const [geoLocation,  setGeoLocation]  = useState(null)
+  const [geoTimestamp, setGeoTimestamp] = useState(null)
+
+  useEffect(() => {
+    if (!user) return
+    if (!navigator.geolocation) return
+
+    // Grab immediately
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        setGeoLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude })
+        setGeoTimestamp(new Date().toISOString())
+      },
+      () => {}, // silent — no fallback coords
+      { timeout: 10000, enableHighAccuracy: true, maximumAge: 0 }
+    )
+
+    // Then watch for updates (keeps location fresh as user moves)
+    const watchId = navigator.geolocation.watchPosition(
+      pos => {
+        setGeoLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude })
+        setGeoTimestamp(new Date().toISOString())
+      },
+      () => {},
+      { enableHighAccuracy: true, maximumAge: 5000 }
+    )
+
+    return () => navigator.geolocation.clearWatch(watchId)
+  }, [user])
+
+  const handleLogin = (u) => {
+    localStorage.setItem('geo_user', JSON.stringify(u))
+    setUser(u)
+  }
+
+  const handleLogout = () => {
+    localStorage.removeItem('geo_user')
+    setUser(null)
+  }
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type })
@@ -45,31 +94,33 @@ export default function App() {
 
   if (!user) return (
     <ThemeProvider>
-      <Login onLogin={setUser} />
+      <Login onLogin={handleLogin} />
     </ThemeProvider>
   )
 
   return (
     <ThemeProvider>
-      <div className="app-shell">
-        <Sidebar user={user} onLogout={() => setUser(null)} />
-        <main className="app-main">
-          <Routes>
-            <Route path="/"             element={<Dashboard />} />
-            <Route path="/profiles"     element={<Profiles showToast={showToast} />} />
-            <Route path="/profiles/:id" element={<ProfileDetail />} />
-            <Route path="/upload"       element={<Upload showToast={showToast} />} />
-            <Route path="/log"          element={<Log />} />
-          </Routes>
-        </main>
-        <MobileNav />
+      <GeoContext.Provider value={{ location: geoLocation, timestamp: geoTimestamp }}>
+        <div className="app-shell">
+          <Sidebar user={user} onLogout={handleLogout} />
+          <main className="app-main">
+            <Routes>
+              <Route path="/"             element={<Dashboard />} />
+              <Route path="/profiles"     element={<Profiles showToast={showToast} />} />
+              <Route path="/profiles/:id" element={<ProfileDetail />} />
+              <Route path="/upload"       element={<Upload showToast={showToast} />} />
+              <Route path="/log"          element={<Log />} />
+            </Routes>
+          </main>
+          <MobileNav />
 
-        {toast && (
-          <div className={`toast ${toast.type}`}>
-            {toast.type === 'success' ? '✓' : '✕'} {toast.msg}
-          </div>
-        )}
-      </div>
+          {toast && (
+            <div className={`toast ${toast.type}`}>
+              {toast.type === 'success' ? '✓' : '✕'} {toast.msg}
+            </div>
+          )}
+        </div>
+      </GeoContext.Provider>
     </ThemeProvider>
   )
 }
