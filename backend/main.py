@@ -485,15 +485,3 @@ async def export_log_email(data: dict = Body(None), to: str = Form(None), record
         return {"ok": True, "message": f"Log exported to {to_email}", "count": len(records_list)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Email send failed: {str(e)}")
-        msg["From"]    = smtp_user
-        msg["To"]      = to_email
-        msg.attach(MIMEText(html, "html"))
-
-        with smtplib.SMTP(smtp_host, smtp_port) as server:
-            server.starttls()
-            server.login(smtp_user, smtp_pass)
-            server.sendmail(smtp_user, to_email, msg.as_string())
-
-        return {"ok": True, "message": f"Log exported to {to_email}", "count": len(records)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Email send failed: {str(e)}")
