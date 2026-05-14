@@ -39,6 +39,8 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
   static const Color _standardGreenSoft = Color(0xFFECFDF5);
   static const Color _airportBlue = Color(0xFF0284C7);
   static const Color _airportBlueSoft = Color(0xFFEFF6FF);
+  // Filter bar — noticeably darker than the page canvas
+  static const Color _filterBar = Color(0xFFD8DCE6);
 
   // ── State ─────────────────────────────────────────────────────────────────
   DateTime? _selectedDate;
@@ -48,6 +50,8 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
   final FocusNode _searchFocus = FocusNode();
   bool _searchFocused = false;
   late AnimationController _filterBadgeController;
+  final GlobalKey _shareButtonKey = GlobalKey();
+  final GlobalKey _downloadButtonKey = GlobalKey();
 
   @override
   void initState() {
@@ -67,6 +71,14 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     _searchFocus.dispose();
     _filterBadgeController.dispose();
     super.dispose();
+  }
+
+  // ── Share position helper ─────────────────────────────────────────────────
+  Rect? _buttonRect(GlobalKey key) {
+    final box = key.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null) return null;
+    final pos = box.localToGlobal(Offset.zero);
+    return pos & box.size;
   }
 
   // ── Computed ──────────────────────────────────────────────────────────────
@@ -248,7 +260,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
   }
 
   /// Download (save) CSV — shares as a file so iOS/Android can save it
-  Future<void> _downloadCsv(List<LogEntryModel> logs) async {
+  Future<void> _downloadCsv(List<LogEntryModel> logs, [Rect? origin]) async {
     if (logs.isEmpty) {
       _showSnack('No records to export — adjust your filters first.');
       return;
@@ -257,18 +269,33 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     try {
       final path = await _writeCsvFile(logs);
       final dateStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
-      await Share.shareXFiles(
+      // Fallback rect if button position unavailable (centre-top of screen)
+      final safeOrigin = origin ?? Rect.fromLTWH(
+        MediaQuery.of(context).size.width / 2 - 20,
+        80, 40, 40,
+      );
+      final result = await Share.shareXFiles(
         [XFile(path, mimeType: 'text/csv')],
         subject: 'GeoTag Log — $dateStr',
         text: 'GeoTagging activity log — ${logs.length} records',
+        sharePositionOrigin: safeOrigin,
       );
-    } catch (e) {
-      _showSnack('Export failed: $e');
+      if (result.status == ShareResultStatus.success) {
+        _showSnack('✓ CSV exported — ${logs.length} records');
+      } else if (result.status == ShareResultStatus.dismissed) {
+        // user dismissed — no snack needed
+      }
+    } on PlatformException catch (e) {
+      if (e.code != 'cancel') {
+        _showSnack('Export failed: ${e.message ?? 'Please try again.'}');
+      }
+    } catch (_) {
+      // dismissed or cancelled — no error shown
     }
   }
 
   /// Share as plain text (profile names, times, locations)
-  Future<void> _shareLog(List<LogEntryModel> logs) async {
+  Future<void> _shareLog(List<LogEntryModel> logs, [Rect? origin]) async {
     if (logs.isEmpty) {
       _showSnack('No records to share — adjust your filters first.');
       return;
@@ -290,12 +317,25 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
 
       final text = 'GeoTagging Log — $dateStr\n${logs.length} record${logs.length == 1 ? '' : 's'}\n─────────────────────\n\n$lines${logs.length > 50 ? '\n\n…and ${logs.length - 50} more records. Download CSV for full list.' : ''}';
 
-      await Share.share(
+      // Fallback rect if button position unavailable (centre-top of screen)
+      final safeOrigin = origin ?? Rect.fromLTWH(
+        MediaQuery.of(context).size.width / 2 - 20,
+        80, 40, 40,
+      );
+      final result = await Share.share(
         text,
         subject: 'GeoTag Log — $dateStr',
+        sharePositionOrigin: safeOrigin,
       );
-    } catch (e) {
-      _showSnack('Share failed: $e');
+      if (result.status == ShareResultStatus.success) {
+        _showSnack('✓ Shared successfully');
+      }
+    } on PlatformException catch (e) {
+      if (e.code != 'cancel') {
+        _showSnack('Share failed: ${e.message ?? 'Please try again.'}');
+      }
+    } catch (_) {
+      // dismissed or cancelled — no error shown
     }
   }
 
@@ -642,17 +682,19 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
               ),
               // ── Share button ──────────────────────────────────────
               _headerAction(
+                key: _shareButtonKey,
                 icon: Icons.ios_share_rounded,
                 tooltip: 'Share',
-                onTap: () => _shareLog(logs),
+                onTap: () => _shareLog(logs, _buttonRect(_shareButtonKey)),
               ),
               const SizedBox(width: 6),
               // ── Download CSV button ───────────────────────────────
               _headerAction(
+                key: _downloadButtonKey,
                 icon: Icons.download_rounded,
                 tooltip: 'Download CSV',
                 active: true,
-                onTap: () => _downloadCsv(logs),
+                onTap: () => _downloadCsv(logs, _buttonRect(_downloadButtonKey)),
               ),
               const SizedBox(width: 4),
             ],
@@ -662,23 +704,32 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     );
 
   Widget _headerAction({
-    required IconData icon,
-    required VoidCallback onTap, String? tooltip,
+    required IconData icon, required VoidCallback onTap, Key? key, String? tooltip,
     bool active = false,
   }) {
     final widget = GestureDetector(
       onTap: onTap,
       child: Container(
-        width: 40,
-        height: 40,
+        key: key,
+        width: 42,
+        height: 42,
         decoration: BoxDecoration(
-          color: active ? _accentSoft : _canvas,
-          borderRadius: BorderRadius.circular(12),
+          color: active ? _accent : _canvas,
+          borderRadius: BorderRadius.circular(13),
+          boxShadow: active
+              ? [
+                  BoxShadow(
+                    color: _accent.withValues(alpha: 0.30),
+                    blurRadius: 10,
+                    offset: const Offset(0, 3),
+                  ),
+                ]
+              : [],
         ),
         child: Icon(
           icon,
           size: 20,
-          color: active ? _accent : _inkMuted,
+          color: active ? Colors.white : _inkMuted,
         ),
       ),
     );
@@ -690,8 +741,8 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
 
   // ── Search ────────────────────────────────────────────────────────────────
   Widget _buildSearchRow() => Container(
-      color: _surface,
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+      color: _filterBar,
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         decoration: BoxDecoration(
@@ -809,7 +860,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                                 .animate(onPlay: (c) => c.repeat(reverse: true))
                                 .scaleXY(
                                   begin: 0.8,
-                                  end: 1.0,
+                                  end: 1,
                                   duration: 600.ms,
                                   curve: Curves.easeInOut,
                                 ),
@@ -831,8 +882,8 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
 
   // ── Active filter chips ───────────────────────────────────────────────────
   Widget _buildActiveFilters() => Container(
-      color: _surface,
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      color: _filterBar,
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
       child: Row(
         children: [
           Expanded(
@@ -1375,7 +1426,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
             Container(
               width: 80,
               height: 80,
-              decoration: BoxDecoration(
+              decoration: const BoxDecoration(
                 color: _rushRedSoft,
                 shape: BoxShape.circle,
               ),

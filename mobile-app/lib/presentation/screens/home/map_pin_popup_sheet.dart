@@ -470,8 +470,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                 right: 0,
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
-                  children: List.generate(photos.length, (i) {
-                    return AnimatedContainer(
+                  children: List.generate(photos.length, (i) => AnimatedContainer(
                       duration: const Duration(milliseconds: 200),
                       margin: const EdgeInsets.symmetric(horizontal: 2),
                       width: _photoIdx == i ? 14 : 5,
@@ -482,8 +481,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                             : Colors.white.withOpacity(0.4),
                         borderRadius: BorderRadius.circular(99),
                       ),
-                    );
-                  }),
+                    )),
                 ),
               ),
               // Counter badge

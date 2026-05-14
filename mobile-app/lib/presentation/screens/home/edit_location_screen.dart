@@ -141,11 +141,11 @@ class _EditLocationScreenState extends ConsumerState<EditLocationScreen> {
             width: double.infinity,
             color: _accentSoft,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Row(
+            child: const Row(
               children: [
-                const Icon(Icons.touch_app_rounded, size: 14, color: _accent),
-                const SizedBox(width: 6),
-                const Expanded(
+                Icon(Icons.touch_app_rounded, size: 14, color: _accent),
+                SizedBox(width: 6),
+                Expanded(
                   child: Text(
                     'Tap the map to move the pin, or edit coordinates below',
                     style: TextStyle(

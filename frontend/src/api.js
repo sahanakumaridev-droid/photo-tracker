@@ -64,7 +64,13 @@ export const getProfilesLive = (onData) => cached('profiles', () => api.get('/pr
 
 // Standard promise-based (used where caching not needed)
 export const getProfiles      = ()         => api.get('/profiles').then(r => r.data)
-export const createProfile    = (data)     => api.post('/profiles', data, { headers: { 'Content-Type': 'multipart/form-data' } }).then(r => r.data).then(r => { invalidate('profiles'); return r })
+export const createProfile    = (data)     => {
+  // Callers may pass FormData; backend expects JSON Body(...)
+  const payload = data instanceof FormData
+    ? { name: data.get('name'), service_type: data.get('service_type') }
+    : data
+  return api.post('/profiles', payload).then(r => r.data).then(r => { invalidate('profiles'); return r })
+}
 export const updateProfile    = (id, data) => api.patch(`/profiles/${id}`, data).then(r => r.data).then(r => { invalidate('profiles'); return r })
 export const deleteProfile    = (id)       => api.delete(`/profiles/${id}`).then(r => r.data).then(r => { invalidate('profiles', 'photos'); return r })
 

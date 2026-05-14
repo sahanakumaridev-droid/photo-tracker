@@ -62,7 +62,7 @@ export default function Log() {
 
   const [rows,      setRows]      = useState([])
   const [loading,   setLoading]   = useState(true)
-  const [date,      setDate]      = useState(today)
+  const [date,      setDate]      = useState('')
   const [dateTo,    setDateTo]    = useState('')
   const [zip,       setZip]       = useState('')
   const [status,    setStatus]    = useState('')
@@ -123,7 +123,7 @@ export default function Log() {
   }
 
   const resetFilters = () => {
-    setDate(today); setDateTo(''); setZip(''); setStatus(''); setSearch(''); setTimeFrom(''); setTimeTo('')
+    setDate(''); setDateTo(''); setZip(''); setStatus(''); setSearch(''); setTimeFrom(''); setTimeTo('')
   }
 
   // ── Export handlers ──────────────────────────────────────────────────────
@@ -136,19 +136,19 @@ export default function Log() {
     showToast(`✅ Downloaded ${rows.length} record${rows.length !== 1 ? 's' : ''} as CSV`)
   }
 
-  // 2. Share via Web Share API (mobile/desktop native share sheet) with clipboard fallback
+  // 2. Share — tries native share sheet, then clipboard, then CSV download
   const handleShare = async () => {
     if (rows.length === 0) { showToast('⚠️ No records to share — adjust your filters first.'); return }
 
-    const ts  = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' })
+    const ts    = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' })
     const title = `GeoTag Log — ${rows.length} records — ${ts}`
     const text  = buildEmailBody(rows)
+    const csv   = buildCSV(rows)
 
-    // Try native share sheet first (works great on mobile + macOS Sonoma+)
+    // Try native share sheet (works on mobile + macOS Safari/Sonoma+)
     if (navigator.share) {
       try {
-        // Try sharing as a file (CSV) if supported
-        const csvBlob = new Blob([buildCSV(rows)], { type: 'text/csv' })
+        const csvBlob = new Blob([csv], { type: 'text/csv' })
         const file    = new File([csvBlob], `geotag-log-${ts}.csv`, { type: 'text/csv' })
         if (navigator.canShare && navigator.canShare({ files: [file] })) {
           await navigator.share({ title, files: [file] })
@@ -158,19 +158,40 @@ export default function Log() {
         showToast('✅ Shared successfully')
         return
       } catch (err) {
-        if (err.name === 'AbortError') return // user cancelled — no toast
+        if (err.name === 'AbortError') return // user cancelled
         // fall through to clipboard
       }
     }
 
-    // Fallback: copy CSV text to clipboard
-    try {
-      await navigator.clipboard.writeText(buildCSV(rows))
-      showToast(`📋 ${rows.length} records copied to clipboard as CSV`)
-    } catch {
-      // Last resort: trigger download
-      handleDownloadCSV()
+    // Fallback 1: modern clipboard API (requires HTTPS / secure context)
+    if (navigator.clipboard && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(csv)
+        showToast(`📋 ${rows.length} records copied to clipboard as CSV`)
+        return
+      } catch {
+        // fall through
+      }
     }
+
+    // Fallback 2: textarea trick — works on http/localhost without permissions
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = csv
+      ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0'
+      document.body.appendChild(ta)
+      ta.focus()
+      ta.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      if (ok) {
+        showToast(`📋 ${rows.length} records copied to clipboard`)
+        return
+      }
+    } catch { /* fall through */ }
+
+    // Fallback 3: just download the CSV
+    handleDownloadCSV()
   }
 
   // 3. Open mailto: link — opens user's email app with log in body
@@ -187,15 +208,38 @@ export default function Log() {
     window.location.href = mailto
   }
 
-  // 4. Copy plain text to clipboard
+  // 4. Copy plain text to clipboard (with all fallbacks)
   const handleCopyClipboard = async () => {
     if (rows.length === 0) { showToast('⚠️ No records to export.'); return }
-    try {
-      await navigator.clipboard.writeText(buildEmailBody(rows))
-      showToast(`📋 ${rows.length} records copied to clipboard`)
-    } catch {
-      showToast('Clipboard not available — use CSV download instead.')
+
+    const text = buildEmailBody(rows)
+
+    // Modern clipboard API
+    if (navigator.clipboard && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(text)
+        showToast(`📋 ${rows.length} records copied to clipboard`)
+        return
+      } catch { /* fall through */ }
     }
+
+    // textarea fallback — works on http/localhost
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0'
+      document.body.appendChild(ta)
+      ta.focus()
+      ta.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      if (ok) {
+        showToast(`📋 ${rows.length} records copied to clipboard`)
+        return
+      }
+    } catch { /* fall through */ }
+
+    showToast('⚠️ Clipboard not available — use CSV download instead.')
   }
 
   return (

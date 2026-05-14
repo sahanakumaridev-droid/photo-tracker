@@ -176,33 +176,44 @@ export default function Dashboard() {
 
       {/* ── Top header bar ── */}
       <div className="dk-header">
-        <div className="dk-header-left">
-          <button className="dk-menu-btn">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-              <line x1="3" y1="6"  x2="21" y2="6"  stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              <line x1="3" y1="12" x2="21" y2="12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              <line x1="3" y1="18" x2="21" y2="18" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-            </svg>
-          </button>
-          <div>
-            <div className="dk-header-title">Map View</div>
-            <div className="dk-header-sub">Live photo tracking overview</div>
+        {/* Decorative background circles */}
+        <div className="dk-header-circle dk-header-circle-1" />
+        <div className="dk-header-circle dk-header-circle-2" />
+        <div className="dk-header-circle dk-header-circle-3" />
+
+        {/* Top row: logo + settings */}
+        <div className="dk-header-top">
+          <div className="dk-header-brand">
+            <div className="dk-header-logo">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="currentColor"/>
+              </svg>
+            </div>
+            <span className="dk-header-brand-name">GeoTag</span>
+          </div>
+          <div className="dk-header-top-right">
+            {/* View switcher */}
+            <div className="dk-view-switch">
+              {VIEWS.map(v => (
+                <button key={v.key} className={`dk-view-btn ${view === v.key ? 'dk-view-active' : ''}`}
+                  onClick={() => setView(v.key)} title={v.label}>
+                  {v.icon}
+                </button>
+              ))}
+            </div>
+            <div className="dk-header-user" onClick={() => setSettings(true)} title="Settings" style={{cursor:'pointer'}}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z" fill="currentColor"/></svg>
+            </div>
           </div>
         </div>
 
-        <div className="dk-header-right">
-          {/* View switcher */}
-          <div className="dk-view-switch">
-            {VIEWS.map(v => (
-              <button key={v.key} className={`dk-view-btn ${view === v.key ? 'dk-view-active' : ''}`}
-                onClick={() => setView(v.key)} title={v.label}>
-                {v.icon}
-              </button>
-            ))}
+        {/* Bottom row: greeting */}
+        <div className="dk-header-greeting">
+          <div className="dk-header-title">
+            Good morning, Admin 👋
           </div>
-
-          <div className="dk-header-user" onClick={() => setSettings(true)} title="Settings" style={{cursor:'pointer'}}>
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z" fill="currentColor"/></svg>
+          <div className="dk-header-sub">
+            {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
           </div>
         </div>
       </div>

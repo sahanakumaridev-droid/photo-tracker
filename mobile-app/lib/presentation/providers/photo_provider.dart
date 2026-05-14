@@ -72,6 +72,18 @@ final updatePhotoProfilesProvider =
   ref.invalidate(photosProvider);
 });
 
+/// Replace photo image
+final replacePhotoImageProvider =
+    FutureProvider.family<PhotoModel, (int, String)>((ref, args) async {
+  final repository = ref.watch(photoRepositoryProvider);
+  final photo = await repository.replacePhotoImage(
+    photoId: args.$1,
+    filePath: args.$2,
+  );
+  ref.invalidate(photosProvider);
+  return photo;
+});
+
 /// Delete photo
 final deletePhotoProvider = FutureProvider.family<void, int>((ref, photoId) async {
   final repository = ref.watch(photoRepositoryProvider);

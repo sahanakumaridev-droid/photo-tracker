@@ -392,9 +392,14 @@ def get_log(
         # filter by service status after loading (needs profile data)
         if status and d["service_type"] != status:
             continue
-        # filter by note text search
-        if search and not (ph.note and search.lower() in ph.note.lower()):
-            continue
+        # filter by note text search — also matches profile names and zip
+        if search:
+            s = search.lower()
+            note_match    = ph.note and s in ph.note.lower()
+            profile_match = any(s in p["name"].lower() for p in d["profiles"])
+            zip_match     = ph.zip_code and s in ph.zip_code.lower()
+            if not (note_match or profile_match or zip_match):
+                continue
         result.append(d)
 
     db.close()
