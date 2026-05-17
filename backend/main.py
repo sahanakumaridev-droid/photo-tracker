@@ -1,10 +1,10 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, ForeignKey, Table
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, ForeignKey, Table, event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from typing import Optional
 import os, shutil, uuid, smtplib, json
@@ -60,6 +60,7 @@ class Photo(Base):
     latitude  = Column(Float)
     longitude = Column(Float)
     zip_code  = Column(String, nullable=True)
+    address   = Column(Text,   nullable=True)   # human-readable address
     note      = Column(Text,   nullable=True)
     # legacy single profile_id kept for backward compat
     profile_id = Column(Integer, nullable=True)
@@ -87,6 +88,7 @@ def _photo_dict(ph):
         "latitude":     ph.latitude,
         "longitude":    ph.longitude,
         "zip_code":     ph.zip_code,
+        "address":      ph.address,
         "note":         ph.note,
         "profile_id":   primary["id"]   if primary else ph.profile_id,
         "profile_name": primary["name"] if primary else "Unknown",
@@ -162,6 +164,27 @@ def delete_profile(profile_id: int):
     if not profile:
         db.close()
         raise HTTPException(status_code=404, detail="Profile not found")
+
+    # Cascade: delete all photos that belong ONLY to this profile
+    # (photos linked to multiple profiles are unlinked, not deleted)
+    photos_to_delete = []
+    for photo in list(profile.photos):
+        if len(photo.profiles) == 1:
+            # Only linked to this profile — delete the photo file + record
+            photos_to_delete.append(photo)
+        else:
+            # Linked to other profiles too — just remove the association
+            photo.profiles = [p for p in photo.profiles if p.id != profile_id]
+
+    for photo in photos_to_delete:
+        filepath = photo.image_url.lstrip("/")
+        if os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+            except OSError:
+                pass
+        db.delete(photo)
+
     db.delete(profile)
     db.commit()
     db.close()
@@ -201,6 +224,7 @@ async def upload_photo(
     latitude:   float      = Form(...),
     longitude:  float      = Form(...),
     zip_code:   str        = Form(""),
+    address:    str        = Form(""),
     note:       str        = Form(""),
 ):
     # Validate coordinates
@@ -220,12 +244,15 @@ async def upload_photo(
         db.close()
         raise HTTPException(status_code=404, detail="Profile not found")
 
+    # Use device-provided timestamp if available (sent as ISO string in note field workaround)
+    # Timestamp is always set to current UTC time at upload
     photo = Photo(
         image_url  = f"/uploads/{filename}",
         timestamp  = datetime.utcnow(),
         latitude   = latitude,
         longitude  = longitude,
         zip_code   = zip_code.strip() or None,
+        address    = address.strip()  or None,
         note       = note.strip()     or None,
         profile_id = profile_id,
     )
@@ -322,6 +349,20 @@ async def update_photo_zip(photo_id: int, data: dict = Body(None), zip_code: str
     return {"ok": True}
 
 
+@app.patch("/photos/{photo_id}/address")
+async def update_photo_address(photo_id: int, data: dict = Body(...)):
+    db = SessionLocal()
+    photo = db.query(Photo).filter(Photo.id == photo_id).first()
+    if not photo:
+        db.close()
+        raise HTTPException(status_code=404, detail="Photo not found")
+    photo.address  = data.get("address",  photo.address)
+    photo.zip_code = data.get("zip_code", photo.zip_code)
+    db.commit()
+    db.close()
+    return {"ok": True}
+
+
 @app.patch("/photos/{photo_id}/profiles")
 async def update_photo_profiles(photo_id: int, data: dict = Body(None), profile_ids: str = Form(None)):
     """Add or replace profiles associated with a pin."""
@@ -364,15 +405,39 @@ def delete_photo(photo_id: int):
 
 @app.get("/log")
 def get_log(
-    date:     Optional[str] = None,
-    zip_code: Optional[str] = None,
-    status:   Optional[str] = None,
-    search:   Optional[str] = None,
+    date:       Optional[str] = None,
+    start_time: Optional[str] = None,   # ISO datetime or "YYYY-MM-DD HH:MM"
+    end_time:   Optional[str] = None,   # ISO datetime or "YYYY-MM-DD HH:MM"
+    zip_code:   Optional[str] = None,
+    status:     Optional[str] = None,
+    search:     Optional[str] = None,
 ):
     db = SessionLocal()
     query = db.query(Photo)
 
-    if date:
+    # ── Time range filtering ──────────────────────────────────────────────
+    if start_time or end_time:
+        # Explicit time range takes priority over date-only filter
+        def _parse_dt(s):
+            for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+                try:
+                    return datetime.strptime(s, fmt)
+                except ValueError:
+                    continue
+            return None
+
+        if start_time:
+            dt_start = _parse_dt(start_time)
+            if dt_start:
+                query = query.filter(Photo.timestamp >= dt_start)
+        if end_time:
+            dt_end = _parse_dt(end_time)
+            if dt_end:
+                # If only date provided (no time), extend to end of that day
+                if "T" not in end_time and " " not in end_time.strip():
+                    dt_end = dt_end.replace(hour=23, minute=59, second=59)
+                query = query.filter(Photo.timestamp <= dt_end)
+    elif date:
         try:
             d = datetime.strptime(date, "%Y-%m-%d")
             query = query.filter(
@@ -392,13 +457,14 @@ def get_log(
         # filter by service status after loading (needs profile data)
         if status and d["service_type"] != status:
             continue
-        # filter by note text search — also matches profile names and zip
+        # filter by note text search — also matches profile names, zip, and address
         if search:
             s = search.lower()
-            note_match    = ph.note and s in ph.note.lower()
+            note_match    = ph.note    and s in ph.note.lower()
+            address_match = ph.address and s in ph.address.lower()
             profile_match = any(s in p["name"].lower() for p in d["profiles"])
             zip_match     = ph.zip_code and s in ph.zip_code.lower()
-            if not (note_match or profile_match or zip_match):
+            if not (note_match or address_match or profile_match or zip_match):
                 continue
         result.append(d)
 
@@ -409,23 +475,22 @@ def get_log(
 # ─── EMAIL EXPORT ─────────────────────────────────────────────────────────────
 
 @app.post("/export/email")
-async def export_log_email(data: dict = Body(None), to: str = Form(None), records: str = Form(None)):
+async def export_log_email(request: Request):
     """
     Send a log export to an email address.
     Supports both JSON body (mobile) and Form data (web)
     """
-    # Support both formats
-    if data:
-        # JSON body from mobile
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        data = await request.json()
         to_email = data.get("to", "").strip()
         records_list = data.get("records", [])
     else:
-        # Form data from web
-        to_email = (to or "").strip()
-        # Parse records from form (would be JSON string)
+        form = await request.form()
+        to_email = (form.get("to") or "").strip()
         try:
-            records_list = json.loads(records) if records else []
-        except:
+            records_list = json.loads(form.get("records", "[]"))
+        except Exception:
             records_list = []
 
     if not to_email:
@@ -435,13 +500,23 @@ async def export_log_email(data: dict = Body(None), to: str = Form(None), record
     rows_html = ""
     for r in records_list:
         profiles = ", ".join(p["name"] for p in r.get("profiles", [])) or r.get("profile_name", "—")
+        lat = r.get('latitude', '')
+        lng = r.get('longitude', '')
+        coords = f"{lat:.4f}, {lng:.4f}" if isinstance(lat, (int, float)) and isinstance(lng, (int, float)) else "—"
+        address = r.get('address') or "—"
+        zip_val = r.get('zip_code') or "—"
+        # Format address inline with ZIP
+        if r.get('address') and r.get('zip_code') and r['zip_code'] not in r['address']:
+            address = f"{r['address']}, {r['zip_code']}"
+        elif r.get('address'):
+            address = r['address']
         rows_html += f"""
         <tr>
           <td>{r.get('timestamp','—')}</td>
           <td>{profiles}</td>
           <td>{r.get('service_type','—').upper()}</td>
-          <td>{r.get('zip_code','—')}</td>
-          <td>{r.get('latitude',''):.4f}, {r.get('longitude',''):.4f}</td>
+          <td>{address}</td>
+          <td>{coords}</td>
           <td>{r.get('note','—')}</td>
         </tr>"""
 
@@ -453,7 +528,7 @@ async def export_log_email(data: dict = Body(None), to: str = Form(None), record
       <thead style="background:#f1f5f9;">
         <tr>
           <th>Timestamp (PST)</th><th>Profile(s)</th><th>Status</th>
-          <th>Zip</th><th>Location</th><th>Note</th>
+          <th>Address</th><th>Coordinates</th><th>Note</th>
         </tr>
       </thead>
       <tbody>{rows_html}</tbody>
