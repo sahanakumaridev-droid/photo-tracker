@@ -659,11 +659,42 @@ function PinAddPhotoForm({ lat, lng, profileId, onDone }) {
   const handleUpload = async () => {
     if (!file) return
     setUploading(true)
+
+    // Reverse geocode the pin location
+    let address = ''
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1&extratags=1&_t=${Date.now()}`,
+        { headers: { 'Accept-Language': 'en' } }
+      )
+      const data = await res.json()
+      if (data?.address) {
+        const a = data.address
+        const seen = new Set()
+        const parts = []
+        const road = a.road || a.pedestrian || a.path
+        if (road) {
+          const street = a.house_number ? `${a.house_number} ${road}` : road
+          parts.push(street)
+          seen.add(street.toLowerCase())
+        }
+        const city = a.city || a.town || a.village || a.municipality
+        if (city && !seen.has(city.toLowerCase())) parts.push(city)
+        if (a.state_code || a.state) {
+          const st = a.state_code || a.state
+          if (!seen.has(st.toLowerCase())) parts.push(st)
+        }
+        if (a.postcode) parts.push(a.postcode)
+        address = parts.join(', ') || data.display_name || ''
+      }
+    } catch { /* non-critical */ }
+
     const fd = new FormData()
     fd.append('file',       file)
     fd.append('profile_id', selProfile)
     fd.append('latitude',   lat)
     fd.append('longitude',  lng)
+    if (address) fd.append('address', address)
     fd.append('note',       note)
     try {
       await uploadPhoto(fd)
@@ -704,19 +735,6 @@ function PinAddPhotoForm({ lat, lng, profileId, onDone }) {
       {/* Photo picker */}
       {!file ? (
         <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-          <button
-            style={{
-              flex: 1, padding: '8px', background: 'rgba(99,102,241,0.2)',
-              border: '1px solid rgba(99,102,241,0.4)', borderRadius: 6,
-              color: '#a5b4fc', fontSize: 12, fontWeight: 700, cursor: 'pointer',
-            }}
-            onClick={() => {
-              const input = document.createElement('input')
-              input.type = 'file'; input.accept = 'image/*'; input.capture = 'environment'
-              input.onchange = e => { const f = e.target.files[0]; if(f) pickFile(f) }
-              input.click()
-            }}
-          >📷 Camera</button>
           <button
             style={{
               flex: 1, padding: '8px', background: 'rgba(255,255,255,0.05)',
@@ -791,19 +809,31 @@ function PinPopup({ ph, onNoteUpdated }) {
   useEffect(() => {
     if (!ph.latitude || !ph.longitude) return
     fetch(
-      `https://nominatim.openstreetmap.org/reverse?format=json&lat=${ph.latitude}&lon=${ph.longitude}&zoom=16`,
+      `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${ph.latitude}&lon=${ph.longitude}&zoom=18&addressdetails=1&extratags=1&_t=${Date.now()}`,
       { headers: { 'Accept-Language': 'en' } }
     )
       .then(r => r.json())
       .then(data => {
         if (data?.address) {
           const a = data.address
-          const parts = [
-            a.road || a.pedestrian,
-            a.suburb || a.city_district,
-            a.city || a.town || a.village,
-            a.state,
-          ].filter(Boolean)
+          const seen = new Set()
+          const parts = []
+          const road = a.road || a.pedestrian || a.path
+          if (road) {
+            const street = a.house_number ? `${a.house_number} ${road}` : road
+            parts.push(street)
+            seen.add(street.toLowerCase())
+          }
+          const city = a.city || a.town || a.village || a.municipality
+          if (city && !seen.has(city.toLowerCase())) {
+            parts.push(city)
+            seen.add(city.toLowerCase())
+          }
+          if (a.state_code || a.state) {
+            const st = a.state_code || a.state
+            if (!seen.has(st.toLowerCase())) parts.push(st)
+          }
+          if (a.postcode) parts.push(a.postcode)
           setAddress(parts.join(', ') || data.display_name || '')
         }
       })
@@ -860,7 +890,6 @@ function PinPopup({ ph, onNoteUpdated }) {
         <div className="popup-row" style={{fontFamily:'monospace', fontSize:10, opacity:0.6}}>
           {ph.latitude?.toFixed(5)}, {ph.longitude?.toFixed(5)}
         </div>
-        {ph.zip_code && <div className="popup-row">📮 {ph.zip_code}</div>}
 
         {/* Editable note */}
         <div className="popup-note-section">

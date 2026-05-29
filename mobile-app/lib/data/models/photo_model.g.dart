@@ -7,20 +7,15 @@ part of 'photo_model.dart';
 // **************************************************************************
 
 PhotoModel _$PhotoModelFromJson(Map<String, dynamic> json) => PhotoModel(
-      id: json['id'] is int
-          ? json['id'] as int
-          : int.parse(json['id'].toString()),
+      id: (json['id'] as num).toInt(),
       imageUrl: json['image_url'] as String,
-      timestamp: json['timestamp'] as String?,
       latitude: (json['latitude'] as num).toDouble(),
       longitude: (json['longitude'] as num).toDouble(),
+      timestamp: json['timestamp'] as String?,
       zipCode: json['zip_code'] as String?,
+      address: json['address'] as String?,
       note: json['note'] as String?,
-      profileId: json['profile_id'] == null
-          ? null
-          : (json['profile_id'] is int
-              ? json['profile_id'] as int
-              : int.tryParse(json['profile_id'].toString())),
+      profileId: (json['profile_id'] as num?)?.toInt(),
       profileName: json['profile_name'] as String?,
       serviceType: json['service_type'] as String?,
       profiles: (json['profiles'] as List<dynamic>?)
@@ -36,6 +31,7 @@ Map<String, dynamic> _$PhotoModelToJson(PhotoModel instance) =>
       'latitude': instance.latitude,
       'longitude': instance.longitude,
       'zip_code': instance.zipCode,
+      'address': instance.address,
       'note': instance.note,
       'profile_id': instance.profileId,
       'profile_name': instance.profileName,

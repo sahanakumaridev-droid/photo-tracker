@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -12,6 +13,7 @@ import 'package:shimmer/shimmer.dart';
 
 import '../../../config/app_config.dart';
 import '../../../data/models/log_entry_model.dart';
+import '../../../data/models/profile_model.dart';
 import '../../providers/log_provider.dart';
 
 class LogScreenV2 extends ConsumerStatefulWidget {
@@ -44,14 +46,16 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
 
   // ── State ─────────────────────────────────────────────────────────────────
   DateTime? _selectedDate;
+  TimeOfDay? _startTime;
+  TimeOfDay? _endTime;
   String? _selectedServiceType;
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
   bool _searchFocused = false;
   late AnimationController _filterBadgeController;
-  final GlobalKey _shareButtonKey = GlobalKey();
-  final GlobalKey _downloadButtonKey = GlobalKey();
+  // Export profile selection
+  Set<int> _selectedExportProfileIds = {};
 
   @override
   void initState() {
@@ -73,24 +77,47 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     super.dispose();
   }
 
-  // ── Share position helper ─────────────────────────────────────────────────
-  Rect? _buttonRect(GlobalKey key) {
-    final box = key.currentContext?.findRenderObject() as RenderBox?;
-    if (box == null) return null;
-    final pos = box.localToGlobal(Offset.zero);
-    return pos & box.size;
+  // ── Computed ──────────────────────────────────────────────────────────────
+  /// Build ISO datetime strings for start/end when a date + time is selected.
+  String? get _startTimeStr {
+    if (_selectedDate == null) return null;
+    final t = _startTime;
+    if (t == null) return DateFormat('yyyy-MM-dd').format(_selectedDate!);
+    final dt = DateTime(
+      _selectedDate!.year, _selectedDate!.month, _selectedDate!.day,
+      t.hour, t.minute,
+    );
+    return DateFormat("yyyy-MM-dd'T'HH:mm").format(dt);
   }
 
-  // ── Computed ──────────────────────────────────────────────────────────────
-  ({String? date, String? zipCode, String? status, String? search})
-      get _filters => (
-            date: _selectedDate != null
-                ? DateFormat('yyyy-MM-dd').format(_selectedDate!)
-                : null,
-            zipCode: null,
-            status: _selectedServiceType,
-            search: _searchQuery.isEmpty ? null : _searchQuery,
-          );
+  String? get _endTimeStr {
+    if (_selectedDate == null) return null;
+    final t = _endTime;
+    if (t == null) return null; // backend defaults to end-of-day when only date given
+    final dt = DateTime(
+      _selectedDate!.year, _selectedDate!.month, _selectedDate!.day,
+      t.hour, t.minute,
+    );
+    return DateFormat("yyyy-MM-dd'T'HH:mm").format(dt);
+  }
+
+  ({
+    String? date,
+    String? startTime,
+    String? endTime,
+    String? zipCode,
+    String? status,
+    String? search,
+  }) get _filters => (
+        date: (_selectedDate != null && _startTime == null && _endTime == null)
+            ? DateFormat('yyyy-MM-dd').format(_selectedDate!)
+            : null,
+        startTime: _startTimeStr,
+        endTime: _endTimeStr,
+        zipCode: null,
+        status: _selectedServiceType,
+        search: _searchQuery.isEmpty ? null : _searchQuery,
+      );
 
   bool get _hasFilters =>
       _selectedDate != null || _selectedServiceType != null;
@@ -104,6 +131,8 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
 
   void _clearFilters() => setState(() {
         _selectedDate = null;
+        _startTime = null;
+        _endTime = null;
         _selectedServiceType = null;
       });
 
@@ -137,26 +166,28 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
   }
 
   String _locationLabel(LogEntryModel log) {
+    // Prefer full human-readable address (with ZIP inline)
+    if (log.address != null && log.address!.isNotEmpty) {
+      final addr = log.address!;
+      // Append ZIP inline if not already present
+      if (log.zipCode != null &&
+          log.zipCode!.isNotEmpty &&
+          !addr.contains(log.zipCode!)) {
+        return '$addr, ${log.zipCode}';
+      }
+      return addr;
+    }
+    // Fall back to ZIP
     if (log.zipCode != null && log.zipCode!.isNotEmpty) {
       return 'ZIP ${log.zipCode}';
     }
-    final lat = log.latitude;
-    final lng = log.longitude;
-    // Rough US city approximation from coordinates
-    if (lat >= 32.5 && lat <= 33.0 && lng >= -117.5 && lng <= -116.8) {
-      return 'San Diego, CA';
-    }
-    if (lat >= 33.7 && lat <= 34.3 && lng >= -118.7 && lng <= -117.9) {
-      return 'Los Angeles, CA';
-    }
-    if (lat >= 37.6 && lat <= 37.9 && lng >= -122.6 && lng <= -122.2) {
-      return 'San Francisco, CA';
-    }
-    if (lat >= 40.6 && lat <= 40.9 && lng >= -74.1 && lng <= -73.7) {
-      return 'New York, NY';
-    }
-    return '${lat.toStringAsFixed(3)}, ${lng.toStringAsFixed(3)}';
+    // Last resort: coordinates
+    return '${log.latitude.toStringAsFixed(4)}, ${log.longitude.toStringAsFixed(4)}';
   }
+
+  /// Always returns the raw lat/lng string for display alongside the address.
+  String _coordsLabel(LogEntryModel log) =>
+      '${log.latitude.toStringAsFixed(6)}, ${log.longitude.toStringAsFixed(6)}';
 
   // ── Section grouping ──────────────────────────────────────────────────────
   Map<String, List<LogEntryModel>> _groupByDate(List<LogEntryModel> logs) {
@@ -259,31 +290,44 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     return file.path;
   }
 
+  /// Returns a safe sharePositionOrigin rect for iOS share sheet popover.
+  /// Uses the widget's own RenderBox — falls back to screen centre-bottom.
+  Rect _shareOrigin() {
+    final box = context.findRenderObject();
+    if (box is RenderBox && box.hasSize) {
+      final offset = box.localToGlobal(Offset.zero);
+      final size   = box.size;
+      // Use centre of the screen horizontally, near the bottom where buttons are
+      return Rect.fromLTWH(
+        offset.dx + size.width / 2 - 20,
+        offset.dy + size.height - 80,
+        40,
+        40,
+      );
+    }
+    // Hard fallback: centre of screen
+    final screen = MediaQuery.of(context).size;
+    return Rect.fromLTWH(screen.width / 2 - 20, screen.height - 120, 40, 40);
+  }
+
   /// Download (save) CSV — shares as a file so iOS/Android can save it
-  Future<void> _downloadCsv(List<LogEntryModel> logs, [Rect? origin]) async {
+  Future<void> _downloadCsv(List<LogEntryModel> logs) async {
     if (logs.isEmpty) {
       _showSnack('No records to export — adjust your filters first.');
       return;
     }
     HapticFeedback.mediumImpact();
     try {
-      final path = await _writeCsvFile(logs);
-      final dateStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
-      // Fallback rect if button position unavailable (centre-top of screen)
-      final safeOrigin = origin ?? Rect.fromLTWH(
-        MediaQuery.of(context).size.width / 2 - 20,
-        80, 40, 40,
-      );
-      final result = await Share.shareXFiles(
+      final path      = await _writeCsvFile(logs);
+      final dateStr   = DateFormat('yyyy-MM-dd').format(DateTime.now());
+      final result    = await Share.shareXFiles(
         [XFile(path, mimeType: 'text/csv')],
         subject: 'GeoTag Log — $dateStr',
         text: 'GeoTagging activity log — ${logs.length} records',
-        sharePositionOrigin: safeOrigin,
+        sharePositionOrigin: _shareOrigin(),
       );
       if (result.status == ShareResultStatus.success) {
         _showSnack('✓ CSV exported — ${logs.length} records');
-      } else if (result.status == ShareResultStatus.dismissed) {
-        // user dismissed — no snack needed
       }
     } on PlatformException catch (e) {
       if (e.code != 'cancel') {
@@ -295,7 +339,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
   }
 
   /// Share as plain text (profile names, times, locations)
-  Future<void> _shareLog(List<LogEntryModel> logs, [Rect? origin]) async {
+  Future<void> _shareLog(List<LogEntryModel> logs) async {
     if (logs.isEmpty) {
       _showSnack('No records to share — adjust your filters first.');
       return;
@@ -303,29 +347,29 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     HapticFeedback.mediumImpact();
     try {
       final dateStr = DateFormat('MMM d, yyyy').format(DateTime.now());
-      final lines = logs.take(50).map((log) {
+      final lines   = logs.take(50).map((log) {
         final profiles = (log.profiles != null && log.profiles!.isNotEmpty)
             ? log.profiles!.map((p) => p.name).join(', ')
             : (log.profileName ?? 'Unknown');
         final time = log.timestamp != null
-            ? DateFormat('MMM d · h:mm a').format(DateTime.parse(log.timestamp!).toLocal())
+            ? DateFormat('MMM d · h:mm a')
+                .format(DateTime.parse(log.timestamp!).toLocal())
             : '';
         final loc = _locationLabel(log);
         final svc = _svcLabel(log.serviceType);
-        return '• $profiles  [$svc]\n  $time  ·  $loc${log.note != null && log.note!.isNotEmpty ? '\n  Note: ${log.note}' : ''}';
+        return '• $profiles  [$svc]\n  $time  ·  $loc'
+            '${log.note != null && log.note!.isNotEmpty ? '\n  Note: ${log.note}' : ''}';
       }).join('\n\n');
 
-      final text = 'GeoTagging Log — $dateStr\n${logs.length} record${logs.length == 1 ? '' : 's'}\n─────────────────────\n\n$lines${logs.length > 50 ? '\n\n…and ${logs.length - 50} more records. Download CSV for full list.' : ''}';
+      final text = 'GeoTagging Log — $dateStr\n'
+          '${logs.length} record${logs.length == 1 ? '' : 's'}\n'
+          '─────────────────────\n\n$lines'
+          '${logs.length > 50 ? '\n\n…and ${logs.length - 50} more records. Download CSV for full list.' : ''}';
 
-      // Fallback rect if button position unavailable (centre-top of screen)
-      final safeOrigin = origin ?? Rect.fromLTWH(
-        MediaQuery.of(context).size.width / 2 - 20,
-        80, 40, 40,
-      );
       final result = await Share.share(
         text,
         subject: 'GeoTag Log — $dateStr',
-        sharePositionOrigin: safeOrigin,
+        sharePositionOrigin: _shareOrigin(),
       );
       if (result.status == ShareResultStatus.success) {
         _showSnack('✓ Shared successfully');
@@ -352,10 +396,418 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     );
   }
 
+  // ── Email CSV ─────────────────────────────────────────────────────────────
+
+  /// Sends the CSV export via the backend SMTP endpoint.
+  /// Shows a dialog to enter recipient email, then POSTs to /api/export/email.
+  /// Falls back to share sheet if backend SMTP is not configured.
+  Future<void> _emailCsv(List<LogEntryModel> logs) async {
+    if (logs.isEmpty) {
+      _showSnack('No records to export — adjust your filters first.');
+      return;
+    }
+
+    // ── Ask for recipient email ───────────────────────────────────────
+    final emailCtrl = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        backgroundColor: _surface,
+        title: const Row(
+          children: [
+            Icon(Icons.email_rounded, color: _accent, size: 22),
+            SizedBox(width: 10),
+            Text(
+              'Send CSV by Email',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                color: _ink,
+                letterSpacing: -0.3,
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '${logs.length} record${logs.length == 1 ? '' : 's'} will be sent as a CSV.',
+              style: const TextStyle(fontSize: 13, color: _inkMuted),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: emailCtrl,
+              keyboardType: TextInputType.emailAddress,
+              autofocus: true,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => Navigator.pop(ctx, true),
+              decoration: InputDecoration(
+                labelText: 'Recipient email',
+                hintText: 'e.g. don@example.com',
+                prefixIcon: const Icon(Icons.alternate_email_rounded,
+                    size: 18, color: _inkSubtle),
+                filled: true,
+                fillColor: _canvas,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide.none,
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: _accent, width: 1.5),
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(color: _inkSubtle)),
+          ),
+          ElevatedButton.icon(
+            onPressed: () => Navigator.pop(ctx, true),
+            icon: const Icon(Icons.send_rounded, size: 16),
+            label: const Text('Send'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _accent,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    final toEmail = emailCtrl.text.trim();
+    if (toEmail.isEmpty || !toEmail.contains('@')) {
+      _showSnack('Please enter a valid email address.');
+      return;
+    }
+
+    HapticFeedback.mediumImpact();
+
+    // Show sending indicator
+    _showSnack('Sending email…');
+
+    try {
+      // ── Build records payload ─────────────────────────────────────
+      final records = logs.map((log) => {
+        'id': log.id,
+        'timestamp': log.timestamp,
+        'profile_name': log.profileName,
+        'profiles': (log.profiles ?? [])
+            .map((p) => {'id': p.id, 'name': p.name})
+            .toList(),
+        'service_type': log.serviceType,
+        'address': log.address,
+        'zip_code': log.zipCode,
+        'latitude': log.latitude,
+        'longitude': log.longitude,
+        'note': log.note,
+      }).toList();
+
+      // ── POST to backend /api/export/email ─────────────────────────
+      final dio = Dio(BaseOptions(
+        baseUrl: AppConfig.apiBaseUrl,
+        connectTimeout: const Duration(seconds: 15),
+        receiveTimeout: const Duration(seconds: 15),
+      ));
+
+      final response = await dio.post(
+        '/api/export/email',
+        data: {'to': toEmail, 'records': records},
+        options: Options(contentType: 'application/json'),
+      );
+
+      if (!mounted) return;
+
+      final data = response.data as Map<String, dynamic>;
+      final smtpConfigured = !(data['message']
+              ?.toString()
+              .contains('SMTP not configured') ??
+          false);
+
+      if (smtpConfigured) {
+        // ── SMTP sent successfully ────────────────────────────────
+        _showSnack('✓ Email sent to $toEmail — ${logs.length} records');
+      } else {
+        // ── SMTP not configured — fall back to share sheet ────────
+        if (!mounted) return;
+        final dateStr = DateFormat('MMM d, yyyy').format(DateTime.now());
+        final csvPath = await _writeCsvFile(logs);
+        await Share.shareXFiles(
+          [XFile(csvPath,
+              mimeType: 'text/csv',
+              name: 'geotag-log-${DateFormat('yyyy-MM-dd').format(DateTime.now())}.csv')],
+          subject: 'GeoTagging Log Export — $dateStr',
+          sharePositionOrigin: _shareOrigin(),
+        );
+        _showSnack('SMTP not set up — use share sheet to send via Mail');
+      }
+    } on DioException catch (e) {
+      if (!mounted) return;
+      final msg = e.response?.data?['detail']?.toString() ??
+          e.message ??
+          'Network error';
+      _showSnack('Export failed: $msg');
+    } on PlatformException catch (e) {
+      if (e.code != 'cancel' && mounted) {
+        _showSnack('Export failed: ${e.message ?? 'Please try again.'}');
+      }
+    } catch (e) {
+      if (mounted) _showSnack('Export failed: $e');
+    }
+  }
+
+  // ── Export sheet — multi-select profiles ─────────────────────────────────
+  void _openExportSheet(List<LogEntryModel> allLogs) {
+    HapticFeedback.lightImpact();
+
+    // Build unique profile list from current logs
+    final profilesInLogs = <int, String>{};
+    for (final log in allLogs) {
+      if (log.profileId != null) {
+        profilesInLogs[log.profileId!] = log.profileName ?? 'Unknown';
+      }
+      for (final p in log.profiles ?? <ProfileModel>[]) {
+        profilesInLogs[p.id] = p.name;
+      }
+    }
+
+    var tempSelected = Set<int>.from(_selectedExportProfileIds);
+    final allIds = profilesInLogs.keys.toSet();
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, ss) {
+          // Filter logs by selected profiles (empty = all)
+          final exportLogs = tempSelected.isEmpty
+              ? allLogs
+              : allLogs.where((log) {
+                  if (log.profileId != null &&
+                      tempSelected.contains(log.profileId)) {
+                    return true;
+                  }
+                  return log.profiles
+                          ?.any((p) => tempSelected.contains(p.id)) ??
+                      false;
+                }).toList();
+
+          return Container(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(ctx).size.height * 0.85,
+            ),
+            decoration: const BoxDecoration(
+              color: _surface,
+              borderRadius:
+                  BorderRadius.vertical(top: Radius.circular(28)),
+            ),
+            padding: EdgeInsets.only(
+              left: 24,
+              right: 24,
+              top: 12,
+              bottom: MediaQuery.of(ctx).viewInsets.bottom + 32,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // ── Drag handle ──────────────────────────────────────
+                Center(
+                  child: Container(
+                    width: 36, height: 4,
+                    decoration: BoxDecoration(
+                      color: _separator,
+                      borderRadius: BorderRadius.circular(2)),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                // ── Title + record count ─────────────────────────────
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Export Logs',
+                      style: TextStyle(fontSize: 22,
+                          fontWeight: FontWeight.w700, color: _ink,
+                          letterSpacing: -0.5)),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: _accentSoft,
+                        borderRadius: BorderRadius.circular(20)),
+                      child: Text(
+                        '${exportLogs.length} record${exportLogs.length == 1 ? '' : 's'}',
+                        style: const TextStyle(fontSize: 13,
+                            fontWeight: FontWeight.w600, color: _accent)),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Select which profiles to include in the export.\nLeave all unchecked to export everything.',
+                  style: TextStyle(fontSize: 13, color: _inkSubtle, height: 1.4),
+                ),
+                const SizedBox(height: 20),
+                // ── Select all / none header ─────────────────────────
+                Row(children: [
+                  const Text('FILTER BY PROFILE',
+                    style: TextStyle(fontSize: 11,
+                        fontWeight: FontWeight.w700, color: _inkSubtle,
+                        letterSpacing: 1.4)),
+                  const Spacer(),
+                  GestureDetector(
+                    onTap: () => ss(() => tempSelected =
+                        tempSelected.length == allIds.length
+                            ? {}
+                            : Set.from(allIds)),
+                    child: Text(
+                      tempSelected.length == allIds.length
+                          ? 'Deselect all'
+                          : 'Select all',
+                      style: const TextStyle(fontSize: 13,
+                          fontWeight: FontWeight.w600, color: _accent)),
+                  ),
+                ]),
+                const SizedBox(height: 10),
+                // ── Scrollable profile checkboxes ────────────────────
+                // Flexible so it shrinks when few profiles and
+                // scrolls when the list is long — no overflow.
+                Flexible(
+                  child: profilesInLogs.isEmpty
+                      ? const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 8),
+                          child: Text('No profiles in current results',
+                            style: TextStyle(color: _inkSubtle, fontSize: 13)),
+                        )
+                      : ListView(
+                          shrinkWrap: true,
+                          children: profilesInLogs.entries.map((e) =>
+                            CheckboxListTile(
+                              dense: true,
+                              contentPadding: EdgeInsets.zero,
+                              title: Text(e.value,
+                                style: const TextStyle(fontSize: 14,
+                                    fontWeight: FontWeight.w500, color: _ink)),
+                              subtitle: Text(
+                                '${allLogs.where((l) => l.profileId == e.key || (l.profiles?.any((p) => p.id == e.key) ?? false)).length} records',
+                                style: const TextStyle(fontSize: 12, color: _inkSubtle)),
+                              value: tempSelected.contains(e.key),
+                              activeColor: _accent,
+                              onChanged: (v) => ss(() {
+                                if (v == true) {
+                                  tempSelected = {...tempSelected, e.key};
+                                } else {
+                                  tempSelected = tempSelected
+                                      .where((id) => id != e.key)
+                                      .toSet();
+                                }
+                              }),
+                            ),
+                          ).toList(),
+                        ),
+                ),
+                const SizedBox(height: 16),
+                const Divider(color: _separator),
+                const SizedBox(height: 12),
+                // ── Export buttons — always pinned at bottom ─────────
+                // Row 1: Share + Download CSV
+                Row(children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: exportLogs.isEmpty
+                          ? null
+                          : () {
+                              setState(() => _selectedExportProfileIds =
+                                  tempSelected);
+                              Navigator.pop(ctx);
+                              _shareLog(exportLogs);
+                            },
+                      icon: const Icon(Icons.ios_share_rounded, size: 16),
+                      label: const Text('Share'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: _accent,
+                        side: const BorderSide(color: _accent),
+                        padding: const EdgeInsets.symmetric(vertical: 13),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: exportLogs.isEmpty
+                          ? null
+                          : () {
+                              setState(() => _selectedExportProfileIds =
+                                  tempSelected);
+                              Navigator.pop(ctx);
+                              _downloadCsv(exportLogs);
+                            },
+                      icon: const Icon(Icons.download_rounded, size: 16),
+                      label: const Text('Download CSV'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _accent,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(vertical: 13),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                  ),
+                ]),
+                const SizedBox(height: 10),
+                // Row 2: Email CSV (full width)
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: exportLogs.isEmpty
+                        ? null
+                        : () {
+                            setState(() => _selectedExportProfileIds =
+                                tempSelected);
+                            Navigator.pop(ctx);
+                            _emailCsv(exportLogs);
+                          },
+                    icon: const Icon(Icons.email_rounded, size: 16),
+                    label: const Text('Email CSV'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF059669),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   // ── Filter sheet ──────────────────────────────────────────────────────────
   void _openFilterSheet() {
     HapticFeedback.lightImpact();
     var tempDate = _selectedDate;
+    var tempStart = _startTime;
+    var tempEnd = _endTime;
     var tempType = _selectedServiceType;
 
     showModalBottomSheet<void>(
@@ -363,236 +815,289 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, ss) => Container(
-          decoration: const BoxDecoration(
-            color: _surface,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-          ),
-          padding: EdgeInsets.only(
-            left: 24,
-            right: 24,
-            top: 12,
-            bottom: MediaQuery.of(ctx).viewInsets.bottom + 40,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Center(
-                child: Container(
-                  width: 36,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: _separator,
-                    borderRadius: BorderRadius.circular(2),
+        builder: (ctx, ss) => SingleChildScrollView(
+          child: Container(
+            decoration: const BoxDecoration(
+              color: _surface,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+            ),
+            padding: EdgeInsets.only(
+              left: 24,
+              right: 24,
+              top: 12,
+              bottom: MediaQuery.of(ctx).viewInsets.bottom + 40,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 36, height: 4,
+                    decoration: BoxDecoration(
+                      color: _separator,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(height: 24),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text(
-                    'Filter',
-                    style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w700,
-                      color: _ink,
-                      letterSpacing: -0.5,
-                    ),
-                  ),
-                  GestureDetector(
-                    onTap: () => ss(() {
-                      tempDate = null;
-                      tempType = null;
-                    }),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        color: _canvas,
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: const Text(
-                        'Reset all',
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
-                          color: _inkMuted,
-                        ),
+                const SizedBox(height: 24),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Filter',
+                      style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700,
+                          color: _ink, letterSpacing: -0.5)),
+                    GestureDetector(
+                      onTap: () => ss(() {
+                        tempDate = null;
+                        tempStart = null;
+                        tempEnd = null;
+                        tempType = null;
+                      }),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: _canvas, borderRadius: BorderRadius.circular(20)),
+                        child: const Text('Reset all',
+                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500,
+                              color: _inkMuted)),
                       ),
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 28),
-              const Text(
-                'DATE',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  color: _inkSubtle,
-                  letterSpacing: 1.4,
+                  ],
                 ),
-              ),
-              const SizedBox(height: 10),
-              GestureDetector(
-                onTap: () async {
-                  final picked = await showDatePicker(
-                    context: ctx,
-                    initialDate: tempDate ?? DateTime.now(),
-                    firstDate: DateTime(2020),
-                    lastDate: DateTime.now(),
-                    builder: (c, child) => Theme(
-                      data: Theme.of(c).copyWith(
-                        colorScheme: const ColorScheme.light(
-                          primary: _accent,
-                        ),
+                const SizedBox(height: 28),
+                // ── DATE ──────────────────────────────────────────────────
+                const Text('DATE',
+                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
+                      color: _inkSubtle, letterSpacing: 1.4)),
+                const SizedBox(height: 10),
+                GestureDetector(
+                  onTap: () async {
+                    final picked = await showDatePicker(
+                      context: ctx,
+                      initialDate: tempDate ?? DateTime.now(),
+                      firstDate: DateTime(2020),
+                      lastDate: DateTime.now(),
+                      builder: (c, child) => Theme(
+                        data: Theme.of(c).copyWith(
+                          colorScheme: const ColorScheme.light(primary: _accent)),
+                        child: child!,
                       ),
-                      child: child!,
+                    );
+                    if (picked != null) ss(() => tempDate = picked);
+                  },
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
+                    decoration: BoxDecoration(
+                      color: tempDate != null ? _accentSoft : _canvas,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                        color: tempDate != null ? _accent : Colors.transparent,
+                        width: 1.5),
                     ),
-                  );
-                  if (picked != null) ss(() => tempDate = picked);
-                },
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 15,
-                  ),
-                  decoration: BoxDecoration(
-                    color: tempDate != null ? _accentSoft : _canvas,
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: tempDate != null ? _accent : Colors.transparent,
-                      width: 1.5,
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.calendar_today_rounded,
-                        size: 17,
-                        color: tempDate != null ? _accent : _inkSubtle,
-                      ),
+                    child: Row(children: [
+                      Icon(Icons.calendar_today_rounded, size: 17,
+                          color: tempDate != null ? _accent : _inkSubtle),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Text(
                           tempDate != null
-                              ? DateFormat('EEEE, MMMM d, yyyy')
-                                  .format(tempDate!)
+                              ? DateFormat('EEEE, MMMM d, yyyy').format(tempDate!)
                               : 'Pick a date',
                           style: TextStyle(
                             fontSize: 14,
-                            fontWeight: tempDate != null
-                                ? FontWeight.w600
-                                : FontWeight.w400,
-                            color: tempDate != null ? _ink : _inkSubtle,
-                          ),
+                            fontWeight: tempDate != null ? FontWeight.w600 : FontWeight.w400,
+                            color: tempDate != null ? _ink : _inkSubtle),
                         ),
                       ),
                       if (tempDate != null)
                         GestureDetector(
-                          onTap: () => ss(() => tempDate = null),
+                          onTap: () => ss(() {
+                            tempDate = null;
+                            tempStart = null;
+                            tempEnd = null;
+                          }),
                           child: Container(
-                            width: 20,
-                            height: 20,
+                            width: 20, height: 20,
                             decoration: BoxDecoration(
                               color: _inkSubtle.withValues(alpha: 0.15),
-                              shape: BoxShape.circle,
-                            ),
-                            child: const Icon(
-                              Icons.close_rounded,
-                              size: 12,
-                              color: _inkMuted,
-                            ),
+                              shape: BoxShape.circle),
+                            child: const Icon(Icons.close_rounded, size: 12, color: _inkMuted),
                           ),
                         ),
-                    ],
+                    ]),
                   ),
                 ),
-              ),
-              const SizedBox(height: 28),
-              const Text(
-                'SERVICE TYPE',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  color: _inkSubtle,
-                  letterSpacing: 1.4,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  _filterPill(
-                    label: 'All',
-                    selected: tempType == null,
-                    color: _accent,
-                    onTap: () => ss(() => tempType = null),
-                  ),
-                  const SizedBox(width: 8),
-                  _filterPill(
-                    label: 'Standard',
-                    selected: tempType == 'standard',
-                    color: _standardGreen,
-                    onTap: () => ss(() => tempType = 'standard'),
-                  ),
-                  const SizedBox(width: 8),
-                  _filterPill(
-                    label: 'Rush',
-                    selected: tempType == 'rush',
-                    color: _rushRed,
-                    onTap: () => ss(() => tempType = 'rush'),
-                  ),
-                  const SizedBox(width: 8),
-                  _filterPill(
-                    label: 'Airport',
-                    selected: tempType == 'airport',
-                    color: _airportBlue,
-                    onTap: () => ss(() => tempType = 'airport'),
+                // ── TIME RANGE (only shown when a date is selected) ────────
+                if (tempDate != null) ...[
+                  const SizedBox(height: 16),
+                  const Text('TIME RANGE (OPTIONAL)',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
+                        color: _inkSubtle, letterSpacing: 1.4)),
+                  const SizedBox(height: 10),
+                  Row(children: [
+                    Expanded(
+                      child: _timePicker(
+                        ctx: ctx,
+                        label: 'Start time',
+                        value: tempStart,
+                        icon: Icons.schedule_rounded,
+                        onPicked: (t) => ss(() => tempStart = t),
+                        onClear: () => ss(() => tempStart = null),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _timePicker(
+                        ctx: ctx,
+                        label: 'End time',
+                        value: tempEnd,
+                        icon: Icons.schedule_rounded,
+                        onPicked: (t) => ss(() => tempEnd = t),
+                        onClear: () => ss(() => tempEnd = null),
+                      ),
+                    ),
+                  ]),
+                  // Quick presets
+                  const SizedBox(height: 10),
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(children: [
+                      _presetChip('Morning (8–12)', () => ss(() {
+                        tempStart = const TimeOfDay(hour: 8, minute: 0);
+                        tempEnd   = const TimeOfDay(hour: 12, minute: 0);
+                      })),
+                      const SizedBox(width: 8),
+                      _presetChip('Afternoon (12–5)', () => ss(() {
+                        tempStart = const TimeOfDay(hour: 12, minute: 0);
+                        tempEnd   = const TimeOfDay(hour: 17, minute: 0);
+                      })),
+                      const SizedBox(width: 8),
+                      _presetChip('All day', () => ss(() {
+                        tempStart = null;
+                        tempEnd   = null;
+                      })),
+                    ]),
                   ),
                 ],
-              ),
-              const SizedBox(height: 36),
-              SizedBox(
-                width: double.infinity,
-                height: 54,
-                child: ElevatedButton(
-                  onPressed: () {
-                    HapticFeedback.mediumImpact();
-                    setState(() {
-                      _selectedDate = tempDate;
-                      _selectedServiceType = tempType;
-                    });
-                    Navigator.pop(ctx);
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _accent,
-                    foregroundColor: Colors.white,
-                    elevation: 0,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
+                const SizedBox(height: 28),
+                // ── SERVICE TYPE ──────────────────────────────────────────
+                const Text('SERVICE TYPE',
+                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
+                      color: _inkSubtle, letterSpacing: 1.4)),
+                const SizedBox(height: 12),
+                Row(children: [
+                  _filterPill(label: 'All', selected: tempType == null,
+                      color: _accent, onTap: () => ss(() => tempType = null)),
+                  const SizedBox(width: 8),
+                  _filterPill(label: 'Standard', selected: tempType == 'standard',
+                      color: _standardGreen, onTap: () => ss(() => tempType = 'standard')),
+                  const SizedBox(width: 8),
+                  _filterPill(label: 'Rush', selected: tempType == 'rush',
+                      color: _rushRed, onTap: () => ss(() => tempType = 'rush')),
+                  const SizedBox(width: 8),
+                  _filterPill(label: 'Airport', selected: tempType == 'airport',
+                      color: _airportBlue, onTap: () => ss(() => tempType = 'airport')),
+                ]),
+                const SizedBox(height: 36),
+                SizedBox(
+                  width: double.infinity,
+                  height: 54,
+                  child: ElevatedButton(
+                    onPressed: () {
+                      HapticFeedback.mediumImpact();
+                      setState(() {
+                        _selectedDate = tempDate;
+                        _startTime = tempStart;
+                        _endTime = tempEnd;
+                        _selectedServiceType = tempType;
+                      });
+                      Navigator.pop(ctx);
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _accent,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16)),
                     ),
-                  ),
-                  child: const Text(
-                    'Apply',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 0.2,
-                    ),
+                    child: const Text('Apply',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600,
+                          letterSpacing: 0.2)),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
     );
   }
+
+  Widget _timePicker({
+    required BuildContext ctx,
+    required String label,
+    required TimeOfDay? value,
+    required IconData icon,
+    required ValueChanged<TimeOfDay> onPicked,
+    required VoidCallback onClear,
+  }) =>
+      GestureDetector(
+        onTap: () async {
+          final picked = await showTimePicker(
+            context: ctx,
+            initialTime: value ?? TimeOfDay.now(),
+            builder: (c, child) => Theme(
+              data: Theme.of(c).copyWith(
+                colorScheme: const ColorScheme.light(primary: _accent)),
+              child: child!,
+            ),
+          );
+          if (picked != null) onPicked(picked);
+        },
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          decoration: BoxDecoration(
+            color: value != null ? _accentSoft : _canvas,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: value != null ? _accent : Colors.transparent, width: 1.5),
+          ),
+          child: Row(children: [
+            Icon(icon, size: 15, color: value != null ? _accent : _inkSubtle),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                value != null ? value.format(ctx) : label,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: value != null ? FontWeight.w600 : FontWeight.w400,
+                  color: value != null ? _accent : _inkSubtle),
+              ),
+            ),
+            if (value != null)
+              GestureDetector(
+                onTap: onClear,
+                child: const Icon(Icons.close_rounded, size: 14, color: _inkMuted),
+              ),
+          ]),
+        ),
+      );
+
+  Widget _presetChip(String label, VoidCallback onTap) => GestureDetector(
+        onTap: () { HapticFeedback.selectionClick(); onTap(); },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          decoration: BoxDecoration(
+            color: _canvas, borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: _separator)),
+          child: Text(label,
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500,
+                color: _inkMuted)),
+        ),
+      );
 
   Widget _filterPill({
     required String label,
@@ -680,21 +1185,38 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                   ],
                 ),
               ),
-              // ── Share button ──────────────────────────────────────
-              _headerAction(
-                key: _shareButtonKey,
-                icon: Icons.ios_share_rounded,
-                tooltip: 'Share',
-                onTap: () => _shareLog(logs, _buttonRect(_shareButtonKey)),
-              ),
-              const SizedBox(width: 6),
-              // ── Download CSV button ───────────────────────────────
-              _headerAction(
-                key: _downloadButtonKey,
-                icon: Icons.download_rounded,
-                tooltip: 'Download CSV',
-                active: true,
-                onTap: () => _downloadCsv(logs, _buttonRect(_downloadButtonKey)),
+              // ── Single "Export" button — opens profile-select sheet ──
+              GestureDetector(
+                onTap: () => _openExportSheet(logs),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: _accent,
+                    borderRadius: BorderRadius.circular(12),
+                    boxShadow: [
+                      BoxShadow(
+                        color: _accent.withValues(alpha: 0.30),
+                        blurRadius: 8,
+                        offset: const Offset(0, 3),
+                      ),
+                    ],
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.ios_share_rounded,
+                          size: 16, color: Colors.white),
+                      SizedBox(width: 6),
+                      Text('Export',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white,
+                          )),
+                    ],
+                  ),
+                ),
               ),
               const SizedBox(width: 4),
             ],
@@ -702,42 +1224,6 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
         ),
       ),
     );
-
-  Widget _headerAction({
-    required IconData icon, required VoidCallback onTap, Key? key, String? tooltip,
-    bool active = false,
-  }) {
-    final widget = GestureDetector(
-      onTap: onTap,
-      child: Container(
-        key: key,
-        width: 42,
-        height: 42,
-        decoration: BoxDecoration(
-          color: active ? _accent : _canvas,
-          borderRadius: BorderRadius.circular(13),
-          boxShadow: active
-              ? [
-                  BoxShadow(
-                    color: _accent.withValues(alpha: 0.30),
-                    blurRadius: 10,
-                    offset: const Offset(0, 3),
-                  ),
-                ]
-              : [],
-        ),
-        child: Icon(
-          icon,
-          size: 20,
-          color: active ? Colors.white : _inkMuted,
-        ),
-      ),
-    );
-    if (tooltip != null) {
-      return Tooltip(message: tooltip, child: widget);
-    }
-    return widget;
-  }
 
   // ── Search ────────────────────────────────────────────────────────────────
   Widget _buildSearchRow() => Container(
@@ -893,10 +1379,18 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                 children: [
                   if (_selectedDate != null)
                     _activeChip(
-                      label: DateFormat('MMM d').format(_selectedDate!),
+                      label: _startTime != null || _endTime != null
+                          ? '${DateFormat('MMM d').format(_selectedDate!)} '
+                            '${_startTime?.format(context) ?? '00:00'}'
+                            '–${_endTime?.format(context) ?? 'end'}'
+                          : DateFormat('MMM d').format(_selectedDate!),
                       icon: Icons.calendar_today_rounded,
                       color: _accent,
-                      onRemove: () => setState(() => _selectedDate = null),
+                      onRemove: () => setState(() {
+                        _selectedDate = null;
+                        _startTime = null;
+                        _endTime = null;
+                      }),
                     ),
                   if (_selectedServiceType != null) ...[
                     if (_selectedDate != null) const SizedBox(width: 6),
@@ -1095,7 +1589,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     final location = _locationLabel(log);
 
     return GestureDetector(
-      onTapDown: (_) => HapticFeedback.selectionClick(),
+      onTap: () => _showLogDetail(log),
       child: Container(
         margin: const EdgeInsets.only(bottom: 10),
         decoration: BoxDecoration(
@@ -1221,6 +1715,30 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                                     fontSize: 13,
                                     color: _inkMuted,
                                     fontWeight: FontWeight.w500,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 2),
+                          // Coordinates row — always shown below address
+                          Row(
+                            children: [
+                              const Icon(
+                                Icons.gps_fixed_rounded,
+                                size: 12,
+                                color: _inkSubtle,
+                              ),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  _coordsLabel(log),
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: _inkSubtle,
+                                    fontFamily: 'monospace',
                                   ),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
@@ -1487,4 +2005,152 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
         ),
       ),
     );
+
+  // ── Log detail modal ─────────────────────────────────────────────────────
+  void _showLogDetail(LogEntryModel log) {
+    HapticFeedback.selectionClick();
+    final imageUrl = '${AppConfig.apiBaseUrl}${log.imageUrl}';
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => DraggableScrollableSheet(
+        initialChildSize: 0.7,
+        minChildSize: 0.4,
+        maxChildSize: 0.92,
+        expand: false,
+        builder: (ctx, scrollCtrl) => Container(
+          decoration: const BoxDecoration(
+            color: _surface,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+          ),
+          child: SingleChildScrollView(
+            controller: scrollCtrl,
+            padding: const EdgeInsets.fromLTRB(24, 12, 24, 40),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 36, height: 4,
+                    decoration: BoxDecoration(
+                      color: _separator,
+                      borderRadius: BorderRadius.circular(2)),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Row(children: [
+                  Expanded(
+                    child: Text(
+                      log.profileName ?? 'Unknown',
+                      style: const TextStyle(fontSize: 22,
+                          fontWeight: FontWeight.w800, color: _ink,
+                          letterSpacing: -0.5)),
+                  ),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: _svcSoftColor(log.serviceType),
+                      borderRadius: BorderRadius.circular(10)),
+                    child: Text(_svcLabel(log.serviceType),
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
+                          color: _svcColor(log.serviceType))),
+                  ),
+                ]),
+                const SizedBox(height: 18),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(16),
+                  child: CachedNetworkImage(
+                    imageUrl: imageUrl,
+                    width: double.infinity,
+                    fit: BoxFit.cover,
+                    placeholder: (_, __) => Shimmer.fromColors(
+                      baseColor: const Color(0xFFE5E7EB),
+                      highlightColor: const Color(0xFFF9FAFB),
+                      child: Container(height: 220, color: _canvas)),
+                    errorWidget: (_, __, ___) => Container(
+                      height: 220, color: _canvas,
+                      child: const Center(
+                        child: Icon(Icons.image_outlined,
+                            size: 48, color: _inkSubtle)),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 22),
+                _detailRow(Icons.access_time_rounded, 'Timestamp',
+                    _fullTime(log.timestamp)),
+                const SizedBox(height: 14),
+                _detailRow(
+                    Icons.location_on_rounded, 'Location', _locationLabel(log)),
+                const SizedBox(height: 6),
+                _detailRow(Icons.gps_fixed_rounded, 'Coordinates',
+                    _coordsLabel(log),
+                    isMono: true),
+                const SizedBox(height: 14),
+                if (log.profiles != null && log.profiles!.isNotEmpty) ...[
+                  _detailRow(Icons.people_rounded, 'Profiles',
+                      log.profiles!.map((p) => p.name).join(', ')),
+                  const SizedBox(height: 14),
+                ],
+                if (log.note != null && log.note!.isNotEmpty) ...[
+                  const Divider(color: _separator),
+                  const SizedBox(height: 14),
+                  const Text('Note',
+                      style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: _inkMuted,
+                          letterSpacing: 0.3)),
+                  const SizedBox(height: 8),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: _surfaceElevated,
+                      borderRadius: BorderRadius.circular(14)),
+                    child: Text(log.note!,
+                        style: const TextStyle(
+                            fontSize: 15, color: _ink, height: 1.55)),
+                  ),
+                ],
+                const SizedBox(height: 20),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _detailRow(
+    IconData icon, String label, String value, {bool isMono = false}) =>
+      Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Container(
+          width: 32, height: 32,
+          decoration: BoxDecoration(
+              color: _accentSoft, borderRadius: BorderRadius.circular(8)),
+          child: Icon(icon, size: 15, color: _accent)),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label,
+                    style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: _inkSubtle,
+                        letterSpacing: 0.5)),
+                const SizedBox(height: 2),
+                Text(value,
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                        color: _ink,
+                        fontFamily: isMono ? 'monospace' : null)),
+              ]),
+        ),
+      ]);
 }

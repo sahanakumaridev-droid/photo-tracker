@@ -241,7 +241,7 @@ class _EditLocationScreenState extends ConsumerState<EditLocationScreen> {
                     size: 20,
                   ),
                   color: _inkMuted,
-                  onPressed: () => context.pop(),
+                  onPressed: context.pop,
                 ),
                 const Expanded(
                   child: Column(
@@ -334,7 +334,7 @@ class _EditLocationScreenState extends ConsumerState<EditLocationScreen> {
               children: [
                 Expanded(
                   child: OutlinedButton(
-                    onPressed: () => context.pop(),
+                    onPressed: context.pop,
                     style: OutlinedButton.styleFrom(
                       foregroundColor: _inkMuted,
                       side: const BorderSide(color: _separator),

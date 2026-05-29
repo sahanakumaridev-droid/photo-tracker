@@ -21,11 +21,42 @@ export default function MapUploadModal({ lat, lng, onClose, onUploaded }) {
   const handleUpload = async () => {
     if (!file || !selected) return
     setUploading(true)
+
+    // Reverse geocode the pin location
+    let address = ''
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1&extratags=1&_t=${Date.now()}`,
+        { headers: { 'Accept-Language': 'en' } }
+      )
+      const data = await res.json()
+      if (data?.address) {
+        const a = data.address
+        const seen = new Set()
+        const parts = []
+        const road = a.road || a.pedestrian || a.path
+        if (road) {
+          const street = a.house_number ? `${a.house_number} ${road}` : road
+          parts.push(street)
+          seen.add(street.toLowerCase())
+        }
+        const city = a.city || a.town || a.village || a.municipality
+        if (city && !seen.has(city.toLowerCase())) parts.push(city)
+        if (a.state_code || a.state) {
+          const st = a.state_code || a.state
+          if (!seen.has(st.toLowerCase())) parts.push(st)
+        }
+        if (a.postcode) parts.push(a.postcode)
+        address = parts.join(', ') || data.display_name || ''
+      }
+    } catch { /* non-critical */ }
+
     const fd = new FormData()
     fd.append('file', file)
     fd.append('profile_id', selected.id)
     fd.append('latitude',   lat)
     fd.append('longitude',  lng)
+    if (address) fd.append('address', address)
     try {
       await uploadPhoto(fd)
       onUploaded()

@@ -12,6 +12,7 @@ class PhotoModel {
     required this.imageUrl,
     required this.latitude, required this.longitude, this.timestamp,
     this.zipCode,
+    this.address,
     this.note,
     this.profileId,
     this.profileName,
@@ -35,6 +36,7 @@ class PhotoModel {
   final double longitude;
   @JsonKey(name: 'zip_code')
   final String? zipCode;
+  final String? address;
   final String? note;
   @JsonKey(name: 'profile_id')
   final int? profileId;
@@ -53,6 +55,7 @@ class PhotoModel {
     double? latitude,
     double? longitude,
     String? zipCode,
+    String? address,
     String? note,
     int? profileId,
     String? profileName,
@@ -66,6 +69,7 @@ class PhotoModel {
         latitude: latitude ?? this.latitude,
         longitude: longitude ?? this.longitude,
         zipCode: zipCode ?? this.zipCode,
+        address: address ?? this.address,
         note: note ?? this.note,
         profileId: profileId ?? this.profileId,
         profileName: profileName ?? this.profileName,

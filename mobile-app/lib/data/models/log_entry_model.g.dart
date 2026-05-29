@@ -8,14 +8,15 @@ part of 'log_entry_model.dart';
 
 LogEntryModel _$LogEntryModelFromJson(Map<String, dynamic> json) =>
     LogEntryModel(
-      id: json['id'] as int,
+      id: (json['id'] as num).toInt(),
       imageUrl: json['image_url'] as String,
-      timestamp: json['timestamp'] as String?,
       latitude: (json['latitude'] as num).toDouble(),
       longitude: (json['longitude'] as num).toDouble(),
+      timestamp: json['timestamp'] as String?,
       zipCode: json['zip_code'] as String?,
+      address: json['address'] as String?,
       note: json['note'] as String?,
-      profileId: json['profile_id'] as int?,
+      profileId: (json['profile_id'] as num?)?.toInt(),
       profileName: json['profile_name'] as String?,
       serviceType: json['service_type'] as String?,
       profiles: (json['profiles'] as List<dynamic>?)
@@ -31,6 +32,7 @@ Map<String, dynamic> _$LogEntryModelToJson(LogEntryModel instance) =>
       'latitude': instance.latitude,
       'longitude': instance.longitude,
       'zip_code': instance.zipCode,
+      'address': instance.address,
       'note': instance.note,
       'profile_id': instance.profileId,
       'profile_name': instance.profileName,

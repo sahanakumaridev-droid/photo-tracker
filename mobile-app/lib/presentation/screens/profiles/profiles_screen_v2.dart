@@ -2,7 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/utils/location_service.dart';
 import '../../../data/models/profile_model.dart';
+import '../../providers/location_provider.dart';
+import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
 
 class ProfilesScreenV2 extends ConsumerStatefulWidget {
@@ -73,6 +76,51 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
                         p.name.toLowerCase().contains(_searchQuery) ||
                         p.serviceType.toLowerCase().contains(_searchQuery))
                     .toList();
+
+                // Sort by distance from current user location
+                final locationAsync = ref.watch(currentLocationProvider);
+                final userPos = locationAsync.valueOrNull;
+                final photosAsync = ref.watch(photosProvider);
+                final photos = photosAsync.valueOrNull ?? [];
+
+                if (userPos != null) {
+                  filtered.sort((a, b) {
+                    // Find the most recent photo for each profile to get its location
+                    final aPhotos = photos
+                        .where((ph) =>
+                            ph.profileId == a.id ||
+                            (ph.profiles?.any((pr) => pr.id == a.id) ?? false))
+                        .toList();
+                    final bPhotos = photos
+                        .where((ph) =>
+                            ph.profileId == b.id ||
+                            (ph.profiles?.any((pr) => pr.id == b.id) ?? false))
+                        .toList();
+
+                    if (aPhotos.isEmpty && bPhotos.isEmpty) return 0;
+                    if (aPhotos.isEmpty) return 1;
+                    if (bPhotos.isEmpty) return -1;
+
+                    final aLatest = aPhotos.reduce((x, y) =>
+                        (x.timestamp ?? '').compareTo(y.timestamp ?? '') > 0
+                            ? x
+                            : y);
+                    final bLatest = bPhotos.reduce((x, y) =>
+                        (x.timestamp ?? '').compareTo(y.timestamp ?? '') > 0
+                            ? x
+                            : y);
+
+                    final aDist = LocationService.calculateDistance(
+                      userPos.latitude, userPos.longitude,
+                      aLatest.latitude, aLatest.longitude,
+                    );
+                    final bDist = LocationService.calculateDistance(
+                      userPos.latitude, userPos.longitude,
+                      bLatest.latitude, bLatest.longitude,
+                    );
+                    return aDist.compareTo(bDist);
+                  });
+                }
 
                 if (filtered.isEmpty) {
                   return Center(
@@ -293,6 +341,9 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
                   ),
                 ).future);
 
+                // Refresh profiles list so note change is visible immediately
+                ref.invalidate(profilesProvider);
+
                 if (context.mounted) {
                   Navigator.pop(context);
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -302,7 +353,7 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
               } catch (e) {
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Error: $e')),
+                    SnackBar(content: Text('Failed to save: ${e.toString().replaceAll('Exception: ', '')}')),
                   );
                 }
               }

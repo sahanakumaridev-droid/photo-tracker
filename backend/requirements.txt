@@ -4,3 +4,5 @@ python-multipart==0.0.9
 sqlalchemy==2.0.30
 aiofiles==23.2.1
 pillow==10.3.0
+python-dotenv==1.0.1
+sendgrid==6.11.0

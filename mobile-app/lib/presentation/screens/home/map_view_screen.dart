@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../../../core/utils/location_service.dart';
 import '../../../data/models/photo_model.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/photo_provider.dart';
@@ -53,11 +55,31 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
   late final MapController _mapController;
   String _selectedProfile = 'all';
   final _searchCtrl = TextEditingController();
+  Position? _userPosition;
+  bool _fetchingLocation = false;
 
   @override
   void initState() {
     super.initState();
     _mapController = MapController();
+    _fetchUserLocation();
+  }
+
+  Future<void> _fetchUserLocation() async {
+    if (_fetchingLocation) return;
+    setState(() => _fetchingLocation = true);
+    try {
+      final pos = await LocationService.getCurrentLocation();
+      if (pos != null && mounted) {
+        setState(() => _userPosition = pos);
+        // Centre map on user when first loaded
+        _mapController.move(
+          LatLng(pos.latitude, pos.longitude), 14,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _fetchingLocation = false);
+    }
   }
 
   @override
@@ -70,6 +92,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
   void _refresh() {
     ref.invalidate(photosProvider);
     ref.invalidate(profilesProvider);
+    _fetchUserLocation();
   }
 
   void _fitAll(List<PhotoModel> photos) {
@@ -133,9 +156,11 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
             selectedProfile: _selectedProfile,
             searchCtrl: _searchCtrl,
             mapController: _mapController,
+            userPosition: _userPosition,
             onProfileChanged: (v) => setState(() => _selectedProfile = v),
             onFitAll: _fitAll,
             onRefresh: _refresh,
+            onMyLocation: _fetchUserLocation,
           ),
         ),
       ),
@@ -154,6 +179,8 @@ class _MapBody extends ConsumerStatefulWidget {
     required this.onProfileChanged,
     required this.onFitAll,
     required this.onRefresh,
+    required this.onMyLocation,
+    this.userPosition,
   });
 
   final List<PhotoModel>    photos;
@@ -164,6 +191,8 @@ class _MapBody extends ConsumerStatefulWidget {
   final ValueChanged<String> onProfileChanged;
   final ValueChanged<List<PhotoModel>> onFitAll;
   final VoidCallback        onRefresh;
+  final VoidCallback        onMyLocation;
+  final Position?           userPosition;
 
   @override
   ConsumerState<_MapBody> createState() => _MapBodyState();
@@ -253,6 +282,23 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                 );
               }).toList(),
             ),
+            // ── Live user location marker ─────────────────────────────
+            if (widget.userPosition != null)
+              MarkerLayer(
+                markers: [
+                  Marker(
+                    point: LatLng(
+                      widget.userPosition!.latitude,
+                      widget.userPosition!.longitude,
+                    ),
+                    width: 56,
+                    height: 56,
+                    child: _UserLocationMarker(
+                      accuracy: widget.userPosition!.accuracy,
+                    ),
+                  ),
+                ],
+              ),
           ],
         ),
 
@@ -313,6 +359,47 @@ class _MapBodyState extends ConsumerState<_MapBody> {
               onViewList: () => context.push('/log'),
             ),
           ),
+
+        // ── My Location FAB ───────────────────────────────────────────────
+        Positioned(
+          bottom: geotagged.isNotEmpty ? 140 : 24,
+          right: 16,
+          child: GestureDetector(
+            onTap: () {
+              HapticFeedback.lightImpact();
+              widget.onMyLocation();
+              if (widget.userPosition != null) {
+                widget.mapController.move(
+                  LatLng(widget.userPosition!.latitude,
+                      widget.userPosition!.longitude),
+                  15,
+                );
+              }
+            },
+            child: Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: _kSurface,
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.15),
+                    blurRadius: 8,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              child: Icon(
+                widget.userPosition != null
+                    ? Icons.my_location_rounded
+                    : Icons.location_searching_rounded,
+                size: 22,
+                color: widget.userPosition != null ? _kAccent : _kSubtle,
+              ),
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -658,6 +745,75 @@ class _BottomCard extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      );
+}
+
+// ── User location marker ──────────────────────────────────────────────────────
+class _UserLocationMarker extends StatefulWidget {
+  const _UserLocationMarker({required this.accuracy});
+  final double accuracy;
+
+  @override
+  State<_UserLocationMarker> createState() => _UserLocationMarkerState();
+}
+
+class _UserLocationMarkerState extends State<_UserLocationMarker>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _pulse;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+        animation: _pulse,
+        builder: (_, __) => Stack(
+          alignment: Alignment.center,
+          children: [
+            // Accuracy ring
+            Container(
+              width: 48 + _pulse.value * 8,
+              height: 48 + _pulse.value * 8,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: _kAccent.withValues(alpha: 0.12 - _pulse.value * 0.08),
+                border: Border.all(
+                  color: _kAccent.withValues(alpha: 0.3),
+                  width: 1,
+                ),
+              ),
+            ),
+            // Blue dot
+            Container(
+              width: 18,
+              height: 18,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: _kAccent,
+                border: Border.all(color: Colors.white, width: 2.5),
+                boxShadow: [
+                  BoxShadow(
+                    color: _kAccent.withValues(alpha: 0.4),
+                    blurRadius: 6,
+                    spreadRadius: 1,
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       );
 }

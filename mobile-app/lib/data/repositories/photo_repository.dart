@@ -29,6 +29,7 @@ class PhotoRepository {
     required double latitude,
     required double longitude,
     String? zipCode,
+    String? address,
     String? note,
   }) async {
     try {
@@ -38,6 +39,7 @@ class PhotoRepository {
         'latitude': latitude,
         'longitude': longitude,
         if (zipCode != null && zipCode.isNotEmpty) 'zip_code': zipCode,
+        if (address != null && address.isNotEmpty) 'address': address,
         if (note != null && note.isNotEmpty) 'note': note,
       });
 
@@ -97,6 +99,25 @@ class PhotoRepository {
     }
   }
 
+  /// Update photo address and zip together
+  Future<void> updatePhotoAddress({
+    required int photoId,
+    required String address,
+    required String zipCode,
+  }) async {
+    try {
+      await _dio.patch(
+        '/api/photos/$photoId/address',
+        data: {
+          'address': address,
+          if (zipCode.isNotEmpty) 'zip_code': zipCode,
+        },
+      );
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
   /// Update photo profiles
   Future<void> updatePhotoProfiles({
     required int photoId,
@@ -142,11 +163,52 @@ class PhotoRepository {
   }
 
   Exception _handleError(DioException e) {
+    // Never expose raw DioException or technical strings to the user.
     if (e.response != null) {
-      final statusCode = e.response!.statusCode;
-      final message = e.response!.data?['detail'] ?? 'Unknown error';
-      return Exception('Error $statusCode: $message');
+      final statusCode = e.response!.statusCode ?? 0;
+      // Try to get the backend's human-readable detail first
+      final detail = e.response!.data is Map
+          ? (e.response!.data['detail'] as String?)
+          : null;
+
+      switch (statusCode) {
+        case 400:
+          return Exception(detail ?? 'Invalid request. Please check your input.');
+        case 401:
+          return Exception('Session expired. Please log in again.');
+        case 403:
+          return Exception('You don\'t have permission to do that.');
+        case 404:
+          return Exception(detail ?? 'Not found. It may have been deleted.');
+        case 408:
+          return Exception('Request timed out. Check your connection and try again.');
+        case 413:
+          return Exception('Photo is too large. Please choose a smaller image.');
+        case 422:
+          return Exception(detail ?? 'Upload failed — missing required information.');
+        case 429:
+          return Exception('Too many requests. Please wait a moment and try again.');
+        case 500:
+        case 502:
+        case 503:
+          return Exception('Server error. Please try again in a moment.');
+        default:
+          return Exception(detail ?? 'Something went wrong (code $statusCode). Please try again.');
+      }
     }
-    return Exception(e.message ?? 'Network error');
+
+    // Network-level errors — no response received
+    switch (e.type) {
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.sendTimeout:
+      case DioExceptionType.receiveTimeout:
+        return Exception('Connection timed out. Check your signal and try again.');
+      case DioExceptionType.connectionError:
+        return Exception('No internet connection. Please check your network.');
+      case DioExceptionType.cancel:
+        return Exception('Upload was cancelled.');
+      default:
+        return Exception('Network error. Please check your connection and try again.');
+    }
   }
 }

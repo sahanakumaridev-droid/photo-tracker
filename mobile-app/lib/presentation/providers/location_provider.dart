@@ -11,14 +11,9 @@ final locationStreamProvider = StreamProvider<Position>(
   (ref) => LocationService.watchLocation(),
 );
 
-final zipCodeProvider = FutureProvider.family<String?, (double, double)>(
-  (ref, coords) => LocationService.getZipCodeFromCoordinates(
+final addressProvider = FutureProvider.family<String?, (double, double)>(
+  (ref, coords) => LocationService.getAddressFromCoordinates(
     coords.$1,
     coords.$2,
   ),
-);
-
-final coordinatesFromZipProvider =
-    FutureProvider.family<({double lat, double lng})?, String>(
-  (ref, zipCode) => LocationService.getCoordinatesFromZipCode(zipCode),
 );

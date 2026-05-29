@@ -41,10 +41,9 @@ export default function Upload({ showToast }) {
   const [editMode,     setEditMode]     = useState(false)
   const [manualLat,    setManualLat]    = useState('')
   const [manualLng,    setManualLng]    = useState('')
-  const [zipCode,      setZipCode]      = useState('')
-  const [note,         setNote]         = useState('')
   const [address,      setAddress]      = useState('')
   const [addrLoading,  setAddrLoading]  = useState(false)
+  const [note,         setNote]         = useState('')
   // inline new profile
   const [showNewProf,  setShowNewProf]  = useState(false)
   const [newProfName,  setNewProfName]  = useState('')
@@ -52,7 +51,6 @@ export default function Upload({ showToast }) {
   const [creatingProf, setCreatingProf] = useState(false)
 
   const fileRef   = useRef()
-  const cameraRef = useRef()
   const navigate  = useNavigate()
 
   const loadProfiles = () => getProfiles().then(setProfiles)
@@ -91,22 +89,40 @@ export default function Upload({ showToast }) {
     setAddrLoading(true)
     try {
       const res = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=16`,
+        `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1&extratags=1&_t=${Date.now()}`,
         { headers: { 'Accept-Language': 'en' } }
       )
       const data = await res.json()
       if (data && data.display_name) {
-        // Shorten: take road + city + state
         const a = data.address || {}
-        const parts = [
-          a.road || a.pedestrian || a.path,
-          a.suburb || a.neighbourhood || a.city_district,
-          a.city || a.town || a.village,
-          a.state,
-        ].filter(Boolean)
+        const seen = new Set()
+        const parts = []
+
+        // Street
+        const road = a.road || a.pedestrian || a.path
+        if (road) {
+          const street = a.house_number ? `${a.house_number} ${road}` : road
+          parts.push(street)
+          seen.add(street.toLowerCase())
+        }
+
+        // City
+        const city = a.city || a.town || a.village || a.municipality
+        if (city && !seen.has(city.toLowerCase())) {
+          parts.push(city)
+          seen.add(city.toLowerCase())
+        }
+
+        // State (abbreviation preferred)
+        if (a.state_code || a.state) {
+          const st = a.state_code || a.state
+          if (!seen.has(st.toLowerCase())) parts.push(st)
+        }
+
+        // ZIP inline
+        if (a.postcode) parts.push(a.postcode)
+
         setAddress(parts.join(', ') || data.display_name)
-        // Auto-fill zip if empty
-        if (!zipCode && (a.postcode)) setZipCode(a.postcode)
       }
     } catch { /* silent */ }
     setAddrLoading(false)
@@ -181,7 +197,7 @@ export default function Upload({ showToast }) {
     fd.append('profile_id', selected.id)
     fd.append('latitude',   location.lat)
     fd.append('longitude',  location.lng)
-    fd.append('zip_code',   zipCode)
+    fd.append('address',    address)
     fd.append('note',       note)
     try {
       await uploadPhoto(fd)
@@ -285,24 +301,9 @@ export default function Upload({ showToast }) {
               <div className="step-title">Choose image</div>
             </div>
 
-            {/* Two buttons: Camera + Gallery */}
+            {/* Gallery button */}
             {!file && (
               <div style={{display:'flex', gap:8, marginBottom:12}}>
-                <button
-                  className="btn btn-dark"
-                  style={{flex:1, justifyContent:'center', fontSize:13}}
-                  onClick={() => {
-                    // Dynamically create input to force camera on mobile
-                    const input = document.createElement('input')
-                    input.type = 'file'
-                    input.accept = 'image/*'
-                    input.capture = 'environment'
-                    input.onchange = e => { const f = e.target.files[0]; if(f) pickFile(f) }
-                    input.click()
-                  }}
-                >
-                  📷 Camera
-                </button>
                 <button
                   className="btn btn-outline"
                   style={{flex:1, justifyContent:'center', fontSize:13}}
@@ -313,15 +314,6 @@ export default function Upload({ showToast }) {
               </div>
             )}
 
-            {/* Camera input (capture) */}
-            <input
-              ref={cameraRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              style={{display:'none'}}
-              onChange={e => e.target.files[0] && pickFile(e.target.files[0])}
-            />
             {/* Gallery input */}
             <input
               ref={fileRef}
@@ -356,7 +348,7 @@ export default function Upload({ showToast }) {
 
             {file && (
               <button className="btn btn-outline" style={{fontSize:12, padding:'5px 12px', marginTop:8}}
-                onClick={() => { setFile(null); setPreview(null); fileRef.current.value=''; cameraRef.current.value='' }}>
+                onClick={() => { setFile(null); setPreview(null); fileRef.current.value='' }}>
                 ✕ Remove
               </button>
             )}
@@ -445,20 +437,12 @@ export default function Upload({ showToast }) {
             )}
           </div>
 
-          {/* Metadata — note is a separate section, not clickable for upload */}
+          {/* Metadata — note section */}
           <div className="card">
             <div className="step-head">
               <div className="step-num">4</div>
               <div className="step-title">Metadata</div>
             </div>
-            <label>Zip Code</label>
-            <input
-              type="text"
-              placeholder="e.g. 92101"
-              value={zipCode}
-              onChange={e => setZipCode(e.target.value)}
-              style={{marginBottom:14}}
-            />
             <label>Note</label>
             {/* Note textarea — standalone, no click-to-upload behavior */}
             <textarea
@@ -495,7 +479,7 @@ export default function Upload({ showToast }) {
           {!ready && !uploading && (
             <div className="hint" style={{textAlign:'center', marginTop:8, fontSize:12, color:'rgba(255,255,255,0.3)'}}>
               {!selected && '← Select or create a profile first'}
-              {selected && !file && '← Choose an image using Camera or Gallery above'}
+              {selected && !file && '← Choose an image using Gallery above'}
             </div>
           )}
         </div>

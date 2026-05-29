@@ -6,11 +6,20 @@ import 'repository_providers.dart';
 /// Get activity log with filters
 final logProvider = FutureProvider.family<
     List<LogEntryModel>,
-    ({String? date, String? zipCode, String? status, String? search})>(
+    ({
+      String? date,
+      String? startTime,
+      String? endTime,
+      String? zipCode,
+      String? status,
+      String? search,
+    })>(
   (ref, filters) async {
     final repository = ref.watch(logRepositoryProvider);
     return repository.getLog(
       date: filters.date,
+      startTime: filters.startTime,
+      endTime: filters.endTime,
       zipCode: filters.zipCode,
       status: filters.status,
       search: filters.search,

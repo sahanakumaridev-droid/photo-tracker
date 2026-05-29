@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../../../config/app_config.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/theme_provider.dart';
 
@@ -166,20 +167,67 @@ class SettingsScreenV2 extends ConsumerWidget {
               context,
               title: 'App',
               children: [
-                _buildSettingItem(
-                  context,
-                  icon: Icons.info_outline,
-                  title: 'Version',
-                  subtitle: '1.0.0',
-                  onTap: () {},
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.info_outline, size: 22, color: Color(0xFF475569)),
+                      const SizedBox(width: 16),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Version', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: Color(0xFF475569))),
+                            SizedBox(height: 2),
+                            Text('Current app version', style: TextStyle(fontSize: 12, color: Color(0xFF94A3B8))),
+                          ],
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEEEEFD),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Text(
+                          'v${AppConfig.appVersion}',
+                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Color(0xFF5B5BD6)),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-                _buildSettingItem(
-                  context,
-                  icon: Icons.construction_outlined,
-                  title: 'Build',
-                  subtitle: '1',
-                  onTap: () {},
+                const Divider(height: 1, color: Color(0xFFE2E8F0), indent: 56),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.engineering_rounded, size: 22, color: Color(0xFF475569)),
+                      const SizedBox(width: 16),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Environment', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: Color(0xFF475569))),
+                            SizedBox(height: 2),
+                          ],
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFEF3C7),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Text(
+                          'QA',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFFD97706)),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
+                const Divider(height: 1, color: Color(0xFFE2E8F0), indent: 56),
                 _buildSettingItem(
                   context,
                   icon: Icons.storage_outlined,

@@ -33,6 +33,7 @@ dependencies:
   path_provider: ^2.1.0
   permission_handler: ^11.4.0
   share_plus: ^9.0.0
+  url_launcher: ^6.3.0
   retrofit: ^4.9.2
   riverpod: ^2.4.0
   riverpod_generator: ^2.3.0
@@ -57,6 +58,4 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/animations/
-    - assets/icons/
     - assets/images/

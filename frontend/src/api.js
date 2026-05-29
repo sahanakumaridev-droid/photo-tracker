@@ -80,7 +80,6 @@ export const uploadPhoto      = (formData) => api.post('/upload', formData, { he
 export const deletePhoto      = (id)       => api.delete(`/photos/${id}`).then(r => r.data).then(r => { invalidate('photos'); return r })
 export const updatePhotoLocation = (id, lat, lng) => api.patch(`/photos/${id}/location`, { latitude: lat, longitude: lng }).then(r => r.data).then(r => { invalidate('photos'); return r })
 export const updatePhotoNote     = (id, note)     => api.patch(`/photos/${id}/note`, { note }).then(r => r.data).then(r => { invalidate('photos'); return r })
-export const updatePhotoZip      = (id, zip_code) => api.patch(`/photos/${id}/zip`, { zip_code }).then(r => r.data).then(r => { invalidate('photos'); return r })
 export const updatePhotoProfiles = (id, profile_ids) => api.patch(`/photos/${id}/profiles`, { profile_ids }).then(r => r.data).then(r => { invalidate('photos'); return r })
 export const replacePhotoImage   = (id, file) => { const fd = new FormData(); fd.append('file', file); return api.patch(`/photos/${id}/image`, fd, { headers: { 'Content-Type': 'multipart/form-data' } }).then(r => r.data).then(r => { invalidate('photos'); return r }) }
 

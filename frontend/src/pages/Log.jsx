@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react'
-import { getLog } from '../api'
+import { getLog, exportLogEmail } from '../api'
 
 // PST formatter
 function toPST(ts) {
@@ -13,7 +13,7 @@ function toPST(ts) {
 
 // Build CSV string from rows
 function buildCSV(rows) {
-  const headers = ['ID', 'Timestamp (PST)', 'Profile(s)', 'Status', 'Zip Code', 'Latitude', 'Longitude', 'Note']
+  const headers = ['ID', 'Timestamp (PST)', 'Profile(s)', 'Status', 'Address', 'Latitude', 'Longitude', 'Note']
   const escape = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
   const lines = [
     headers.join(','),
@@ -22,7 +22,7 @@ function buildCSV(rows) {
       escape(toPST(r.timestamp)),
       escape((r.profiles?.length > 0 ? r.profiles : [{ name: r.profile_name }]).map(p => p.name).join(' | ')),
       escape(r.service_type),
-      escape(r.zip_code || ''),
+      escape(r.address || ''),
       r.latitude?.toFixed(6) ?? '',
       r.longitude?.toFixed(6) ?? '',
       escape(r.note || ''),
@@ -50,8 +50,7 @@ function buildEmailBody(rows) {
       `Time:     ${toPST(r.timestamp)}`,
       `Profile:  ${profiles}`,
       `Status:   ${r.service_type}`,
-      `Location: ${r.latitude?.toFixed(5)}, ${r.longitude?.toFixed(5)}`,
-      `Zip:      ${r.zip_code || '—'}`,
+      `Location: ${r.address || `${r.latitude?.toFixed(5)}, ${r.longitude?.toFixed(5)}`}`,
       `Note:     ${r.note || '—'}`,
     ].join('\n')
   }).join('\n\n')
@@ -64,7 +63,6 @@ export default function Log() {
   const [loading,   setLoading]   = useState(true)
   const [date,      setDate]      = useState('')
   const [dateTo,    setDateTo]    = useState('')
-  const [zip,       setZip]       = useState('')
   const [status,    setStatus]    = useState('')
   const [search,    setSearch]    = useState('')
   const [timeFrom,  setTimeFrom]  = useState('')
@@ -72,12 +70,13 @@ export default function Log() {
   const [exporting, setExporting] = useState(false)
   const [exportEmail, setExportEmail] = useState('')
   const [showExport,  setShowExport]  = useState(false)
+  const [sendingEmail, setSendingEmail] = useState(false)
+  const [detailItem,  setDetailItem]  = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     const params = {}
     if (date)   params.date     = date
-    if (zip)    params.zip_code = zip
     if (status) params.status   = status
     if (search) params.search   = search
     let data = await getLog(params)
@@ -106,7 +105,7 @@ export default function Log() {
 
     setRows(data)
     setLoading(false)
-  }, [date, dateTo, zip, status, search, timeFrom, timeTo])
+  }, [date, dateTo, status, search, timeFrom, timeTo])
 
   useEffect(() => { load() }, [load])
 
@@ -122,8 +121,12 @@ export default function Log() {
     toastTimer.current = setTimeout(() => setShareToast(''), 2800)
   }
 
+  const showDetail = (r) => {
+    setDetailItem(r)
+  }
+
   const resetFilters = () => {
-    setDate(''); setDateTo(''); setZip(''); setStatus(''); setSearch(''); setTimeFrom(''); setTimeTo('')
+    setDate(''); setDateTo(''); setStatus(''); setSearch(''); setTimeFrom(''); setTimeTo('')
   }
 
   // ── Export handlers ──────────────────────────────────────────────────────
@@ -242,6 +245,55 @@ export default function Log() {
     showToast('⚠️ Clipboard not available — use CSV download instead.')
   }
 
+  // 5. Prompts for email then sends via backend
+  const handleEmailPrompt = () => {
+    if (rows.length === 0) {
+      showToast('⚠️ No records to export — adjust your filters first.')
+      return
+    }
+    const email = prompt(`Send ${rows.length} record${rows.length !== 1 ? 's' : ''} by email.\nEnter recipient email:`, exportEmail)
+    if (!email || !email.includes('@')) return
+    setExportEmail(email)
+    handleSendEmailDirect(email)
+  }
+
+  const handleSendEmailDirect = async (toEmail) => {
+    setSendingEmail(true)
+    try {
+      const records = rows.map(r => ({
+        id: r.id,
+        timestamp: r.timestamp,
+        profile_name: r.profile_name,
+        profiles: (r.profiles || []).map(p => ({ id: p.id, name: p.name })),
+        service_type: r.service_type,
+        address: r.address || '',
+        zip_code: r.zip_code || '',
+        latitude: r.latitude,
+        longitude: r.longitude,
+        note: r.note || '',
+      }))
+
+      const result = await exportLogEmail(toEmail, records)
+      if (result.message && result.message.includes('SMTP not configured')) {
+        showToast('📧 SMTP not configured — downloading CSV instead')
+        handleDownloadCSV()
+      } else {
+        showToast(`✅ Email sent to ${toEmail} — ${rows.length} records`)
+      }
+    } catch (err) {
+      showToast(`❌ Failed to send: ${err.response?.data?.detail || err.message || 'Network error'}`)
+    } finally {
+      setSendingEmail(false)
+    }
+  }
+
+  // 6. Send email via backend SMTP/SendGrid (from export panel)
+  const handleSendEmail = () => {
+    if (rows.length === 0) { showToast('⚠️ No records to export — adjust your filters first.'); return }
+    if (!exportEmail || !exportEmail.includes('@')) { showToast('⚠️ Please enter a valid recipient email address.'); return }
+    handleSendEmailDirect(exportEmail)
+  }
+
   return (
     <div className="log-shell">
       {/* Toast notification */}
@@ -254,6 +306,54 @@ export default function Log() {
           animation: 'fadeInDown 0.2s ease',
         }}>
           {shareToast}
+        </div>
+      )}
+
+      {/* Detail modal */}
+      {detailItem && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 9998,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          animation: 'fadeIn 0.15s ease',
+        }} onClick={() => setDetailItem(null)}>
+          <div style={{
+            background: '#fff', borderRadius: 16, maxWidth: 520, width: '100%',
+            maxHeight: '85vh', overflow: 'auto', margin: 16, boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
+          }} onClick={e => e.stopPropagation()}>
+            <div style={{ position: 'relative' }}>
+              <img src={detailItem.image_url} alt="" style={{ width: '100%', height: 250, objectFit: 'cover', borderRadius: '16px 16px 0 0' }}
+                onError={e => { e.target.src = 'https://via.placeholder.com/520x250/1e293b/6366f1?text=Photo' }} />
+              <button onClick={() => setDetailItem(null)}
+                style={{ position: 'absolute', top: 12, right: 12, background: 'rgba(0,0,0,0.6)', border: 'none', color: '#fff', borderRadius: '50%', width: 32, height: 32, cursor: 'pointer', fontSize: 16 }}
+              >✕</button>
+              <div style={{ position: 'absolute', top: 12, left: 12, background: detailItem.service_type === 'rush' ? '#ef4444' : '#10b981', color: '#fff', borderRadius: 8, padding: '4px 10px', fontSize: 12, fontWeight: 700 }}>
+                {detailItem.service_type === 'rush' ? '🔴 Rush' : '🟢 Standard'}
+              </div>
+            </div>
+            <div style={{ padding: 20 }}>
+              <div style={{ fontSize: 19, fontWeight: 800, marginBottom: 4 }}>
+                {(detailItem.profiles?.length > 0 ? detailItem.profiles : [{ name: detailItem.profile_name }]).map((p, i) => (
+                  <span key={i} style={{ marginRight: 8 }}>{p.name}{i < (detailItem.profiles?.length || 1) - 1 ? ',' : ''}</span>
+                ))}
+              </div>
+              <div style={{ fontSize: 13, color: '#64748b', marginBottom: 16 }}>🕐 {toPST(detailItem.timestamp)}</div>
+              {detailItem.address && (
+                <div style={{ fontSize: 14, marginBottom: 8, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                  <span style={{ color: '#10b981' }}>📍</span>
+                  <span>{detailItem.address}</span>
+                </div>
+              )}
+              <div style={{ fontSize: 12, color: '#94a3b8', fontFamily: 'monospace', marginBottom: 12 }}>
+                {detailItem.latitude?.toFixed(6)}, {detailItem.longitude?.toFixed(6)}
+              </div>
+              {detailItem.note && (
+                <div style={{ background: '#f8fafc', borderRadius: 10, padding: '12px 14px', fontSize: 14, color: '#334155' }}>
+                  <div style={{ fontWeight: 700, fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>NOTE</div>
+                  {detailItem.note}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
@@ -295,6 +395,20 @@ export default function Log() {
               <line x1="12" y1="15" x2="12" y2="3"/>
             </svg>
             CSV
+          </button>
+
+          {/* ── Email button (always visible) ── */}
+          <button
+            className="btn btn-green"
+            style={{ fontSize: 12, padding: '7px 14px', display: 'flex', alignItems: 'center', gap: 6, background: '#059669' }}
+            onClick={handleEmailPrompt}
+            title="Email filtered records as CSV"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="4" width="20" height="16" rx="2"/>
+              <path d="m22 4-10 8L2 4"/>
+            </svg>
+            Email
           </button>
 
           {/* ── More export options toggle ── */}
@@ -342,7 +456,7 @@ export default function Log() {
             </button>
           </div>
 
-          {/* Row 2: Email via mailto */}
+          {/* Row 2: Email via backend SendGrid/SMTP */}
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <input
               type="email"
@@ -354,12 +468,12 @@ export default function Log() {
             <button
               className="btn btn-dark"
               style={{ fontSize: 12, padding: '8px 16px' }}
-              onClick={handleEmailClient}
-              disabled={rows.length === 0 || !exportEmail.trim()}
+              onClick={handleSendEmail}
+              disabled={rows.length === 0 || !exportEmail.trim() || sendingEmail}
             >
-              📧 Open in Email App
+              {sendingEmail ? 'Sending…' : '📧 Send Email'}
             </button>
-            <span style={{ fontSize: 11, opacity: 0.5 }}>Opens your mail app with log pre-filled</span>
+            <span style={{ fontSize: 11, opacity: 0.5 }}>Sends CSV via server email</span>
           </div>
 
           <button
@@ -415,17 +529,6 @@ export default function Log() {
         </div>
 
         <div className="log-filter-group">
-          <label>Zip Code</label>
-          <input
-            type="text"
-            placeholder="e.g. 92101"
-            value={zip}
-            onChange={e => setZip(e.target.value)}
-            style={{ marginBottom: 0, width: 110 }}
-          />
-        </div>
-
-        <div className="log-filter-group">
           <label>Status</label>
           <select
             value={status}
@@ -477,14 +580,13 @@ export default function Log() {
                 <th>Profile(s)</th>
                 <th>Status</th>
                 <th>Date &amp; Time (PST)</th>
-                <th>Zip Code</th>
-                <th>Location</th>
+                <th>Address</th>
                 <th>Note</th>
               </tr>
             </thead>
             <tbody>
               {rows.map(r => (
-                <tr key={r.id}>
+                <tr key={r.id} className="log-row-clickable" onClick={() => showDetail(r)} style={{ cursor: 'pointer' }}>
                   <td>
                     <img
                       src={r.image_url}
@@ -506,9 +608,8 @@ export default function Log() {
                     </span>
                   </td>
                   <td className="log-mono">{toPST(r.timestamp)}</td>
-                  <td className="log-mono">{r.zip_code || '—'}</td>
-                  <td className="log-mono" style={{ fontSize: 11 }}>
-                    {r.latitude?.toFixed(4)}, {r.longitude?.toFixed(4)}
+                  <td style={{ fontSize: 13 }}>
+                    {r.address || <span style={{ opacity: 0.3 }}>—</span>}
                   </td>
                   <td className="log-note">{r.note || <span style={{ opacity: 0.3 }}>—</span>}</td>
                 </tr>

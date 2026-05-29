@@ -10,6 +10,17 @@ from typing import Optional
 import os, shutil, uuid, smtplib, json
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from dotenv import load_dotenv
+
+# Try importing sendgrid, will fail gracefully if not installed
+try:
+    from sendgrid import SendGridAPIClient
+    from sendgrid.helpers.mail import Mail
+except ImportError:
+    SendGridAPIClient = None
+    Mail = None
+
+load_dotenv()
 
 PST = ZoneInfo("America/Los_Angeles")
 
@@ -23,6 +34,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def rewrite_api_prefix(request: Request, call_next):
+    if request.scope["path"].startswith("/api/"):
+        request.scope["path"] = request.scope["path"][4:]
+    return await call_next(request)
+
 
 DATABASE_URL = "sqlite:///./photo_tracker.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
@@ -540,23 +558,44 @@ async def export_log_email(request: Request):
     smtp_port = int(os.environ.get("SMTP_PORT", "587"))
     smtp_user = os.environ.get("SMTP_USER")
     smtp_pass = os.environ.get("SMTP_PASS")
+    
+    sg_api_key = os.environ.get("SENDGRID_API_KEY")
+    sg_sender = os.environ.get("SENDGRID_SENDER_EMAIL")
 
-    if not smtp_host or not smtp_user:
+    if not sg_api_key and (not smtp_host or not smtp_user):
         # Return the HTML as a download instead
-        return {"ok": True, "message": "SMTP not configured — export data returned", "html": html, "count": len(records_list)}
+        return {"ok": True, "message": "Email not configured — export data returned", "html": html, "count": len(records_list)}
 
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"GeoTagging Log Export — {len(records_list)} records"
-        msg["From"]    = smtp_user
-        msg["To"]      = to_email
-        msg.attach(MIMEText(html, "html"))
+        # Use SendGrid if configured
+        if sg_api_key and SendGridAPIClient and Mail:
+            if not sg_sender:
+                raise HTTPException(status_code=500, detail="SENDGRID_SENDER_EMAIL is required in environment variables when using SendGrid.")
+                
+            message = Mail(
+                from_email=sg_sender,
+                to_emails=to_email,
+                subject=f"GeoTagging Log Export — {len(records_list)} records",
+                html_content=html
+            )
+            sg = SendGridAPIClient(sg_api_key)
+            sg.send(message)
+            return {"ok": True, "message": f"Log exported to {to_email} via SendGrid", "count": len(records_list)}
+            
+        # Fallback to standard SMTP (e.g. Ethereal Testing)
+        else:
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = f"GeoTagging Log Export — {len(records_list)} records"
+            msg["From"]    = smtp_user
+            msg["To"]      = to_email
+            msg.attach(MIMEText(html, "html"))
 
-        with smtplib.SMTP(smtp_host, smtp_port) as server:
-            server.starttls()
-            server.login(smtp_user, smtp_pass)
-            server.sendmail(smtp_user, to_email, msg.as_string())
+            with smtplib.SMTP(smtp_host, smtp_port) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_pass)
+                server.sendmail(smtp_user, to_email, msg.as_string())
 
-        return {"ok": True, "message": f"Log exported to {to_email}", "count": len(records_list)}
+            return {"ok": True, "message": f"Log exported to {to_email} via SMTP", "count": len(records_list)}
+            
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Email send failed: {str(e)}")

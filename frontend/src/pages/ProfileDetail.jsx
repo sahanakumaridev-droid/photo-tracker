@@ -2,7 +2,7 @@ import React, { useEffect, useState, useContext } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
-import { getProfilePhotos, updateProfile, updatePhotoNote, updatePhotoZip, uploadPhoto, replacePhotoImage } from '../api'
+import { getProfilePhotos, updateProfile, updatePhotoNote, uploadPhoto, replacePhotoImage } from '../api'
 import { GeoContext } from '../context/GeoContext'
 
 // PST formatter
@@ -317,7 +317,6 @@ function PhotoLightbox({ photos, startIdx, onClose }) {
         <div>🕐 {toPST(ph.timestamp)}</div>
         <div style={{fontFamily:'monospace', fontSize:11, opacity:0.6}}>
           📍 {ph.latitude?.toFixed(5)}, {ph.longitude?.toFixed(5)}
-          {ph.zip_code ? `  ·  📮 ${ph.zip_code}` : ''}
         </div>
         {ph.note && <div style={{marginTop:4, fontStyle:'italic', opacity:0.8}}>"{ph.note}"</div>}
       </div>
@@ -345,11 +344,8 @@ function PhotoLightbox({ photos, startIdx, onClose }) {
 
 function PhotoCard({ p, allPhotos, onPhotoClick, onNoteUpdated }) {
   const [note,       setNote]       = useState(p.note || '')
-  const [zip,        setZip]        = useState(p.zip_code || '')
   const [editNote,   setEditNote]   = useState(false)
-  const [editZip,    setEditZip]    = useState(false)
   const [savingNote, setSavingNote] = useState(false)
-  const [savingZip,  setSavingZip]  = useState(false)
   const [replacing,  setReplacing]  = useState(false)
   const replaceRef = React.useRef()
 
@@ -358,14 +354,6 @@ function PhotoCard({ p, allPhotos, onPhotoClick, onNoteUpdated }) {
     await updatePhotoNote(p.id, note)
     setSavingNote(false)
     setEditNote(false)
-    onNoteUpdated()
-  }
-
-  const saveZip = async () => {
-    setSavingZip(true)
-    await updatePhotoZip(p.id, zip)
-    setSavingZip(false)
-    setEditZip(false)
     onNoteUpdated()
   }
 
@@ -427,75 +415,6 @@ function PhotoCard({ p, allPhotos, onPhotoClick, onNoteUpdated }) {
           marginBottom: 6,
         }}>
           📍 {p.latitude?.toFixed(5)}, {p.longitude?.toFixed(5)}
-        </div>
-
-        {/* ── Zip Code row — always visible, click to edit ── */}
-        <div style={{
-          marginBottom: 6,
-          padding: '6px 10px',
-          background: 'var(--bg-subtle, #f8fafc)',
-          border: '1px solid var(--border-c, #e2e8f0)',
-          borderRadius: 7,
-        }}>
-          {editZip ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-2, #475569)', marginBottom: 0 }}>📮 Zip Code</label>
-              <input
-                value={zip}
-                onChange={e => setZip(e.target.value)}
-                placeholder="e.g. 92101"
-                autoFocus
-                maxLength={10}
-                style={{
-                  width: '100%', padding: '8px 10px', fontSize: 14,
-                  background: 'var(--bg-input, #fff)',
-                  border: '2px solid #6366f1',
-                  borderRadius: 6, color: 'var(--text-1, #0f172a)',
-                  outline: 'none', marginBottom: 0, fontWeight: 600,
-                  boxSizing: 'border-box',
-                }}
-              />
-              <div style={{ display: 'flex', gap: 6 }}>
-                <button
-                  onClick={saveZip}
-                  disabled={savingZip}
-                  style={{
-                    flex: 1, background: '#6366f1', color: '#fff', border: 'none',
-                    borderRadius: 6, padding: '7px 0', fontSize: 12,
-                    fontWeight: 700, cursor: 'pointer',
-                  }}
-                >
-                  {savingZip ? 'Saving…' : '✓ Save'}
-                </button>
-                <button
-                  onClick={() => { setEditZip(false); setZip(p.zip_code || '') }}
-                  style={{
-                    flex: 1, background: 'transparent', color: 'var(--text-2, #475569)',
-                    border: '1px solid var(--border-c, #e2e8f0)',
-                    borderRadius: 6, padding: '7px 0', fontSize: 12,
-                    cursor: 'pointer', fontWeight: 600,
-                  }}
-                >✕ Cancel</button>
-              </div>
-            </div>
-          ) : (
-            <div
-              onClick={() => setEditZip(true)}
-              style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                cursor: 'pointer',
-              }}
-            >
-              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-1, #0f172a)' }}>
-                📮 {zip || <span style={{ color: 'var(--text-3, #94a3b8)', fontWeight: 400, fontStyle: 'italic' }}>Add zip code</span>}
-              </span>
-              <span style={{
-                fontSize: 10, color: '#6366f1', fontWeight: 600,
-                background: 'rgba(99,102,241,0.08)', padding: '2px 7px',
-                borderRadius: 4, border: '1px solid rgba(99,102,241,0.2)',
-              }}>✏️ Edit</span>
-            </div>
-          )}
         </div>
 
         {/* ── Note row — always visible, click to edit ── */}
@@ -592,12 +511,10 @@ function AddPinModal({ profileId, profileName, onClose, onSaved }) {
   const [location,  setLocation]  = useState(geo.location || null)
   const [file,      setFile]      = useState(null)
   const [preview,   setPreview]   = useState(null)
-  const [zipCode,   setZipCode]   = useState('')
   const [note,      setNote]      = useState('')
   const [uploading, setUploading] = useState(false)
   const [locBusy,   setLocBusy]   = useState(!geo.location)
   const fileRef   = React.useRef()
-  const cameraRef = React.useRef()
 
   // Use global geo first, then try fresh GPS
   React.useEffect(() => {
@@ -624,7 +541,6 @@ function AddPinModal({ profileId, profileName, onClose, onSaved }) {
     fd.append('profile_id', profileId)
     fd.append('latitude',   location.lat)
     fd.append('longitude',  location.lng)
-    fd.append('zip_code',   zipCode)
     fd.append('note',       note)
     try {
       await uploadPhoto(fd)
@@ -686,30 +602,12 @@ function AddPinModal({ profileId, profileName, onClose, onSaved }) {
           </div>
         )}
 
-        {/* ── Photo — Camera + Gallery buttons ── */}
-        {/* Hidden inputs */}
-        <input ref={cameraRef} type="file" accept="image/*" capture="environment" style={{display:'none'}}
-          onChange={e => { const f = e.target.files[0]; if(f) pickFile(f) }} />
+        {/* ── Photo — Gallery button ── */}
         <input ref={fileRef} type="file" accept="image/*" style={{display:'none'}}
           onChange={e => { const f = e.target.files[0]; if(f) pickFile(f) }} />
 
         {!file ? (
           <div style={{display:'flex', gap:8, marginBottom:12}}>
-            <button
-              className="btn btn-dark"
-              style={{flex:1, justifyContent:'center', fontSize:13, padding:'10px'}}
-              onClick={() => {
-                // Force camera on mobile — create a fresh input each time
-                const input = document.createElement('input')
-                input.type = 'file'
-                input.accept = 'image/*'
-                input.capture = 'environment'
-                input.onchange = e => { const f = e.target.files[0]; if(f) pickFile(f) }
-                input.click()
-              }}
-            >
-              📷 Camera
-            </button>
             <button
               className="btn btn-outline"
               style={{flex:1, justifyContent:'center', fontSize:13, padding:'10px'}}
@@ -722,19 +620,12 @@ function AddPinModal({ profileId, profileName, onClose, onSaved }) {
           <div style={{marginBottom:12, position:'relative'}}>
             <img src={preview} alt="" style={{width:'100%', maxHeight:180, objectFit:'cover', borderRadius:8, display:'block'}} />
             <button
-              onClick={() => { setFile(null); setPreview(null); fileRef.current.value=''; cameraRef.current.value='' }}
+              onClick={() => { setFile(null); setPreview(null); fileRef.current.value='' }}
               style={{position:'absolute', top:6, right:6, background:'rgba(0,0,0,0.65)', border:'none', color:'#fff', borderRadius:6, padding:'4px 10px', cursor:'pointer', fontSize:12, fontWeight:600}}
             >✕ Remove</button>
           </div>
         )}
 
-        {/* Zip + Note */}
-        <div style={{display:'flex', gap:12, marginBottom:12}}>
-          <div style={{flex:1}}>
-            <label style={{fontSize:11, color:'rgba(255,255,255,0.4)', display:'block', marginBottom:4}}>Zip Code</label>
-            <input value={zipCode} onChange={e => setZipCode(e.target.value)} placeholder="e.g. 92101" style={{marginBottom:0}} />
-          </div>
-        </div>
         <div style={{marginBottom:16}}>
           <label style={{fontSize:11, color:'rgba(255,255,255,0.4)', display:'block', marginBottom:4}}>Note</label>
           <textarea

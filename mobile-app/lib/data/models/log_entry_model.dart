@@ -12,6 +12,7 @@ class LogEntryModel {
     required this.imageUrl,
     required this.latitude, required this.longitude, this.timestamp,
     this.zipCode,
+    this.address,
     this.note,
     this.profileId,
     this.profileName,
@@ -29,6 +30,7 @@ class LogEntryModel {
   final double longitude;
   @JsonKey(name: 'zip_code')
   final String? zipCode;
+  final String? address;
   final String? note;
   @JsonKey(name: 'profile_id')
   final int? profileId;

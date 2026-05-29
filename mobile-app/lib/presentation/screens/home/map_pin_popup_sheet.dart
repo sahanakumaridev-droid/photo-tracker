@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 
+import '../../../core/utils/location_service.dart';
 import '../../../data/models/photo_model.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
@@ -95,6 +96,10 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
   int _photoIdx = 0;
   bool _addingPhoto = false;
 
+  // Reverse-geocoded address for this pin
+  String? _pinAddress;
+  bool _fetchingAddress = false;
+
   // Add-photo state
   File? _pickedFile;
   final _noteCtrl = TextEditingController();
@@ -106,6 +111,23 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
   void initState() {
     super.initState();
     _addProfileId = widget.groups.isNotEmpty ? widget.groups[0].profileId : null;
+    // Auto reverse-geocode the pin location
+    WidgetsBinding.instance.addPostFrameCallback((_) => _fetchPinAddress());
+  }
+
+  Future<void> _fetchPinAddress() async {
+    if (!mounted) return;
+    setState(() => _fetchingAddress = true);
+    try {
+      final address = await LocationService.reverseGeocode(widget.lat, widget.lng);
+      if (mounted && address != null && address.isNotEmpty) {
+        setState(() => _pinAddress = address);
+      }
+    } catch (_) {
+      // Silently fail
+    } finally {
+      if (mounted) setState(() => _fetchingAddress = false);
+    }
   }
 
   @override
@@ -857,12 +879,22 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
           // Timestamp + coords
           if (ph.timestamp != null)
             _metaRow(Icons.access_time_rounded, _formatTs(ph.timestamp)),
-          _metaRow(
-            Icons.location_on_rounded,
-            '${ph.latitude.toStringAsFixed(5)}, ${ph.longitude.toStringAsFixed(5)}',
-          ),
-          if (ph.zipCode != null && ph.zipCode!.isNotEmpty)
-            _metaRow(Icons.local_post_office_outlined, ph.zipCode!),
+          // Address line — human-readable with ZIP inline
+          if (_fetchingAddress)
+            _metaRow(Icons.location_on_rounded, 'Fetching address…')
+          else if (_pinAddress != null)
+            _metaRow(Icons.location_on_rounded, _pinAddress!)
+          else
+            _metaRow(
+              Icons.location_on_rounded,
+              '${ph.latitude.toStringAsFixed(5)}, ${ph.longitude.toStringAsFixed(5)}',
+            ),
+          // Coordinates always shown below address
+          if (!_fetchingAddress)
+            _metaRow(
+              Icons.gps_fixed_rounded,
+              '${ph.latitude.toStringAsFixed(6)}, ${ph.longitude.toStringAsFixed(6)}',
+            ),
           if (ph.note != null && ph.note!.isNotEmpty)
             _metaRow(Icons.notes_rounded, ph.note!),
 

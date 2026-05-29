@@ -8,12 +8,15 @@ import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shimmer/shimmer.dart';
 
 import '../../../core/utils/location_service.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
 import 'location_picker_map.dart';
+
+enum _UploadState { idle, uploading, processing, success, failed }
 
 class UploadScreenV2 extends ConsumerStatefulWidget {
   const UploadScreenV2({super.key});
@@ -35,18 +38,22 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   static const Color _successGreen = Color(0xFF059669);
   static const Color _errorRed = Color(0xFFDC2626);
 
+  // ── Upload state enum ─────────────────────────────────────────────────────
+  // idle → uploading → processing → success | failed
+  _UploadState _uploadState = _UploadState.idle;
+
   // ── State ─────────────────────────────────────────────────────────────────
   File? _selectedImage;
   ProfileModel? _selectedProfile;
   double? _latitude;
   double? _longitude;
+  double? _gpsAccuracy;
   bool _isLoadingLocation = false;
   bool _locationError = false;
+  String? _locationErrorMsg;
   bool _isEditingAddress = false;
-  bool _isUploading = false;
 
   final _noteController = TextEditingController();
-  final _zipController = TextEditingController();
   final _addressController = TextEditingController();
   final _imagePicker = ImagePicker();
 
@@ -60,7 +67,6 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   @override
   void dispose() {
     _noteController.dispose();
-    _zipController.dispose();
     _addressController.dispose();
     super.dispose();
   }
@@ -71,63 +77,92 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     setState(() {
       _isLoadingLocation = true;
       _locationError = false;
+      _locationErrorMsg = null;
       _addressController.clear();
-      _zipController.clear();
     });
     try {
-      // Request permission first
+      // 1. Check permission
       final granted = await LocationService.requestLocationPermission();
       if (!granted) {
-        debugPrint('[Location] Permission not granted');
-        if (mounted) setState(() => _locationError = true);
+        if (mounted) {
+          setState(() {
+            _locationError = true;
+            _locationErrorMsg =
+                'Location permission denied. Please enable it in Settings.';
+          });
+        }
         return;
       }
 
-      // Try last-known position first for a fast first paint
-      Position? pos;
-      try {
-        pos = await Geolocator.getLastKnownPosition();
-        if (pos != null && mounted) {
+      // 2. Check service enabled
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        if (mounted) {
           setState(() {
-            _latitude = pos!.latitude;
-            _longitude = pos.longitude;
+            _locationError = true;
+            _locationErrorMsg =
+                'Location services are off. Please enable GPS in Settings.';
+          });
+        }
+        return;
+      }
+
+      // 3. Fast first paint — use last-known position
+      try {
+        final last = await Geolocator.getLastKnownPosition();
+        if (last != null && mounted) {
+          setState(() {
+            _latitude = last.latitude;
+            _longitude = last.longitude;
+            _gpsAccuracy = last.accuracy;
           });
         }
       } catch (_) {}
 
-      // Always fetch a fresh high-accuracy fix
-      final freshPos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.best,
-        timeLimit: const Duration(seconds: 20),
-      );
-      debugPrint('[Location] fresh pos=${freshPos.latitude},${freshPos.longitude}');
+      // 4. Fetch fresh high-accuracy fix (with retry in LocationService)
+      final freshPos = await LocationService.getCurrentLocation();
+      if (freshPos == null) {
+        if (mounted) {
+          setState(() {
+            _locationError = _latitude == null;
+            _locationErrorMsg = _latitude == null
+                ? 'Could not get your location. Tap Refresh to try again.'
+                : null;
+          });
+        }
+        return;
+      }
 
       if (mounted) {
         setState(() {
           _latitude = freshPos.latitude;
           _longitude = freshPos.longitude;
+          _gpsAccuracy = freshPos.accuracy;
+          _locationError = false;
+          _locationErrorMsg = null;
         });
 
-        final geo = await LocationService.reverseGeocode(
+        // Reverse geocode for address (ZIP is inline in the address string)
+        final address = await LocationService.reverseGeocode(
           freshPos.latitude,
           freshPos.longitude,
         );
-        debugPrint('[Location] geo=$geo');
-
-        if (mounted) {
+        if (mounted && address != null && address.isNotEmpty) {
           setState(() {
-            if (geo.address != null && geo.address!.isNotEmpty) {
-              _addressController.text = geo.address!;
-            }
-            if (geo.zip != null && geo.zip!.isNotEmpty) {
-              _zipController.text = geo.zip!;
-            }
+            _addressController.text = address;
           });
         }
       }
     } catch (e) {
-      debugPrint('[Location] error: $e');
-      if (mounted) setState(() => _locationError = true);
+      debugPrint('[Upload] location error: $e');
+      if (mounted) {
+        setState(() {
+          _locationError = _latitude == null;
+          _locationErrorMsg = _latitude == null
+              ? 'Location unavailable. Tap Refresh to try again.'
+              : null;
+        });
+      }
     } finally {
       if (mounted) setState(() => _isLoadingLocation = false);
     }
@@ -157,18 +192,13 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
 
     // Reverse-geocode the picked point
     try {
-      final geo = await LocationService.reverseGeocode(
+      final address = await LocationService.reverseGeocode(
         picked.latitude,
         picked.longitude,
       );
-      if (mounted) {
+      if (mounted && address != null && address.isNotEmpty) {
         setState(() {
-          if (geo.address != null && geo.address!.isNotEmpty) {
-            _addressController.text = geo.address!;
-          }
-          if (geo.zip != null && geo.zip!.isNotEmpty) {
-            _zipController.text = geo.zip!;
-          }
+          _addressController.text = address;
         });
       }
     } catch (e) {
@@ -351,6 +381,12 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
 
   // ── Upload ────────────────────────────────────────────────────────────────
   Future<void> _upload() async {
+    // Guard: prevent duplicate submissions
+    if (_uploadState == _UploadState.uploading ||
+        _uploadState == _UploadState.processing) {
+      return;
+    }
+
     if (_selectedImage == null) {
       _showSnack('Please select a photo first', isError: true);
       return;
@@ -360,12 +396,12 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       return;
     }
     if (_latitude == null || _longitude == null) {
-      _showSnack('Location required. Tap refresh to retry.', isError: true);
+      _showSnack('Location required. Tap Refresh to retry.', isError: true);
       return;
     }
 
     HapticFeedback.mediumImpact();
-    setState(() => _isUploading = true);
+    setState(() => _uploadState = _UploadState.uploading);
 
     try {
       await ref.read(uploadPhotoProvider({
@@ -373,29 +409,30 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
         'profileId': _selectedProfile!.id,
         'latitude': _latitude,
         'longitude': _longitude,
-        'zipCode': _zipController.text.trim().isEmpty
+        'address': _addressController.text.trim().isEmpty
             ? null
-            : _zipController.text.trim(),
+            : _addressController.text.trim(),
         'note': _noteController.text.trim().isEmpty
             ? null
             : _noteController.text.trim(),
       }).future);
 
-      if (mounted) {
-        HapticFeedback.heavyImpact();
-        _showSnack('Photo uploaded successfully');
-        await Future<void>.delayed(const Duration(milliseconds: 500));
-        if (mounted) context.pop();
-      }
+      if (!mounted) return;
+      HapticFeedback.heavyImpact();
+      setState(() => _uploadState = _UploadState.success);
+      _showSnack('Photo uploaded successfully');
+      await Future<void>.delayed(const Duration(milliseconds: 1000));
+      if (mounted) context.go('/home');
     } catch (e) {
-      if (mounted) {
-        _showSnack(
-          e.toString().replaceAll('Exception: ', ''),
-          isError: true,
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _isUploading = false);
+      debugPrint('[UPLOAD ERROR] $e');
+      if (!mounted) return;
+      setState(() => _uploadState = _UploadState.failed);
+      _showSnack(
+        e.toString().replaceAll('Exception: ', ''),
+        isError: true,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 1000));
+      if (mounted) setState(() => _uploadState = _UploadState.idle);
     }
   }
 
@@ -406,7 +443,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     final canUpload = _selectedImage != null &&
         _selectedProfile != null &&
         _latitude != null &&
-        !_isUploading;
+        _uploadState == _UploadState.idle;
 
     return Scaffold(
       backgroundColor: _canvas,
@@ -452,7 +489,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                     size: 20,
                   ),
                   color: _inkMuted,
-                  onPressed: () => context.pop(),
+                  onPressed: context.pop,
                 ),
                 const Expanded(
                   child: Text(
@@ -651,15 +688,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
             ),
             const SizedBox(height: 12),
             profilesAsync.when(
-              loading: () => const Center(
-                child: Padding(
-                  padding: EdgeInsets.symmetric(vertical: 16),
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: _accent,
-                  ),
-                ),
-              ),
+              loading: () => _shimmerBox(height: 56, radius: 12),
               error: (e, _) => _errorBox('Failed to load profiles'),
               data: (profiles) {
                 if (profiles.isEmpty) {
@@ -993,32 +1022,30 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
             ),
             const SizedBox(height: 14),
 
-            // ── Loading ──────────────────────────────────────────────
+            // ── Loading (shimmer) ────────────────────────────────────
             if (_isLoadingLocation)
-              Container(
-                padding: const EdgeInsets.symmetric(vertical: 18),
-                decoration: BoxDecoration(
-                  color: _canvas,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: _accent,
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      SizedBox(
+                        width: 16, height: 16,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: _accent),
                       ),
-                    ),
-                    SizedBox(width: 10),
-                    Text(
-                      'Getting your location…',
-                      style: TextStyle(fontSize: 13, color: _inkMuted),
-                    ),
-                  ],
-                ),
+                      SizedBox(width: 10),
+                      Text('Fetching current location…',
+                          style: TextStyle(fontSize: 13, color: _inkMuted)),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  _shimmerBox(height: 48, radius: 12),
+                  const SizedBox(height: 8),
+                  _shimmerBox(height: 44, radius: 12),
+                  const SizedBox(height: 8),
+                  _shimmerBox(height: 40, radius: 12),
+                ],
               )
 
             // ── Error ────────────────────────────────────────────────
@@ -1029,18 +1056,19 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                   color: const Color(0xFFFEF2F2),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: const Row(
+                child: Row(
                   children: [
-                    Icon(
+                    const Icon(
                       Icons.location_off_rounded,
                       size: 18,
                       color: _errorRed,
                     ),
-                    SizedBox(width: 10),
+                    const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        'Location unavailable. Tap Refresh to retry.',
-                        style: TextStyle(fontSize: 13, color: _errorRed),
+                        _locationErrorMsg ??
+                            'Location unavailable. Tap Refresh to retry.',
+                        style: const TextStyle(fontSize: 13, color: _errorRed),
                       ),
                     ),
                   ],
@@ -1136,64 +1164,6 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
               ),
               const SizedBox(height: 14),
 
-              // ── Pin Code (auto-filled, editable) ────────────────
-              _fieldLabel('Pin Code'),
-              const SizedBox(height: 6),
-              TextField(
-                controller: _zipController,
-                keyboardType: TextInputType.number,
-                inputFormatters: [
-                  FilteringTextInputFormatter.digitsOnly,
-                  LengthLimitingTextInputFormatter(10),
-                ],
-                style: const TextStyle(
-                  fontSize: 14,
-                  color: _ink,
-                  fontWeight: FontWeight.w500,
-                ),
-                decoration: InputDecoration(
-                  hintText: 'e.g. 92101',
-                  hintStyle: const TextStyle(
-                    color: _inkSubtle,
-                    fontSize: 14,
-                  ),
-                  prefixIcon: const Padding(
-                    padding: EdgeInsets.only(left: 12, right: 8),
-                    child: Icon(
-                      Icons.local_post_office_outlined,
-                      size: 18,
-                      color: _inkSubtle,
-                    ),
-                  ),
-                  prefixIconConstraints: const BoxConstraints(
-                    minWidth: 40,
-                    minHeight: 40,
-                  ),
-                  filled: true,
-                  fillColor: _canvas,
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 0,
-                    vertical: 13,
-                  ),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: const BorderSide(
-                      color: _accent,
-                      width: 1.5,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 14),
-
               // ── Lat / Lon (read-only) ─────────────────────────────
               Container(
                 padding: const EdgeInsets.symmetric(
@@ -1206,21 +1176,39 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                 ),
                 child: Row(
                   children: [
-                    const Icon(
+                    Icon(
                       Icons.gps_fixed_rounded,
                       size: 15,
-                      color: _inkSubtle,
+                      color: (_gpsAccuracy != null && _gpsAccuracy! > 50)
+                          ? Colors.orange
+                          : _inkSubtle,
                     ),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: Text(
-                        '${_latitude!.toStringAsFixed(6)},  '
-                        '${_longitude!.toStringAsFixed(6)}',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: _inkMuted,
-                          fontFamily: 'monospace',
-                        ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${_latitude!.toStringAsFixed(6)},  '
+                            '${_longitude!.toStringAsFixed(6)}',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: _inkMuted,
+                              fontFamily: 'monospace',
+                            ),
+                          ),
+                          if (_gpsAccuracy != null)
+                            Text(
+                              'Accuracy: ±${_gpsAccuracy!.toStringAsFixed(0)}m'
+                              '${_gpsAccuracy! > 50 ? ' (low — tap Refresh)' : ''}',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: _gpsAccuracy! > 50
+                                    ? Colors.orange
+                                    : _inkSubtle,
+                              ),
+                            ),
+                        ],
                       ),
                     ),
                   ],
@@ -1249,127 +1237,223 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       );
 
   // ── Upload bar ────────────────────────────────────────────────────────────
-  Widget _buildUploadBar(bool canUpload) => Container(
-        color: _surface,
-        padding: EdgeInsets.only(
-          left: 16,
-          right: 16,
-          top: 12,
-          bottom: MediaQuery.of(context).padding.bottom + 12,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (_isUploading)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(4),
-                  child: const LinearProgressIndicator(
-                    backgroundColor: Color(0xFFE5E7EB),
-                    color: _accent,
-                    minHeight: 3,
-                  ),
+  Widget _buildUploadBar(bool canUpload) {
+    final isActive = _uploadState != _UploadState.idle;
+
+    String label;
+    Color btnColor;
+    IconData btnIcon;
+
+    switch (_uploadState) {
+      case _UploadState.uploading:
+        label = 'Uploading photo…';
+        btnColor = _accent;
+        btnIcon = Icons.cloud_upload_rounded;
+        break;
+      case _UploadState.processing:
+        label = 'Processing…';
+        btnColor = _accent;
+        btnIcon = Icons.cloud_upload_rounded;
+        break;
+      case _UploadState.success:
+        label = 'Upload Complete ✓';
+        btnColor = _successGreen;
+        btnIcon = Icons.check_circle_rounded;
+        break;
+      case _UploadState.failed:
+        label = 'Failed — Tap to Retry';
+        btnColor = _errorRed;
+        btnIcon = Icons.refresh_rounded;
+        break;
+      case _UploadState.idle:
+        label = 'Upload Photo';
+        btnColor = canUpload ? _accent : const Color(0xFFD1D5DB);
+        btnIcon = Icons.cloud_upload_rounded;
+    }
+
+    return Container(
+      color: _surface,
+      padding: EdgeInsets.only(
+        left: 16,
+        right: 16,
+        top: 14,
+        bottom: MediaQuery.of(context).padding.bottom + 14,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // ── Checklist — what's still needed ──────────────────────────
+          if (_uploadState == _UploadState.idle) ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _checkItem(
+                  done: _selectedImage != null,
+                  label: 'Photo',
+                  icon: Icons.camera_alt_rounded,
                 ),
+                const SizedBox(width: 20),
+                _checkItem(
+                  done: _selectedProfile != null,
+                  label: 'Profile',
+                  icon: Icons.person_rounded,
+                ),
+                const SizedBox(width: 20),
+                _checkItem(
+                  done: _latitude != null && !_isLoadingLocation,
+                  label: 'Location',
+                  icon: Icons.location_on_rounded,
+                  loading: _isLoadingLocation,
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+          ],
+
+          // ── Progress bar during upload ────────────────────────────────
+          if (_uploadState == _UploadState.uploading ||
+              _uploadState == _UploadState.processing) ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                backgroundColor: _accent.withValues(alpha: 0.15),
+                color: _accent,
+                minHeight: 4,
               ),
-            SizedBox(
-              width: double.infinity,
-              height: 52,
+            ),
+            const SizedBox(height: 10),
+          ],
+
+          // ── Main button ───────────────────────────────────────────────
+          SizedBox(
+            width: double.infinity,
+            height: 54,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 250),
               child: ElevatedButton(
-                onPressed: canUpload ? _upload : null,
+                onPressed: canUpload && _uploadState == _UploadState.idle
+                    ? _upload
+                    : _uploadState == _UploadState.failed
+                        ? _upload
+                        : null,
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: canUpload ? _accent : _separator,
-                  foregroundColor: canUpload ? Colors.white : _inkSubtle,
-                  elevation: 0,
+                  backgroundColor: btnColor,
+                  foregroundColor: Colors.white,
+                  disabledBackgroundColor: const Color(0xFFD1D5DB),
+                  disabledForegroundColor: const Color(0xFF9CA3AF),
+                  elevation: canUpload ? 2 : 0,
+                  shadowColor: _accent.withValues(alpha: 0.3),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(16),
                   ),
                 ),
-                child: _isUploading
-                    ? const Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
-                            ),
-                          ),
-                          SizedBox(width: 10),
-                          Text(
-                            'Uploading…',
-                            style: TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
-                      )
-                    : Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(
-                            Icons.cloud_upload_rounded,
-                            size: 20,
-                            color: canUpload ? Colors.white : _inkSubtle,
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            'Upload Photo',
-                            style: TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
-                              color: canUpload ? Colors.white : _inkSubtle,
-                            ),
-                          ),
-                        ],
-                      ),
-              ),
-            ),
-            // Validation dots
-            if (!_isUploading)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    _dot(_selectedImage != null),
-                    const SizedBox(width: 4),
-                    _dotLabel('Photo', _selectedImage != null),
-                    const SizedBox(width: 14),
-                    _dot(_selectedProfile != null),
-                    const SizedBox(width: 4),
-                    _dotLabel('Profile', _selectedProfile != null),
-                    const SizedBox(width: 14),
-                    _dot(_latitude != null),
-                    const SizedBox(width: 4),
-                    _dotLabel('Location', _latitude != null),
+                    if (isActive &&
+                        _uploadState != _UploadState.success &&
+                        _uploadState != _UploadState.failed)
+                      const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.5,
+                          color: Colors.white,
+                        ),
+                      )
+                    else
+                      Icon(btnIcon, size: 20),
+                    const SizedBox(width: 10),
+                    Text(
+                      label,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: -0.2,
+                      ),
+                    ),
                   ],
                 ),
               ),
+            ),
+          ),
+
+          // ── Helper text when button is disabled ───────────────────────
+          if (_uploadState == _UploadState.idle && !canUpload) ...[
+            const SizedBox(height: 8),
+            Text(
+              _missingFieldsHint(),
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 12,
+                color: Color(0xFF9CA3AF),
+              ),
+            ),
           ],
-        ),
-      );
+        ],
+      ),
+    );
+  }
 
-  Widget _dot(bool ok) => Container(
-        width: 6,
-        height: 6,
-        decoration: BoxDecoration(
-          color: ok ? _successGreen : _separator,
-          shape: BoxShape.circle,
-        ),
-      );
+  /// Returns a hint about what's still needed.
+  String _missingFieldsHint() {
+    final missing = <String>[];
+    if (_selectedImage == null) missing.add('photo');
+    if (_selectedProfile == null) missing.add('profile');
+    if (_latitude == null && !_isLoadingLocation) missing.add('location');
+    if (_isLoadingLocation) return 'Waiting for GPS…';
+    if (missing.isEmpty) return '';
+    return 'Still needed: ${missing.join(', ')}';
+  }
 
-  Widget _dotLabel(String label, bool ok) => Text(
-        label,
-        style: TextStyle(
-          fontSize: 11,
-          color: ok ? _successGreen : _inkSubtle,
-          fontWeight: ok ? FontWeight.w600 : FontWeight.w400,
+  /// Individual checklist item shown below the button.
+  Widget _checkItem({
+    required bool done,
+    required String label,
+    required IconData icon,
+    bool loading = false,
+  }) => Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 300),
+          width: 36,
+          height: 36,
+          decoration: BoxDecoration(
+            color: done
+                ? _successGreen.withValues(alpha: 0.12)
+                : const Color(0xFFF3F4F6),
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: done ? _successGreen : const Color(0xFFE5E7EB),
+              width: 1.5,
+            ),
+          ),
+          child: loading
+              ? const Padding(
+                  padding: EdgeInsets.all(8),
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: _accent,
+                  ),
+                )
+              : Icon(
+                  done ? Icons.check_rounded : icon,
+                  size: 17,
+                  color: done ? _successGreen : const Color(0xFFD1D5DB),
+                ),
         ),
-      );
+        const SizedBox(height: 4),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 10,
+            fontWeight: done ? FontWeight.w700 : FontWeight.w400,
+            color: done ? _successGreen : const Color(0xFF9CA3AF),
+          ),
+        ),
+      ],
+    );
 
   // ── Shared helpers ────────────────────────────────────────────────────────
   Widget _card({required Widget child}) => Container(
@@ -1532,6 +1616,21 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
               ),
             ),
           ],
+        ),
+      );
+
+  /// Shimmer placeholder — used while loading profiles or location.
+  Widget _shimmerBox({required double height, double radius = 8}) =>
+      Shimmer.fromColors(
+        baseColor: const Color(0xFFE5E7EB),
+        highlightColor: const Color(0xFFF9FAFB),
+        child: Container(
+          height: height,
+          width: double.infinity,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(radius),
+          ),
         ),
       );
 }

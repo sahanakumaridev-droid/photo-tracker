@@ -320,7 +320,26 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2>
 
   Widget _statCard(({String label, String value, IconData icon, int gradIdx}) s) {
     final grad = _statGradients[s.gradIdx];
-    return Container(
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.lightImpact();
+        switch (s.gradIdx) {
+          case 0: // Total Photos — go to home with all filter
+            setState(() => _selectedProfileId = 'all');
+            break;
+          case 1: // Profiles — go to settings
+            context.push('/settings');
+            break;
+          case 2: // This Month — go to log with today's month
+            context.push('/log');
+            break;
+          case 3: // Rush Jobs — filter to rush
+            setState(() => _selectedProfileId = 'all');
+            context.push('/log');
+            break;
+        }
+      },
+      child: Container(
       height: 110,
       decoration: BoxDecoration(
         gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: grad),
@@ -352,8 +371,13 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2>
               ),
             ),
           ),
+          // Tap ripple hint
+          Positioned(top: 8, right: 8,
+            child: Icon(Icons.arrow_forward_ios_rounded, size: 10,
+              color: Colors.white.withValues(alpha: 0.4))),
         ]),
       ),
+    ),
     );
   }
 
@@ -646,8 +670,7 @@ class _GridCardState extends State<_GridCard> {
   PhotoModel get _photo => widget.group[_current];
 
   @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
+  Widget build(BuildContext context) => GestureDetector(
       onTap: () => widget.onTap(_photo.id),
       child: Container(
         decoration: BoxDecoration(
@@ -706,7 +729,6 @@ class _GridCardState extends State<_GridCard> {
         ),
       ),
     );
-  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -746,8 +768,7 @@ class _ListCardState extends State<_ListCard> {
   PhotoModel get _photo => widget.group[_current];
 
   @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
+  Widget build(BuildContext context) => GestureDetector(
       onTap: () => widget.onTap(_photo.id),
       child: Container(
         margin: const EdgeInsets.only(bottom: 10),
@@ -814,7 +835,6 @@ class _ListCardState extends State<_ListCard> {
         ]),
       ),
     );
-  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -850,8 +870,7 @@ class _CarouselImagesState extends State<_CarouselImages> {
   void dispose() { _controller.dispose(); super.dispose(); }
 
   @override
-  Widget build(BuildContext context) {
-    return Stack(fit: StackFit.expand, children: [
+  Widget build(BuildContext context) => Stack(fit: StackFit.expand, children: [
       PageView.builder(
         controller: _controller,
         itemCount: widget.group.length,
@@ -898,7 +917,6 @@ class _CarouselImagesState extends State<_CarouselImages> {
             if (_current < widget.group.length - 1) _controller.nextPage(duration: const Duration(milliseconds: 250), curve: Curves.easeInOut);
           })),
     ]);
-  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -930,8 +948,7 @@ class _ListCarouselImagesState extends State<_ListCarouselImages> {
   void dispose() { _controller.dispose(); super.dispose(); }
 
   @override
-  Widget build(BuildContext context) {
-    return Stack(fit: StackFit.expand, children: [
+  Widget build(BuildContext context) => Stack(fit: StackFit.expand, children: [
       PageView.builder(
         controller: _controller,
         itemCount: widget.group.length,
@@ -954,7 +971,6 @@ class _ListCarouselImagesState extends State<_ListCarouselImages> {
             child: Text('${_current + 1}/${widget.group.length}',
               style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: Colors.white)))),
     ]);
-  }
 }
 
 extension _StringExt on String {

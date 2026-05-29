@@ -20,6 +20,7 @@ final uploadPhotoProvider =
       latitude: params['latitude'] as double,
       longitude: params['longitude'] as double,
       zipCode: params['zipCode'] as String?,
+      address: params['address'] as String?,
       note: params['note'] as String?,
     );
     ref.invalidate(photosProvider);
@@ -57,6 +58,18 @@ final updatePhotoZipProvider =
   await repository.updatePhotoZip(
     photoId: args.$1,
     zipCode: args.$2,
+  );
+  ref.invalidate(photosProvider);
+});
+
+/// Update photo address + zip together
+final updatePhotoAddressProvider =
+    FutureProvider.family<void, (int, String, String)>((ref, args) async {
+  final repository = ref.watch(photoRepositoryProvider);
+  await repository.updatePhotoAddress(
+    photoId: args.$1,
+    address: args.$2,
+    zipCode: args.$3,
   );
   ref.invalidate(photosProvider);
 });

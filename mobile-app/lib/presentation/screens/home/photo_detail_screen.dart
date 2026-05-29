@@ -7,6 +7,7 @@ import 'package:intl/intl.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../../../config/app_config.dart';
+import '../../../core/utils/location_service.dart';
 import '../../../data/models/photo_model.dart';
 import '../../providers/photo_provider.dart';
 
@@ -35,8 +36,36 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
 
   bool _imageExpanded = false;
 
+  // ── Live reverse-geocoded address (for photos that only have ZIP stored) ──
+  String? _resolvedAddress;
+  bool _resolvingAddress = false;
+
+  /// Called once when the photo loads — if address is missing, fetch it live
+  /// from the photo's stored lat/lng via Nominatim.
+  Future<void> _resolveAddressIfNeeded(PhotoModel photo) async {
+    final hasAddress = photo.address != null && photo.address!.isNotEmpty;
+    if (hasAddress) return; // already stored — nothing to do
+
+    if (_resolvingAddress) return;
+    if (!mounted) return;
+
+    setState(() => _resolvingAddress = true);
+    try {
+      final address = await LocationService.reverseGeocode(
+        photo.latitude,
+        photo.longitude,
+      );
+      if (mounted && address != null && address.isNotEmpty) {
+        setState(() => _resolvedAddress = address);
+      }
+    } catch (_) {
+      // Silently fail — fallback to ZIP shown below
+    } finally {
+      if (mounted) setState(() => _resolvingAddress = false);
+    }
+  }
+
   // ── Edit state ────────────────────────────────────────────────────────────
-  final _imagePicker = ImagePicker();
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   Color _svcColor(String? t) {
@@ -152,6 +181,10 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
         if (photo == null) {
           return _buildNotFoundScaffold();
         }
+        // Auto reverse-geocode if address is missing
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _resolveAddressIfNeeded(photo),
+        );
         return _buildDetailScaffold(photo);
       },
     );
@@ -273,7 +306,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
               ),
               const SizedBox(height: 24),
               ElevatedButton(
-                onPressed: () => context.pop(),
+                onPressed: context.pop,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: _accent,
                   foregroundColor: Colors.white,
@@ -484,11 +517,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
 
                   const SizedBox(height: 24),
 
-                  // Edit button
-                  _buildEditButton(photo),
-                  const SizedBox(height: 10),
-
-                  // Delete button
+                  // Delete button only — Edit is in the AppBar pencil icon
                   _buildDeleteButton(photo),
                   const SizedBox(height: 32),
                 ],
@@ -638,9 +667,30 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
 
   // ── Location card ─────────────────────────────────────────────────────────
   Widget _buildLocationCard(PhotoModel photo) {
+    final hasAddress = photo.address != null && photo.address!.isNotEmpty;
     final hasZip = photo.zipCode != null && photo.zipCode!.isNotEmpty;
     final coordsText = '${photo.latitude.toStringAsFixed(6)}, '
         '${photo.longitude.toStringAsFixed(6)}';
+
+    // Priority: stored address → live-resolved address → ZIP → coords
+    String locationDisplay;
+    if (hasAddress) {
+      final addr = photo.address!;
+      if (hasZip && !addr.contains(photo.zipCode!)) {
+        locationDisplay = '$addr, ${photo.zipCode}';
+      } else {
+        locationDisplay = addr;
+      }
+    } else if (_resolvedAddress != null) {
+      // Live reverse-geocoded from lat/lng — full street address
+      locationDisplay = _resolvedAddress!;
+    } else if (_resolvingAddress) {
+      locationDisplay = 'Fetching address…';
+    } else if (hasZip) {
+      locationDisplay = 'ZIP ${photo.zipCode}';
+    } else {
+      locationDisplay = coordsText;
+    }
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -688,25 +738,24 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                         letterSpacing: 0.3,
                       ),
                     ),
-                    const SizedBox(height: 3),
-                    if (hasZip)
-                      Text(
-                        'ZIP Code: ${photo.zipCode}',
-                        style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: _ink,
-                        ),
+                    const SizedBox(height: 4),
+                    // Human-readable address (ZIP inline at end)
+                    Text(
+                      locationDisplay,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: _ink,
                       ),
-                    const SizedBox(height: 2),
+                    ),
+                    const SizedBox(height: 4),
+                    // Always show raw coordinates below
                     Text(
                       coordsText,
                       style: const TextStyle(
-                        fontSize: 13,
+                        fontSize: 12,
                         color: _inkMuted,
-                        fontFeatures: [
-                          FontFeature.tabularFigures(),
-                        ],
+                        fontFeatures: [FontFeature.tabularFigures()],
                       ),
                     ),
                   ],
@@ -717,7 +766,6 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
           const SizedBox(height: 14),
           const Divider(color: _separator, height: 1),
           const SizedBox(height: 12),
-          // Action buttons
           Row(
             children: [
               Expanded(
@@ -854,38 +902,6 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
               }).toList(),
             ),
           ],
-        ),
-      );
-
-  // ── Edit button ───────────────────────────────────────────────────────────
-  Widget _buildEditButton(PhotoModel photo) => GestureDetector(
-        onTap: () => _showEditSheet(photo),
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(vertical: 14),
-          decoration: BoxDecoration(
-            color: _accentSoft,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: _accent.withValues(alpha: 0.3),
-              width: 1,
-            ),
-          ),
-          child: const Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.edit_rounded, size: 18, color: _accent),
-              SizedBox(width: 8),
-              Text(
-                'Edit Photo',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: _accent,
-                ),
-              ),
-            ],
-          ),
         ),
       );
 
@@ -1042,24 +1058,64 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
   static const Color _errorRed = Color(0xFFDC2626);
 
   late final TextEditingController _noteController;
-  late final TextEditingController _zipController;
+  late final TextEditingController _addressController;
   final _imagePicker = ImagePicker();
 
   bool _isSavingNote = false;
-  bool _isSavingZip = false;
+  bool _isSavingAddress = false;
   bool _isReplacingImage = false;
+  bool _isFetchingAddress = false;
 
   @override
   void initState() {
     super.initState();
     _noteController = TextEditingController(text: widget.photo.note ?? '');
-    _zipController = TextEditingController(text: widget.photo.zipCode ?? '');
+
+    // Combine address + ZIP into one field: "123 Main St, Dallas, TX 75001"
+    final addr = widget.photo.address ?? '';
+    final zip  = widget.photo.zipCode ?? '';
+    var combined = addr;
+    if (zip.isNotEmpty && !addr.contains(zip)) {
+      combined = addr.isNotEmpty ? '$addr, $zip' : zip;
+    }
+    _addressController = TextEditingController(text: combined);
+
+    // If address is missing or only has ZIP, auto-fetch from coordinates
+    final needsGeocode = addr.isEmpty ||
+        (addr == zip) ||
+        (addr.trim() == zip.trim());
+    if (needsGeocode &&
+        widget.photo.latitude != 0 &&
+        widget.photo.longitude != 0) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _autoFetchAddress());
+    }
+  }
+
+  /// Reverse-geocode the photo's coordinates and populate the address field.
+  Future<void> _autoFetchAddress() async {
+    if (!mounted) return;
+    setState(() => _isFetchingAddress = true);
+    try {
+      final address = await LocationService.reverseGeocode(
+        widget.photo.latitude,
+        widget.photo.longitude,
+      );
+      if (mounted && address != null && address.isNotEmpty) {
+        setState(() {
+          _addressController.text = address;
+        });
+      }
+    } catch (_) {
+      // Silently fail — user can type manually
+    } finally {
+      if (mounted) setState(() => _isFetchingAddress = false);
+    }
   }
 
   @override
   void dispose() {
     _noteController.dispose();
-    _zipController.dispose();
+    _addressController.dispose();
     super.dispose();
   }
 
@@ -1105,47 +1161,62 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
     HapticFeedback.mediumImpact();
     setState(() => _isSavingNote = true);
     try {
-      await ref.read(
+      // Call the API
+      await widget.parentRef.read(
         updatePhotoNoteProvider((widget.photo.id, note)).future,
       );
+      // Invalidate and wait for the provider to finish refreshing so the
+      // detail screen rebuilds with the new note before the sheet closes.
+      widget.parentRef.invalidate(photosProvider);
+      await widget.parentRef.read(photosProvider.future);
       if (mounted) {
         HapticFeedback.heavyImpact();
-        _snack('Note updated');
+        _snack('Note saved');
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        if (mounted) Navigator.of(context).pop();
       }
     } catch (e) {
       if (mounted) {
-        _snack(
-          e.toString().replaceAll('Exception: ', ''),
-          isError: true,
-        );
+        _snack(e.toString().replaceAll('Exception: ', ''), isError: true);
       }
     } finally {
       if (mounted) setState(() => _isSavingNote = false);
     }
   }
 
-  // ── Save ZIP ──────────────────────────────────────────────────────────────
-  Future<void> _saveZip() async {
-    final zip = _zipController.text.trim();
+  // ── Save address + ZIP (combined) ─────────────────────────────────────────
+  Future<void> _saveAddress() async {
+    final raw = _addressController.text.trim();
+    if (raw.isEmpty) {
+      _snack('Please enter an address', isError: true);
+      return;
+    }
     HapticFeedback.mediumImpact();
-    setState(() => _isSavingZip = true);
+    setState(() => _isSavingAddress = true);
     try {
-      await ref.read(
-        updatePhotoZipProvider((widget.photo.id, zip)).future,
+      final zipMatch = RegExp(r'\b(\d{5}(?:-\d{4})?)\b').allMatches(raw);
+      final zip = zipMatch.isNotEmpty ? zipMatch.last.group(0) ?? '' : '';
+
+      await widget.parentRef.read(
+        updatePhotoAddressProvider((widget.photo.id, raw, zip)).future,
       );
+      // Invalidate and wait for refresh so the detail screen rebuilds
+      // with the new address before the sheet closes.
+      widget.parentRef.invalidate(photosProvider);
+      await widget.parentRef.read(photosProvider.future);
+
       if (mounted) {
         HapticFeedback.heavyImpact();
-        _snack('ZIP code updated');
+        _snack('Address saved');
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        if (mounted) Navigator.of(context).pop();
       }
     } catch (e) {
       if (mounted) {
-        _snack(
-          e.toString().replaceAll('Exception: ', ''),
-          isError: true,
-        );
+        _snack(e.toString().replaceAll('Exception: ', ''), isError: true);
       }
     } finally {
-      if (mounted) setState(() => _isSavingZip = false);
+      if (mounted) setState(() => _isSavingAddress = false);
     }
   }
 
@@ -1192,9 +1263,10 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
       HapticFeedback.mediumImpact();
       setState(() => _isReplacingImage = true);
 
-      await ref.read(
+      await widget.parentRef.read(
         replacePhotoImageProvider((widget.photo.id, picked.path)).future,
       );
+      widget.parentRef.invalidate(photosProvider);
 
       if (mounted) {
         HapticFeedback.heavyImpact();
@@ -1306,8 +1378,7 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
       );
 
   @override
-  Widget build(BuildContext context) {
-    return Container(
+  Widget build(BuildContext context) => Container(
       constraints: BoxConstraints(
         maxHeight: MediaQuery.of(context).size.height * 0.85,
       ),
@@ -1351,7 +1422,7 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
                   child: Container(
                     width: 30,
                     height: 30,
-                    decoration: BoxDecoration(
+                    decoration: const BoxDecoration(
                       color: _canvas,
                       shape: BoxShape.circle,
                     ),
@@ -1372,7 +1443,146 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // ── Replace image ────────────────────────────────────────
+                  // ── Edit note ────────────────────────────────────────────
+                  // NOTE FIRST — prevents accidental camera trigger when
+                  // user taps the note field (was below Replace Photo before)
+                  _label('Note'),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _noteController,
+                    maxLines: 4,
+                    textCapitalization: TextCapitalization.sentences,
+                    style: const TextStyle(fontSize: 14, color: _ink),
+                    decoration: InputDecoration(
+                      hintText: 'Add a note…',
+                      hintStyle: const TextStyle(color: _inkSubtle),
+                      filled: true,
+                      fillColor: _canvas,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(
+                            color: _accent, width: 1.5),
+                      ),
+                      contentPadding: const EdgeInsets.all(14),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  _saveBtn(
+                    label: 'Save Note',
+                    isLoading: _isSavingNote,
+                    onTap: _saveNote,
+                  ),
+                  const SizedBox(height: 20),
+
+                  // ── Address + ZIP (combined single field) ─────────────────
+                  Row(
+                    children: [
+                      _label('Address & ZIP'),
+                      const Spacer(),
+                      if (_isFetchingAddress)
+                        const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(
+                              width: 12, height: 12,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: _accent),
+                            ),
+                            SizedBox(width: 6),
+                            Text('Locating…',
+                                style: TextStyle(
+                                    fontSize: 11, color: _accent)),
+                          ],
+                        )
+                      else
+                        GestureDetector(
+                          onTap: _autoFetchAddress,
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.my_location_rounded,
+                                  size: 13, color: _accent),
+                              SizedBox(width: 4),
+                              Text('Auto-fill',
+                                  style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: _accent)),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Include ZIP at the end — e.g. 123 Main St, Dallas, TX 75001',
+                    style: TextStyle(fontSize: 11, color: _inkSubtle),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _addressController,
+                    maxLines: 2,
+                    textCapitalization: TextCapitalization.words,
+                    style: const TextStyle(fontSize: 14, color: _ink),
+                    decoration: InputDecoration(
+                      hintText: '123 Main St, Dallas, TX 75001',
+                      hintStyle: const TextStyle(color: _inkSubtle),
+                      prefixIcon: const Padding(
+                        padding: EdgeInsets.only(left: 12, right: 8),
+                        child: Icon(Icons.location_on_rounded,
+                            size: 18, color: _inkSubtle),
+                      ),
+                      prefixIconConstraints: const BoxConstraints(
+                          minWidth: 40, minHeight: 40),
+                      filled: true,
+                      fillColor: _canvas,
+                      contentPadding: const EdgeInsets.fromLTRB(0, 12, 14, 12),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(
+                            color: _accent, width: 1.5),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  _saveBtn(
+                    label: 'Save Address',
+                    isLoading: _isSavingAddress,
+                    onTap: _saveAddress,
+                  ),
+                  const SizedBox(height: 24),
+
+                  // ── Divider before destructive/replace actions ────────────
+                  const Divider(height: 1, color: Color(0xFFE5E7EB)),
+                  const SizedBox(height: 20),
+
+                  // ── Edit location ────────────────────────────────────────
+                  _sectionCard(
+                    icon: Icons.location_on_rounded,
+                    iconColor: const Color(0xFF059669),
+                    title: 'Edit Location',
+                    subtitle:
+                        '${widget.photo.latitude.toStringAsFixed(5)}, ${widget.photo.longitude.toStringAsFixed(5)}',
+                    trailing: const Icon(
+                      Icons.chevron_right_rounded,
+                      color: _inkSubtle,
+                    ),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      context.push('/edit-location', extra: widget.photo);
+                    },
+                  ),
+                  const SizedBox(height: 10),
+
+                  // ── Replace image — at the BOTTOM to avoid accidental taps
                   _sectionCard(
                     icon: Icons.camera_alt_rounded,
                     iconColor: _accent,
@@ -1393,82 +1603,7 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
                           ),
                     onTap: _isReplacingImage ? null : _showImageSourcePicker,
                   ),
-                  const SizedBox(height: 10),
-
-                  // ── Edit location ────────────────────────────────────────
-                  _sectionCard(
-                    icon: Icons.location_on_rounded,
-                    iconColor: const Color(0xFF059669),
-                    title: 'Edit Location',
-                    subtitle:
-                        '${widget.photo.latitude.toStringAsFixed(5)}, ${widget.photo.longitude.toStringAsFixed(5)}',
-                    trailing: const Icon(
-                      Icons.chevron_right_rounded,
-                      color: _inkSubtle,
-                    ),
-                    onTap: () {
-                      Navigator.of(context).pop();
-                      context.push('/edit-location', extra: widget.photo);
-                    },
-                  ),
-                  const SizedBox(height: 20),
-
-                  // ── Edit note ────────────────────────────────────────────
-                  _label('Note'),
                   const SizedBox(height: 8),
-                  TextField(
-                    controller: _noteController,
-                    maxLines: 3,
-                    textCapitalization: TextCapitalization.sentences,
-                    style: const TextStyle(fontSize: 14, color: _ink),
-                    decoration: InputDecoration(
-                      hintText: 'Add a note…',
-                      hintStyle: const TextStyle(color: _inkSubtle),
-                      filled: true,
-                      fillColor: _canvas,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide.none,
-                      ),
-                      contentPadding: const EdgeInsets.all(14),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  _saveBtn(
-                    label: 'Save Note',
-                    isLoading: _isSavingNote,
-                    onTap: _saveNote,
-                  ),
-                  const SizedBox(height: 20),
-
-                  // ── Edit ZIP ─────────────────────────────────────────────
-                  _label('ZIP Code'),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: _zipController,
-                    keyboardType: TextInputType.number,
-                    style: const TextStyle(fontSize: 14, color: _ink),
-                    decoration: InputDecoration(
-                      hintText: 'Enter ZIP code…',
-                      hintStyle: const TextStyle(color: _inkSubtle),
-                      filled: true,
-                      fillColor: _canvas,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide.none,
-                      ),
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 12,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  _saveBtn(
-                    label: 'Save ZIP',
-                    isLoading: _isSavingZip,
-                    onTap: _saveZip,
-                  ),
                 ],
               ),
             ),
@@ -1476,7 +1611,6 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
         ],
       ),
     );
-  }
 
   Widget _label(String text) => Text(
         text,
