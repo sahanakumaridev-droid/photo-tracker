@@ -112,7 +112,7 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
     switch (t.toLowerCase()) {
       case 'rush': return const Color(0xFFDC2626);
       case 'airport': return const Color(0xFF0284C7);
-      default: return const Color(0xFF059669);
+      default: return const Color(0xFF10B981);
     }
   }
 

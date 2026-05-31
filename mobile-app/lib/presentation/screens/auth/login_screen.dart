@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../../core/utils/constants.dart';
 import '../../providers/auth_provider.dart';
+import '../../widgets/common/app_logo.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -81,51 +82,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               Center(
                 child: Column(
                   children: [
-                    Container(
-                      width: 80,
-                      height: 80,
-                      decoration: BoxDecoration(
-                        gradient: const LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [Color(0xFF4F46E5), Color(0xFF7C3AED)],
-                        ),
-                        borderRadius: BorderRadius.circular(20),
-                        boxShadow: [
-                          BoxShadow(
-                            color: const Color(0xFF4F46E5).withValues(alpha: 0.35),
-                            blurRadius: 20,
-                            offset: const Offset(0, 8),
-                          ),
-                        ],
-                      ),
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          const Icon(
-                            Icons.location_on_rounded,
-                            color: Colors.white,
-                            size: 38,
-                          ),
-                          Positioned(
-                            bottom: 12,
-                            right: 12,
-                            child: Container(
-                              width: 12,
-                              height: 12,
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF34D399),
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: Colors.white,
-                                  width: 2,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
+                    const AppLogo(size: 84, radius: 20, withShadow: true),
                     const SizedBox(height: 16),
                     RichText(
                       text: const TextSpan(

@@ -187,9 +187,18 @@ export default function ProfileDetail() {
 }
 
 /* ── Photo Grid with lightbox ── */
+const PHOTO_PAGE = 24  // photos rendered per batch
+
 function PhotoGrid({ photos, onUpdated }) {
   const [lightboxId, setLightboxId] = useState(null)
+  const [visible, setVisible] = useState(PHOTO_PAGE)
   const lightboxIdx = lightboxId != null ? photos.findIndex(p => p.id === lightboxId) : -1
+
+  // Reset paging when the photo set changes size (e.g., after add/delete)
+  useEffect(() => { setVisible(PHOTO_PAGE) }, [photos.length])
+
+  const shown = photos.slice(0, visible)
+  const remaining = photos.length - shown.length
 
   return (
     <>
@@ -201,7 +210,7 @@ function PhotoGrid({ photos, onUpdated }) {
         />
       )}
       <div className="dk-photo-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
-        {photos.map(p => (
+        {shown.map(p => (
           <PhotoCard
             key={p.id}
             p={p}
@@ -211,6 +220,18 @@ function PhotoGrid({ photos, onUpdated }) {
           />
         ))}
       </div>
+      {remaining > 0 && (
+        <div style={{ display: 'flex', justifyContent: 'center', marginTop: 18 }}>
+          <button
+            className="btn btn-outline"
+            style={{ fontSize: 13, padding: '10px 22px', fontWeight: 700 }}
+            onClick={() => setVisible(v => v + PHOTO_PAGE)}
+          >
+            Load {Math.min(remaining, PHOTO_PAGE)} more
+            <span style={{ opacity: 0.6, marginLeft: 6 }}>· {remaining} remaining</span>
+          </button>
+        </div>
+      )}
     </>
   )
 }
@@ -371,7 +392,7 @@ function PhotoCard({ p, allPhotos, onPhotoClick, onNoteUpdated }) {
       {/* Clickable image → opens lightbox */}
       <div style={{position:'relative', cursor:'pointer'}} onClick={() => onPhotoClick(p.id)}>
         <img
-          src={p.image_url} alt=""
+          src={p.image_url} alt="" loading="lazy" decoding="async"
           onError={e => { e.target.src='https://via.placeholder.com/400x300/1e1b4b/6366f1?text=Photo' }}
         />
         {/* Replace button */}

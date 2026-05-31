@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { Routes, Route, NavLink, useLocation } from 'react-router-dom'
 import Sidebar from './components/Sidebar'
 import Dashboard from './pages/Dashboard'
+import Analytics from './pages/Analytics'
 import Profiles from './pages/Profiles'
 import Upload from './pages/Upload'
 import ProfileDetail from './pages/ProfileDetail'
@@ -49,29 +50,55 @@ export default function App() {
   // ── Global geolocation — watch position so it stays fresh ──
   const [geoLocation,  setGeoLocation]  = useState(null)
   const [geoTimestamp, setGeoTimestamp] = useState(null)
+  const [geoError,     setGeoError]     = useState(null)
 
   useEffect(() => {
     if (!user) return
-    if (!navigator.geolocation) return
+    if (!navigator.geolocation) {
+      setGeoError('Geolocation is not available. Use a modern browser with HTTPS.')
+      return
+    }
 
-    // Grab immediately
-    navigator.geolocation.getCurrentPosition(
-      pos => {
-        setGeoLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude })
-        setGeoTimestamp(new Date().toISOString())
-      },
-      () => {}, // silent — no fallback coords
-      { timeout: 10000, enableHighAccuracy: true, maximumAge: 0 }
-    )
+    // Grab immediately with retry
+    let attempts = 0
+    const maxAttempts = 3
+
+    const tryGetPosition = () => {
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          setGeoLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude })
+          setGeoTimestamp(new Date().toISOString())
+          setGeoError(null)
+        },
+        err => {
+          attempts++
+          if (err.code === 1) {
+            setGeoError('Location permission denied. Please enable GPS in your browser settings and reload.')
+          } else if (attempts < maxAttempts) {
+            setTimeout(tryGetPosition, 2000)
+          } else {
+            setGeoError('Unable to get GPS signal. Try moving to an open area or set location manually.')
+          }
+        },
+        { timeout: 12000, enableHighAccuracy: true, maximumAge: 0 }
+      )
+    }
+
+    tryGetPosition()
 
     // Then watch for updates (keeps location fresh as user moves)
     const watchId = navigator.geolocation.watchPosition(
       pos => {
         setGeoLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude })
         setGeoTimestamp(new Date().toISOString())
+        setGeoError(null)
       },
-      () => {},
-      { enableHighAccuracy: true, maximumAge: 5000 }
+      err => {
+        if (err.code === 1) {
+          setGeoError('Location permission denied. Please enable GPS in browser settings.')
+        }
+      },
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
     )
 
     return () => navigator.geolocation.clearWatch(watchId)
@@ -101,11 +128,17 @@ export default function App() {
   return (
     <ThemeProvider>
       <GeoContext.Provider value={{ location: geoLocation, timestamp: geoTimestamp }}>
+        {geoError && (
+          <div className="geo-banner">
+            ⚠️ {geoError}
+          </div>
+        )}
         <div className="app-shell">
           <Sidebar user={user} onLogout={handleLogout} />
           <main className="app-main">
             <Routes>
               <Route path="/"             element={<Dashboard />} />
+              <Route path="/analytics"    element={<Analytics />} />
               <Route path="/profiles"     element={<Profiles showToast={showToast} />} />
               <Route path="/profiles/:id" element={<ProfileDetail />} />
               <Route path="/upload"       element={<Upload showToast={showToast} />} />

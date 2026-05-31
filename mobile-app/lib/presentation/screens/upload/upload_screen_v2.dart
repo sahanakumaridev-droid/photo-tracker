@@ -10,6 +10,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shimmer/shimmer.dart';
 
+import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/photo_provider.dart';
@@ -27,16 +28,16 @@ class UploadScreenV2 extends ConsumerStatefulWidget {
 
 class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   // ── Design tokens ─────────────────────────────────────────────────────────
-  static const Color _canvas = Color(0xFFF2F4F7);
+  static const Color _canvas = Color(0xFFFAFAFA);
   static const Color _surface = Color(0xFFFFFFFF);
-  static const Color _ink = Color(0xFF0D1117);
-  static const Color _inkMuted = Color(0xFF4B5563);
+  static const Color _ink = Color(0xFF0F0F0F);
+  static const Color _inkMuted = Color(0xFF6B7280);
   static const Color _inkSubtle = Color(0xFF9CA3AF);
   static const Color _separator = Color(0xFFE5E7EB);
-  static const Color _accent = Color(0xFF5B5BD6);
-  static const Color _accentSoft = Color(0xFFEEEEFD);
-  static const Color _successGreen = Color(0xFF059669);
-  static const Color _errorRed = Color(0xFFDC2626);
+  static const Color _accent = Color(0xFF7C3AED);
+  static const Color _accentSoft = Color(0xFFEDE9FE);
+  static const Color _successGreen = Color(0xFF10B981);
+  static const Color _errorRed = Color(0xFFEF4444);
 
   // ── Upload state enum ─────────────────────────────────────────────────────
   // idle → uploading → processing → success | failed
@@ -52,6 +53,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   bool _locationError = false;
   String? _locationErrorMsg;
   bool _isEditingAddress = false;
+  String _selectedCategory = kDefaultCategory;
 
   final _noteController = TextEditingController();
   final _addressController = TextEditingController();
@@ -174,7 +176,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
         ? LatLng(_latitude!, _longitude!)
         : null;
 
-    final picked = await Navigator.of(context).push<LatLng>(
+    final picked = await Navigator.of(context).push<PickedLocation>(
       MaterialPageRoute(
         fullscreenDialog: true,
         builder: (_) => LocationPickerMap(initial: initial),
@@ -184,22 +186,28 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     if (picked == null || !mounted) return;
 
     setState(() {
-      _latitude = picked.latitude;
-      _longitude = picked.longitude;
-      _isLoadingLocation = true;
+      _latitude = picked.latLng.latitude;
+      _longitude = picked.latLng.longitude;
       _locationError = false;
     });
 
-    // Reverse-geocode the picked point
+    // Prefer the address the picker already resolved (matches the pin exactly);
+    // only reverse-geocode as a fallback if it didn't have one.
+    if (picked.address != null && picked.address!.isNotEmpty) {
+      setState(() {
+        _addressController.text = picked.address!;
+        _isLoadingLocation = false;
+      });
+      return;
+    }
+    setState(() => _isLoadingLocation = true);
     try {
       final address = await LocationService.reverseGeocode(
-        picked.latitude,
-        picked.longitude,
+        picked.latLng.latitude,
+        picked.latLng.longitude,
       );
       if (mounted && address != null && address.isNotEmpty) {
-        setState(() {
-          _addressController.text = address;
-        });
+        setState(() => _addressController.text = address);
       }
     } catch (e) {
       debugPrint('[MapPicker] reverse geocode error: $e');
@@ -415,6 +423,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
         'note': _noteController.text.trim().isEmpty
             ? null
             : _noteController.text.trim(),
+        'category': _selectedCategory,
       }).future);
 
       if (!mounted) return;
@@ -452,7 +461,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
           _buildHeader(),
           Expanded(
             child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
@@ -462,58 +471,117 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                   const SizedBox(height: 14),
                   _buildLocationSection(),
                   const SizedBox(height: 14),
+                  _buildCategorySection(),
+                  const SizedBox(height: 14),
                   _buildDetailsSection(),
-                  const SizedBox(height: 100),
+                  const SizedBox(height: 20),
+                  _buildUploadBar(canUpload),
+                  const SizedBox(height: 8),
                 ],
               ),
             ),
           ),
         ],
       ),
-      bottomNavigationBar: _buildUploadBar(canUpload),
     );
   }
 
-  // ── Header ────────────────────────────────────────────────────────────────
-  Widget _buildHeader() => Container(
+  // ── Header (with required-step progress) ────────────────────────────────────
+  Widget _buildHeader() {
+    final done = [
+      _selectedImage != null,
+      _selectedProfile != null,
+      _latitude != null && !_isLoadingLocation,
+    ].where((x) => x).length;
+    final ready = done == 3;
+    return Container(
+      decoration: const BoxDecoration(
         color: _surface,
-        child: SafeArea(
-          bottom: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(4, 8, 16, 12),
-            child: Row(
-              children: [
-                IconButton(
-                  icon: const Icon(
-                    Icons.arrow_back_ios_new_rounded,
-                    size: 20,
+        border: Border(bottom: BorderSide(color: _separator)),
+      ),
+      child: SafeArea(
+        bottom: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(4, 6, 16, 14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
+                    color: _inkMuted,
+                    onPressed: context.pop,
                   ),
-                  color: _inkMuted,
-                  onPressed: context.pop,
-                ),
-                const Expanded(
-                  child: Text(
-                    'New Upload',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w700,
-                      color: _ink,
-                      letterSpacing: -0.5,
+                  const Expanded(
+                    child: Text(
+                      'New Capture',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800,
+                        color: _ink,
+                        letterSpacing: -0.5,
+                      ),
                     ),
                   ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: (ready ? _successGreen : _accent)
+                          .withValues(alpha: 0.10),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text('$done/3',
+                        style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w800,
+                            color: ready ? _successGreen : _accent)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(
+                    value: done / 3,
+                    minHeight: 6,
+                    backgroundColor: _separator,
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                        ready ? _successGreen : _accent),
+                  ),
                 ),
-              ],
-            ),
+              ),
+              const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Text(
+                  ready
+                      ? 'All set — ready to upload'
+                      : 'Add a photo, profile and location to continue',
+                  style: TextStyle(
+                      fontSize: 12.5,
+                      color: ready ? _successGreen : _inkSubtle,
+                      fontWeight:
+                          ready ? FontWeight.w600 : FontWeight.w400),
+                ),
+              ),
+            ],
           ),
         ),
-      );
+      ),
+    );
+  }
 
   // ── Photo section ─────────────────────────────────────────────────────────
   Widget _buildPhotoSection() => _card(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _sectionLabel('Photo', Icons.camera_alt_rounded, required: true),
+            _sectionLabel('Photo', Icons.camera_alt_rounded,
+                required: true, done: _selectedImage != null),
             const SizedBox(height: 12),
             // Preview — tap opens camera directly
             GestureDetector(
@@ -685,6 +753,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
               'Profile',
               Icons.person_rounded,
               required: true,
+              done: _selectedProfile != null,
             ),
             const SizedBox(height: 12),
             profilesAsync.when(
@@ -768,6 +837,76 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                   ),
                 );
               },
+            ),
+          ],
+        ),
+      );
+
+  // ── Category section ──────────────────────────────────────────────────────
+  Widget _buildCategorySection() => _card(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _sectionLabel(
+              'Category',
+              Icons.label_rounded,
+              done: true,
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Tag this photo with a priority level.',
+              style: TextStyle(fontSize: 13, color: _inkSubtle),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: kPhotoCategories.map((c) {
+                final selected = _selectedCategory == c.value;
+                return GestureDetector(
+                  onTap: () {
+                    HapticFeedback.selectionClick();
+                    setState(() => _selectedCategory = c.value);
+                  },
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 160),
+                    width: 112,
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 10,
+                    ),
+                    decoration: BoxDecoration(
+                      color: selected ? c.color : c.softColor,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: selected
+                            ? c.color
+                            : c.color.withValues(alpha: 0.25),
+                        width: 1.5,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          c.icon,
+                          size: 16,
+                          color: selected ? Colors.white : c.color,
+                        ),
+                        const SizedBox(width: 7),
+                        Text(
+                          c.label,
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: selected ? Colors.white : c.color,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }).toList(),
             ),
           ],
         ),
@@ -946,6 +1085,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                     'Location',
                     Icons.location_on_rounded,
                     required: true,
+                    done: _latitude != null && !_isLoadingLocation,
                   ),
                 ),
               ],
@@ -1272,44 +1412,11 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     }
 
     return Container(
-      color: _surface,
-      padding: EdgeInsets.only(
-        left: 16,
-        right: 16,
-        top: 14,
-        bottom: MediaQuery.of(context).padding.bottom + 14,
-      ),
+      color: Colors.transparent,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // ── Checklist — what's still needed ──────────────────────────
-          if (_uploadState == _UploadState.idle) ...[
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                _checkItem(
-                  done: _selectedImage != null,
-                  label: 'Photo',
-                  icon: Icons.camera_alt_rounded,
-                ),
-                const SizedBox(width: 20),
-                _checkItem(
-                  done: _selectedProfile != null,
-                  label: 'Profile',
-                  icon: Icons.person_rounded,
-                ),
-                const SizedBox(width: 20),
-                _checkItem(
-                  done: _latitude != null && !_isLoadingLocation,
-                  label: 'Location',
-                  icon: Icons.location_on_rounded,
-                  loading: _isLoadingLocation,
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-          ],
-
+          // (Step progress now lives in the header; the bar stays clean.)
           // ── Progress bar during upload ────────────────────────────────
           if (_uploadState == _UploadState.uploading ||
               _uploadState == _UploadState.processing) ...[
@@ -1406,55 +1513,6 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     return 'Still needed: ${missing.join(', ')}';
   }
 
-  /// Individual checklist item shown below the button.
-  Widget _checkItem({
-    required bool done,
-    required String label,
-    required IconData icon,
-    bool loading = false,
-  }) => Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        AnimatedContainer(
-          duration: const Duration(milliseconds: 300),
-          width: 36,
-          height: 36,
-          decoration: BoxDecoration(
-            color: done
-                ? _successGreen.withValues(alpha: 0.12)
-                : const Color(0xFFF3F4F6),
-            shape: BoxShape.circle,
-            border: Border.all(
-              color: done ? _successGreen : const Color(0xFFE5E7EB),
-              width: 1.5,
-            ),
-          ),
-          child: loading
-              ? const Padding(
-                  padding: EdgeInsets.all(8),
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: _accent,
-                  ),
-                )
-              : Icon(
-                  done ? Icons.check_rounded : icon,
-                  size: 17,
-                  color: done ? _successGreen : const Color(0xFFD1D5DB),
-                ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 10,
-            fontWeight: done ? FontWeight.w700 : FontWeight.w400,
-            color: done ? _successGreen : const Color(0xFF9CA3AF),
-          ),
-        ),
-      ],
-    );
-
   // ── Shared helpers ────────────────────────────────────────────────────────
   Widget _card({required Widget child}) => Container(
         padding: const EdgeInsets.all(16),
@@ -1476,6 +1534,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     String label,
     IconData icon, {
     bool required = false,
+    bool done = false,
   }) =>
       Row(
         children: [
@@ -1483,10 +1542,11 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
             width: 28,
             height: 28,
             decoration: BoxDecoration(
-              color: _accentSoft,
+              color: done ? _successGreen : _accentSoft,
               borderRadius: BorderRadius.circular(8),
             ),
-            child: Icon(icon, size: 15, color: _accent),
+            child: Icon(done ? Icons.check_rounded : icon,
+                size: 15, color: done ? Colors.white : _accent),
           ),
           const SizedBox(width: 10),
           Text(
@@ -1498,7 +1558,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
               letterSpacing: -0.2,
             ),
           ),
-          if (required) ...[
+          if (required && !done) ...[
             const SizedBox(width: 4),
             const Text(
               '*',
@@ -1508,6 +1568,14 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                 fontWeight: FontWeight.w700,
               ),
             ),
+          ],
+          if (done) ...[
+            const Spacer(),
+            const Text('Done',
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: _successGreen)),
           ],
         ],
       );

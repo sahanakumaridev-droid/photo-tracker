@@ -80,12 +80,30 @@ class Photo(Base):
     zip_code  = Column(String, nullable=True)
     address   = Column(Text,   nullable=True)   # human-readable address
     note      = Column(Text,   nullable=True)
+    # per-photo priority category: standard | special | next_day | asap
+    category  = Column(String, nullable=True, default="standard")
     # legacy single profile_id kept for backward compat
     profile_id = Column(Integer, nullable=True)
     profiles   = relationship("Profile", secondary=pin_profile, back_populates="photos")
 
 
 Base.metadata.create_all(bind=engine)
+
+
+def _ensure_columns():
+    """Lightweight SQLite migration: add columns introduced after the table
+    was first created. create_all() never alters existing tables."""
+    from sqlalchemy import text, inspect
+    inspector = inspect(engine)
+    existing = {c["name"] for c in inspector.get_columns("photos")}
+    with engine.connect() as conn:
+        if "category" not in existing:
+            conn.execute(text(
+                "ALTER TABLE photos ADD COLUMN category VARCHAR DEFAULT 'standard'"))
+            conn.commit()
+
+
+_ensure_columns()
 
 
 def _photo_dict(ph):
@@ -108,6 +126,7 @@ def _photo_dict(ph):
         "zip_code":     ph.zip_code,
         "address":      ph.address,
         "note":         ph.note,
+        "category":     ph.category or "standard",
         "profile_id":   primary["id"]   if primary else ph.profile_id,
         "profile_name": primary["name"] if primary else "Unknown",
         "service_type": primary["service_type"] if primary else "standard",
@@ -142,9 +161,12 @@ async def create_profile(data: dict = Body(...)):
     if not name:
         raise HTTPException(status_code=422, detail="Profile name is required")
     
-    if service_type not in ("standard", "rush", "airport"):
+    # Priority categories (+ legacy rush/airport kept for backward compat)
+    if service_type not in (
+        "standard", "special", "next_day", "asap", "rush", "airport"
+    ):
         service_type = "standard"
-    
+
     db = SessionLocal()
     profile = Profile(name=name, service_type=service_type)
     db.add(profile)
@@ -244,6 +266,7 @@ async def upload_photo(
     zip_code:   str        = Form(""),
     address:    str        = Form(""),
     note:       str        = Form(""),
+    category:   str        = Form("standard"),
 ):
     # Validate coordinates
     if not (-90 <= latitude <= 90):
@@ -272,6 +295,10 @@ async def upload_photo(
         zip_code   = zip_code.strip() or None,
         address    = address.strip()  or None,
         note       = note.strip()     or None,
+        category   = (category.strip().lower()
+                      if category.strip().lower() in
+                      ("standard", "special", "next_day", "asap")
+                      else "standard"),
         profile_id = profile_id,
     )
     photo.profiles = [profile]
@@ -379,6 +406,22 @@ async def update_photo_address(photo_id: int, data: dict = Body(...)):
     db.commit()
     db.close()
     return {"ok": True}
+
+
+@app.patch("/photos/{photo_id}/category")
+async def update_photo_category(photo_id: int, data: dict = Body(...)):
+    db = SessionLocal()
+    photo = db.query(Photo).filter(Photo.id == photo_id).first()
+    if not photo:
+        db.close()
+        raise HTTPException(status_code=404, detail="Photo not found")
+    cat = (data.get("category") or "standard").strip().lower()
+    if cat not in ("standard", "special", "next_day", "asap"):
+        cat = "standard"
+    photo.category = cat
+    db.commit()
+    db.close()
+    return {"ok": True, "category": cat}
 
 
 @app.patch("/photos/{photo_id}/profiles")
@@ -514,9 +557,21 @@ async def export_log_email(request: Request):
     if not to_email:
         raise HTTPException(status_code=422, detail="Email address required")
 
+    # Category display metadata: label + colour
+    _CATEGORY_META = {
+        "standard": ("Standard", "#059669"),
+        "special":  ("Special",  "#EA580C"),
+        "next_day": ("Next Day", "#CA8A04"),
+        "asap":     ("ASAP",     "#DC2626"),
+    }
+
     # Build HTML table
     rows_html = ""
     for r in records_list:
+        cat_label, cat_color = _CATEGORY_META.get(
+            (r.get("category") or "standard").lower(),
+            _CATEGORY_META["standard"],
+        )
         profiles = ", ".join(p["name"] for p in r.get("profiles", [])) or r.get("profile_name", "—")
         lat = r.get('latitude', '')
         lng = r.get('longitude', '')
@@ -533,6 +588,7 @@ async def export_log_email(request: Request):
           <td>{r.get('timestamp','—')}</td>
           <td>{profiles}</td>
           <td>{r.get('service_type','—').upper()}</td>
+          <td><span style="color:{cat_color};font-weight:700;">{cat_label}</span></td>
           <td>{address}</td>
           <td>{coords}</td>
           <td>{r.get('note','—')}</td>
@@ -546,7 +602,7 @@ async def export_log_email(request: Request):
       <thead style="background:#f1f5f9;">
         <tr>
           <th>Timestamp (PST)</th><th>Profile(s)</th><th>Status</th>
-          <th>Address</th><th>Coordinates</th><th>Note</th>
+          <th>Category</th><th>Address</th><th>Coordinates</th><th>Note</th>
         </tr>
       </thead>
       <tbody>{rows_html}</tbody>

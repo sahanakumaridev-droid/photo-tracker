@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../providers/auth_provider.dart';
+import '../../widgets/common/app_logo.dart';
 
 /// Splash screen shown on app launch
 class SplashScreen extends ConsumerStatefulWidget {
@@ -37,12 +38,21 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
 
     _animationController.forward();
 
-    // Navigate after 2 seconds — go to home if already logged in, else login
-    Future.delayed(const Duration(seconds: 2), () {
-      if (!mounted) return;
-      final isAuthenticated = ref.read(authProvider).isAuthenticated;
-      context.go(isAuthenticated ? '/home' : '/login');
-    });
+    // Navigate after 2 seconds:
+    //  • logged in            → home
+    //  • first launch (guest) → onboarding
+    //  • returning guest      → login
+    Future.delayed(const Duration(seconds: 2), _routeNext);
+  }
+
+  void _routeNext() {
+    if (!mounted) return;
+    final auth = ref.read(authProvider);
+    if (auth.isAuthenticated) {
+      context.go('/home');
+    } else {
+      context.go(auth.seenOnboarding ? '/login' : '/onboarding');
+    }
   }
 
   @override
@@ -71,53 +81,8 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // ── App icon — exact same widget as the home screen app bar ──
-                  Container(
-                    width: 96,
-                    height: 96,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(28),
-                      border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.25),
-                        width: 1.5,
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.2),
-                          blurRadius: 32,
-                          offset: const Offset(0, 12),
-                        ),
-                      ],
-                    ),
-                    child: Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        const Icon(
-                          Icons.location_on_rounded,
-                          size: 48,
-                          color: Colors.white,
-                        ),
-                        // Green "live" dot — bottom-right, same as home bar
-                        Positioned(
-                          bottom: 16,
-                          right: 16,
-                          child: Container(
-                            width: 14,
-                            height: 14,
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF34D399),
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: Colors.white,
-                                width: 2,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                  // ── Brand logo — shared SVG used across the app ──
+                  const AppLogo(size: 104, radius: 28, withShadow: true),
                   const SizedBox(height: 28),
                   // ── App name — same "GeoTag" style as home bar ──
                   RichText(

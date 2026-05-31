@@ -22,6 +22,7 @@ final uploadPhotoProvider =
       zipCode: params['zipCode'] as String?,
       address: params['address'] as String?,
       note: params['note'] as String?,
+      category: params['category'] as String?,
     );
     ref.invalidate(photosProvider);
     return photo;
@@ -81,6 +82,17 @@ final updatePhotoProfilesProvider =
   await repository.updatePhotoProfiles(
     photoId: args.$1,
     profileIds: args.$2,
+  );
+  ref.invalidate(photosProvider);
+});
+
+/// Update photo category (standard | special | next_day | asap)
+final updatePhotoCategoryProvider =
+    FutureProvider.family<void, (int, String)>((ref, args) async {
+  final repository = ref.watch(photoRepositoryProvider);
+  await repository.updatePhotoCategory(
+    photoId: args.$1,
+    category: args.$2,
   );
   ref.invalidate(photosProvider);
 });

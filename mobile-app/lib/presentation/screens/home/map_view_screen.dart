@@ -15,13 +15,13 @@ import 'map_pin_popup_sheet.dart';
 import 'map_upload_sheet.dart';
 
 // ── Design tokens ────────────────────────────────────────────────────────────
-const _kCanvas   = Color(0xFFF2F4F7);
+const _kCanvas   = Color(0xFFFAFAFA);
 const _kSurface  = Color(0xFFFFFFFF);
-const _kInk      = Color(0xFF0D1117);
-const _kInkMuted = Color(0xFF4B5563);
-const _kSubtle   = Color(0xFF94A3B8);
+const _kInk      = Color(0xFF0F0F0F);
+const _kInkMuted = Color(0xFF6B7280);
+const _kSubtle   = Color(0xFF9CA3AF);
 const _kSep      = Color(0xFFE5E7EB);
-const _kAccent   = Color(0xFF5B5BD6);
+const _kAccent   = Color(0xFF7C3AED);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 Color _svcColor(String? t) {
@@ -129,11 +129,12 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
         backgroundColor: _kSurface,
         elevation: 0,
         surfaceTintColor: Colors.transparent,
+        shape: const Border(bottom: BorderSide(color: _kSep)),
         title: const Text(
-          'Map View',
+          'Explore Map',
           style: TextStyle(
             fontSize: 18,
-            fontWeight: FontWeight.w700,
+            fontWeight: FontWeight.w800,
             color: _kInk,
             letterSpacing: -0.3,
           ),

@@ -112,7 +112,7 @@ class _EditLocationScreenState extends ConsumerState<EditLocationScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: const Text('Location updated'),
-            backgroundColor: const Color(0xFF059669),
+            backgroundColor: const Color(0xFF6B7280),
             behavior: SnackBarBehavior.floating,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(10),

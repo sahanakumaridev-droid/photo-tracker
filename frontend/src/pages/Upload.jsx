@@ -210,13 +210,23 @@ export default function Upload({ showToast }) {
   }
 
   const ready = file && selected && location && !uploading
+  const stepsDone = [!!selected, !!file, !!location].filter(Boolean).length
 
   return (
-    <div className="page" style={{display:'flex', flexDirection:'column', height:'100vh'}}>
+    <div className="page upload-page" style={{display:'flex', flexDirection:'column', height:'100vh'}}>
       <div className="page-header">
         <div>
           <div className="page-title">Upload Photo</div>
           <div className="page-sub">Tag a photo with GPS location and profile</div>
+        </div>
+        <div className="upload-progress">
+          <span className="upload-progress-label">
+            {stepsDone === 3 ? 'Ready to upload' : 'Complete the steps'}
+          </span>
+          <div className="upload-progress-track">
+            <div className="upload-progress-fill" style={{ width: `${(stepsDone/3)*100}%` }} />
+          </div>
+          <span className={`upload-progress-count ${stepsDone === 3 ? 'done' : ''}`}>{stepsDone}/3</span>
         </div>
       </div>
 

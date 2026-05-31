@@ -12,9 +12,12 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shimmer/shimmer.dart';
 
 import '../../../config/app_config.dart';
+import '../../../core/utils/category.dart';
+import '../../../core/utils/location_service.dart';
 import '../../../data/models/log_entry_model.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/log_provider.dart';
+import '../../providers/photo_provider.dart';
 
 class LogScreenV2 extends ConsumerStatefulWidget {
   const LogScreenV2({super.key});
@@ -26,19 +29,19 @@ class LogScreenV2 extends ConsumerStatefulWidget {
 class _LogScreenV2State extends ConsumerState<LogScreenV2>
     with TickerProviderStateMixin {
   // ── Design tokens ─────────────────────────────────────────────────────────
-  static const Color _canvas = Color(0xFFF2F4F7);
+  static const Color _canvas = Color(0xFFF2F2F2);
   static const Color _surface = Color(0xFFFFFFFF);
-  static const Color _surfaceElevated = Color(0xFFFAFBFC);
-  static const Color _ink = Color(0xFF0D1117);
-  static const Color _inkMuted = Color(0xFF4B5563);
+  static const Color _surfaceElevated = Color(0xFFFAFAFA);
+  static const Color _ink = Color(0xFF0F0F0F);
+  static const Color _inkMuted = Color(0xFF6B7280);
   static const Color _inkSubtle = Color(0xFF9CA3AF);
   static const Color _separator = Color(0xFFE5E7EB);
-  static const Color _accent = Color(0xFF5B5BD6);
-  static const Color _accentSoft = Color(0xFFEEEEFD);
+  static const Color _accent = Color(0xFF7C3AED);
+  static const Color _accentSoft = Color(0xFFEDE9FE);
   static const Color _rushRed = Color(0xFFDC2626);
   static const Color _rushRedSoft = Color(0xFFFEF2F2);
-  static const Color _standardGreen = Color(0xFF059669);
-  static const Color _standardGreenSoft = Color(0xFFECFDF5);
+  static const Color _standardGreen = Color(0xFF10B981);
+  static const Color _standardGreenSoft = Color(0xFFD1FAE5);
   static const Color _airportBlue = Color(0xFF0284C7);
   static const Color _airportBlueSoft = Color(0xFFEFF6FF);
   // Filter bar — noticeably darker than the page canvas
@@ -49,6 +52,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
   TimeOfDay? _startTime;
   TimeOfDay? _endTime;
   String? _selectedServiceType;
+  String? _selectedCategory; // null = all categories
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
@@ -56,6 +60,36 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
   late AnimationController _filterBadgeController;
   // Export profile selection
   Set<int> _selectedExportProfileIds = {};
+
+  // ── Multi-select export ──────────────────────────────────────────────────
+  bool _selectionMode = false;
+  final Set<int> _selectedLogIds = {};
+
+  void _toggleSelectionMode() {
+    HapticFeedback.selectionClick();
+    setState(() {
+      _selectionMode = !_selectionMode;
+      _selectedLogIds.clear();
+    });
+  }
+
+  void _toggleLogSelected(int id) {
+    HapticFeedback.selectionClick();
+    setState(() {
+      if (!_selectedLogIds.add(id)) _selectedLogIds.remove(id);
+    });
+  }
+
+  Future<void> _exportSelected(List<LogEntryModel> allLogs) async {
+    final chosen =
+        allLogs.where((l) => _selectedLogIds.contains(l.id)).toList();
+    if (chosen.isEmpty) {
+      _showSnack('Select at least one entry to export.');
+      return;
+    }
+    await _downloadCsv(chosen);
+    if (mounted) setState(() => _selectionMode = false);
+  }
 
   @override
   void initState() {
@@ -120,12 +154,15 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
       );
 
   bool get _hasFilters =>
-      _selectedDate != null || _selectedServiceType != null;
+      _selectedDate != null ||
+      _selectedServiceType != null ||
+      _selectedCategory != null;
 
   int get _filterCount {
     var n = 0;
     if (_selectedDate != null) n++;
     if (_selectedServiceType != null) n++;
+    if (_selectedCategory != null) n++;
     return n;
   }
 
@@ -134,7 +171,16 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
         _startTime = null;
         _endTime = null;
         _selectedServiceType = null;
+        _selectedCategory = null;
       });
+
+  /// Apply the client-side category filter (the backend doesn't filter on it).
+  List<LogEntryModel> _applyCategoryFilter(List<LogEntryModel> logs) {
+    if (_selectedCategory == null) return logs;
+    return logs
+        .where((l) => categoryOf(l.category).value == _selectedCategory)
+        .toList();
+  }
 
   // ── Time helpers ──────────────────────────────────────────────────────────
   String _relativeTime(String? ts) {
@@ -216,6 +262,26 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
       }
       groups.putIfAbsent(key, () => []).add(log);
     }
+
+    // Deduplicate: one entry per profile per section, keep newest
+    for (final key in groups.keys.toList()) {
+      final seen = <String>{};
+      final deduped = <LogEntryModel>[];
+      final sorted = List<LogEntryModel>.from(groups[key]!)
+        ..sort((a, b) {
+          final aTs = a.timestamp ?? '';
+          final bTs = b.timestamp ?? '';
+          return bTs.compareTo(aTs);
+        });
+      for (final entry in sorted) {
+        final profileKey = entry.profileName ?? entry.id.toString();
+        if (!seen.contains(profileKey)) {
+          seen.add(profileKey);
+          deduped.add(entry);
+        }
+      }
+      groups[key] = deduped;
+    }
     return groups;
   }
 
@@ -259,7 +325,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
   String _buildCsv(List<LogEntryModel> logs) {
     final buf = StringBuffer();
     // Header row
-    buf.writeln('ID,Timestamp,Profile,Service Type,ZIP Code,Latitude,Longitude,Note');
+    buf.writeln('ID,Timestamp,Profile,Service Type,Category,ZIP Code,Latitude,Longitude,Note');
     for (final log in logs) {
       String esc(String? v) => '"${(v ?? '').replaceAll('"', '""')}"';
       final profiles = (log.profiles != null && log.profiles!.isNotEmpty)
@@ -272,6 +338,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
             : ''),
         esc(profiles),
         esc(log.serviceType),
+        esc(categoryLabel(log.category)),
         esc(log.zipCode),
         log.latitude.toStringAsFixed(6),
         log.longitude.toStringAsFixed(6),
@@ -785,7 +852,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                     icon: const Icon(Icons.email_rounded, size: 16),
                     label: const Text('Email CSV'),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF059669),
+                      backgroundColor: const Color(0xFF6B7280),
                       foregroundColor: Colors.white,
                       elevation: 0,
                       padding: const EdgeInsets.symmetric(vertical: 14),
@@ -809,6 +876,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     var tempStart = _startTime;
     var tempEnd = _endTime;
     var tempType = _selectedServiceType;
+    var tempCategory = _selectedCategory;
 
     showModalBottomSheet<void>(
       context: context,
@@ -853,6 +921,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                         tempStart = null;
                         tempEnd = null;
                         tempType = null;
+                        tempCategory = null;
                       }),
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -1000,6 +1069,31 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                   _filterPill(label: 'Airport', selected: tempType == 'airport',
                       color: _airportBlue, onTap: () => ss(() => tempType = 'airport')),
                 ]),
+                const SizedBox(height: 28),
+                // ── CATEGORY ──────────────────────────────────────────────
+                const Text('CATEGORY',
+                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
+                      color: _inkSubtle, letterSpacing: 1.4)),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _filterPill(
+                      label: 'All',
+                      selected: tempCategory == null,
+                      color: _accent,
+                      onTap: () => ss(() => tempCategory = null),
+                    ),
+                    for (final c in kPhotoCategories)
+                      _filterPill(
+                        label: c.label,
+                        selected: tempCategory == c.value,
+                        color: c.color,
+                        onTap: () => ss(() => tempCategory = c.value),
+                      ),
+                  ],
+                ),
                 const SizedBox(height: 36),
                 SizedBox(
                   width: double.infinity,
@@ -1012,6 +1106,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                         _startTime = tempStart;
                         _endTime = tempEnd;
                         _selectedServiceType = tempType;
+                        _selectedCategory = tempCategory;
                       });
                       Navigator.pop(ctx);
                     },
@@ -1185,14 +1280,33 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                   ],
                 ),
               ),
-              // ── Single "Export" button — opens profile-select sheet ──
+              // ── Select toggle ──
+              if (logs.isNotEmpty)
+                GestureDetector(
+                  onTap: _toggleSelectionMode,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 8),
+                    child: Text(_selectionMode ? 'Cancel' : 'Select',
+                        style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: _accent)),
+                  ),
+                ),
+              const SizedBox(width: 2),
+              // ── Export button — selected entries, or the profile sheet ──
               GestureDetector(
-                onTap: () => _openExportSheet(logs),
+                onTap: _selectionMode
+                    ? () => _exportSelected(logs)
+                    : () => _openExportSheet(logs),
                 child: Container(
                   padding: const EdgeInsets.symmetric(
                       horizontal: 14, vertical: 10),
                   decoration: BoxDecoration(
-                    color: _accent,
+                    color: _selectionMode && _selectedLogIds.isEmpty
+                        ? _inkSubtle
+                        : _accent,
                     borderRadius: BorderRadius.circular(12),
                     boxShadow: [
                       BoxShadow(
@@ -1202,14 +1316,17 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                       ),
                     ],
                   ),
-                  child: const Row(
+                  child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.ios_share_rounded,
+                      const Icon(Icons.ios_share_rounded,
                           size: 16, color: Colors.white),
-                      SizedBox(width: 6),
-                      Text('Export',
-                          style: TextStyle(
+                      const SizedBox(width: 6),
+                      Text(
+                          _selectionMode
+                              ? 'Export (${_selectedLogIds.length})'
+                              : 'Export',
+                          style: const TextStyle(
                             fontSize: 13,
                             fontWeight: FontWeight.w700,
                             color: Colors.white,
@@ -1402,6 +1519,17 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                           setState(() => _selectedServiceType = null),
                     ),
                   ],
+                  if (_selectedCategory != null) ...[
+                    if (_selectedDate != null || _selectedServiceType != null)
+                      const SizedBox(width: 6),
+                    _activeChip(
+                      label: categoryOf(_selectedCategory).label,
+                      icon: categoryOf(_selectedCategory).icon,
+                      color: categoryOf(_selectedCategory).color,
+                      onRemove: () =>
+                          setState(() => _selectedCategory = null),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -1468,7 +1596,9 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
   Widget _buildBody(AsyncValue<List<LogEntryModel>> logAsync) => logAsync.when(
       loading: _buildSkeleton,
       error: (err, _) => _buildError(err),
-      data: (logs) {
+      data: (allLogs) {
+        if (allLogs.isEmpty) return _buildEmpty();
+        final logs = _applyCategoryFilter(allLogs);
         if (logs.isEmpty) return _buildEmpty();
         return _buildGroupedList(logs);
       },
@@ -1579,6 +1709,24 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
       ),
     );
 
+  // ── Selection radio ────────────────────────────────────────────────────────
+  Widget _selectCircle(bool selected) => AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        width: 24,
+        height: 24,
+        decoration: BoxDecoration(
+          color: selected ? _accent : Colors.transparent,
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: selected ? _accent : _inkSubtle,
+            width: 2,
+          ),
+        ),
+        child: selected
+            ? const Icon(Icons.check_rounded, size: 15, color: Colors.white)
+            : null,
+      );
+
   // ── Log card ──────────────────────────────────────────────────────────────
   Widget _buildLogCard(LogEntryModel log, int index) {
     final svcColor = _svcColor(log.serviceType);
@@ -1586,10 +1734,12 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     final svcLabel = _svcLabel(log.serviceType);
     final isRush = (log.serviceType ?? '').toLowerCase() == 'rush';
     final imageUrl = '${AppConfig.apiBaseUrl}${log.imageUrl}';
-    final location = _locationLabel(log);
+    final selected = _selectedLogIds.contains(log.id);
 
     return GestureDetector(
-      onTap: () => _showLogDetail(log),
+      onTap: _selectionMode
+          ? () => _toggleLogSelected(log.id)
+          : () => _showLogDetail(log),
       child: Container(
         margin: const EdgeInsets.only(bottom: 10),
         decoration: BoxDecoration(
@@ -1607,12 +1757,11 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
               offset: const Offset(0, 1),
             ),
           ],
-          // Rush gets a subtle left accent
-          border: isRush
-              ? const Border(
-                  left: BorderSide(color: _rushRed, width: 3),
-                )
-              : null,
+          border: selected
+              ? Border.all(color: _accent, width: 2)
+              : isRush
+                  ? const Border(left: BorderSide(color: _rushRed, width: 3))
+                  : null,
         ),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(18),
@@ -1623,6 +1772,12 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // ── Selection radio (selection mode only) ──────────
+                    if (_selectionMode)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 20, right: 12),
+                        child: _selectCircle(selected),
+                      ),
                     // ── Thumbnail ──────────────────────────────────────
                     ClipRRect(
                       borderRadius: BorderRadius.circular(12),
@@ -1699,29 +1854,32 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                             ],
                           ),
                           const SizedBox(height: 6),
+                          // Category badge
+                          Builder(builder: (_) {
+                            final cat = categoryOf(log.category);
+                            return Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: cat.softColor,
+                                borderRadius: BorderRadius.circular(7),
+                                border: Border.all(
+                                    color: cat.color.withValues(alpha: 0.3)),
+                              ),
+                              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                                Icon(cat.icon, size: 11, color: cat.color),
+                                const SizedBox(width: 4),
+                                Text(cat.label,
+                                    style: TextStyle(
+                                        fontSize: 10.5,
+                                        fontWeight: FontWeight.w700,
+                                        color: cat.color)),
+                              ]),
+                            );
+                          }),
+                          const SizedBox(height: 6),
                           // Location row
-                          Row(
-                            children: [
-                              const Icon(
-                                Icons.location_on_rounded,
-                                size: 13,
-                                color: _inkSubtle,
-                              ),
-                              const SizedBox(width: 4),
-                              Expanded(
-                                child: Text(
-                                  location,
-                                  style: const TextStyle(
-                                    fontSize: 13,
-                                    color: _inkMuted,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            ],
-                          ),
+                          _LocationText(log: log),
                           const SizedBox(height: 2),
                           // Coordinates row — always shown below address
                           Row(
@@ -2006,116 +2164,367 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
       ),
     );
 
-  // ── Log detail modal ─────────────────────────────────────────────────────
+  // ── Log detail dialog ─────────────────────────────────────────────────────
   void _showLogDetail(LogEntryModel log) {
     HapticFeedback.selectionClick();
     final imageUrl = '${AppConfig.apiBaseUrl}${log.imageUrl}';
-
-    showModalBottomSheet<void>(
+    final cat = categoryOf(log.category);
+    showDialog<void>(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => DraggableScrollableSheet(
-        initialChildSize: 0.7,
-        minChildSize: 0.4,
-        maxChildSize: 0.92,
-        expand: false,
-        builder: (ctx, scrollCtrl) => Container(
-          decoration: const BoxDecoration(
-            color: _surface,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-          ),
-          child: SingleChildScrollView(
-            controller: scrollCtrl,
-            padding: const EdgeInsets.fromLTRB(24, 12, 24, 40),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Center(
-                  child: Container(
-                    width: 36, height: 4,
-                    decoration: BoxDecoration(
-                      color: _separator,
-                      borderRadius: BorderRadius.circular(2)),
+      barrierColor: Colors.black54,
+      builder: (ctx) => Dialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 44),
+        backgroundColor: _surface,
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(ctx).size.height * 0.82),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Header
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 14, 10, 12),
+                child: Row(children: [
+                  const Expanded(
+                    child: Text('GeoTag Details',
+                        style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
+                            color: _ink,
+                            letterSpacing: -0.4)),
                   ),
-                ),
-                const SizedBox(height: 20),
-                Row(children: [
-                  Expanded(
-                    child: Text(
-                      log.profileName ?? 'Unknown',
-                      style: const TextStyle(fontSize: 22,
-                          fontWeight: FontWeight.w800, color: _ink,
-                          letterSpacing: -0.5)),
+                  TextButton.icon(
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      _showEditLogDialog(log);
+                    },
+                    icon: const Icon(Icons.edit_rounded, size: 16),
+                    label: const Text('Edit'),
+                    style: TextButton.styleFrom(
+                        foregroundColor: _accent,
+                        textStyle: const TextStyle(
+                            fontWeight: FontWeight.w700, fontSize: 14)),
                   ),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: _svcSoftColor(log.serviceType),
-                      borderRadius: BorderRadius.circular(10)),
-                    child: Text(_svcLabel(log.serviceType),
-                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700,
-                          color: _svcColor(log.serviceType))),
+                  IconButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    icon: const Icon(Icons.close_rounded, color: _inkSubtle),
                   ),
                 ]),
-                const SizedBox(height: 18),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(16),
-                  child: CachedNetworkImage(
-                    imageUrl: imageUrl,
-                    width: double.infinity,
-                    fit: BoxFit.cover,
-                    placeholder: (_, __) => Shimmer.fromColors(
-                      baseColor: const Color(0xFFE5E7EB),
-                      highlightColor: const Color(0xFFF9FAFB),
-                      child: Container(height: 220, color: _canvas)),
-                    errorWidget: (_, __, ___) => Container(
-                      height: 220, color: _canvas,
-                      child: const Center(
-                        child: Icon(Icons.image_outlined,
-                            size: 48, color: _inkSubtle)),
+              ),
+              const Divider(height: 1, color: _separator),
+              Flexible(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: CachedNetworkImage(
+                          imageUrl: imageUrl,
+                          width: double.infinity,
+                          fit: BoxFit.cover,
+                          placeholder: (_, __) => Shimmer.fromColors(
+                            baseColor: const Color(0xFFE5E7EB),
+                            highlightColor: const Color(0xFFF9FAFB),
+                            child: Container(height: 200, color: _canvas)),
+                          errorWidget: (_, __, ___) => Container(
+                            height: 200,
+                            color: _canvas,
+                            child: const Center(
+                                child: Icon(Icons.image_outlined,
+                                    size: 44, color: _inkSubtle))),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Row(children: [
+                        Expanded(
+                          child: Text(log.profileName ?? 'Unknown',
+                              style: const TextStyle(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.w800,
+                                  color: _ink,
+                                  letterSpacing: -0.4)),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 5),
+                          decoration: BoxDecoration(
+                              color: cat.softColor,
+                              borderRadius: BorderRadius.circular(9),
+                              border: Border.all(
+                                  color: cat.color.withValues(alpha: 0.3))),
+                          child: Row(mainAxisSize: MainAxisSize.min, children: [
+                            Icon(cat.icon, size: 13, color: cat.color),
+                            const SizedBox(width: 5),
+                            Text(cat.label,
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                    color: cat.color)),
+                          ]),
+                        ),
+                      ]),
+                      const SizedBox(height: 18),
+                      _detailRow(Icons.access_time_rounded, 'Timestamp',
+                          _fullTime(log.timestamp)),
+                      const SizedBox(height: 14),
+                      _LiveLocationRow(log: log),
+                      const SizedBox(height: 6),
+                      _detailRow(Icons.gps_fixed_rounded, 'Coordinates',
+                          _coordsLabel(log),
+                          isMono: true),
+                      if (log.note != null && log.note!.isNotEmpty) ...[
+                        const SizedBox(height: 16),
+                        const Text('NOTE',
+                            style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                color: _inkMuted,
+                                letterSpacing: 0.6)),
+                        const SizedBox(height: 8),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                              color: _surfaceElevated,
+                              borderRadius: BorderRadius.circular(12)),
+                          child: Text(log.note!,
+                              style: const TextStyle(
+                                  fontSize: 14.5, color: _ink, height: 1.5)),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Edit dialog ─────────────────────────────────────────────────────────────
+  void _showEditLogDialog(LogEntryModel log) {
+    HapticFeedback.selectionClick();
+    final addressCtrl = TextEditingController(text: log.address ?? '');
+    final zipCtrl = TextEditingController(text: log.zipCode ?? '');
+    final noteCtrl = TextEditingController(text: log.note ?? '');
+    var selectedCat = categoryOf(log.category).value;
+    var saving = false;
+
+    InputDecoration deco(String hint) => InputDecoration(
+          hintText: hint,
+          hintStyle: const TextStyle(color: _inkSubtle, fontSize: 14),
+          isDense: true,
+          filled: true,
+          fillColor: _surfaceElevated,
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide.none),
+          focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: _accent, width: 1.5)),
+        );
+
+    Widget label(String t) => Padding(
+          padding: const EdgeInsets.only(bottom: 8, top: 16),
+          child: Text(t.toUpperCase(),
+              style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: _inkMuted,
+                  letterSpacing: 0.6)),
+        );
+
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, ss) => Dialog(
+          insetPadding:
+              const EdgeInsets.symmetric(horizontal: 20, vertical: 44),
+          backgroundColor: _surface,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(24)),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(ctx).size.height * 0.85),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 10, 12),
+                  child: Row(children: [
+                    const Expanded(
+                      child: Text('Edit GeoTag',
+                          style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w800,
+                              color: _ink,
+                              letterSpacing: -0.4)),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      icon: const Icon(Icons.close_rounded, color: _inkSubtle),
+                    ),
+                  ]),
+                ),
+                const Divider(height: 1, color: _separator),
+                Flexible(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        label('Category'),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: kPhotoCategories.map((c) {
+                            final sel = selectedCat == c.value;
+                            return GestureDetector(
+                              onTap: () {
+                                HapticFeedback.selectionClick();
+                                ss(() => selectedCat = c.value);
+                              },
+                              child: AnimatedContainer(
+                                duration: const Duration(milliseconds: 150),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 8),
+                                decoration: BoxDecoration(
+                                  color: sel ? c.color : c.softColor,
+                                  borderRadius: BorderRadius.circular(11),
+                                  border: Border.all(
+                                      color: sel
+                                          ? c.color
+                                          : c.color.withValues(alpha: 0.25),
+                                      width: 1.5),
+                                ),
+                                child:
+                                    Row(mainAxisSize: MainAxisSize.min, children: [
+                                  Icon(c.icon,
+                                      size: 14,
+                                      color: sel ? Colors.white : c.color),
+                                  const SizedBox(width: 6),
+                                  Text(c.label,
+                                      style: TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w700,
+                                          color:
+                                              sel ? Colors.white : c.color)),
+                                ]),
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                        label('Address'),
+                        TextField(
+                            controller: addressCtrl,
+                            style: const TextStyle(fontSize: 14, color: _ink),
+                            decoration: deco('Street address')),
+                        label('ZIP Code'),
+                        TextField(
+                            controller: zipCtrl,
+                            keyboardType: TextInputType.number,
+                            style: const TextStyle(fontSize: 14, color: _ink),
+                            decoration: deco('ZIP')),
+                        label('Note'),
+                        TextField(
+                            controller: noteCtrl,
+                            maxLines: 3,
+                            style: const TextStyle(fontSize: 14, color: _ink),
+                            decoration: deco('Add a note (optional)')),
+                      ],
                     ),
                   ),
                 ),
-                const SizedBox(height: 22),
-                _detailRow(Icons.access_time_rounded, 'Timestamp',
-                    _fullTime(log.timestamp)),
-                const SizedBox(height: 14),
-                _detailRow(
-                    Icons.location_on_rounded, 'Location', _locationLabel(log)),
-                const SizedBox(height: 6),
-                _detailRow(Icons.gps_fixed_rounded, 'Coordinates',
-                    _coordsLabel(log),
-                    isMono: true),
-                const SizedBox(height: 14),
-                if (log.profiles != null && log.profiles!.isNotEmpty) ...[
-                  _detailRow(Icons.people_rounded, 'Profiles',
-                      log.profiles!.map((p) => p.name).join(', ')),
-                  const SizedBox(height: 14),
-                ],
-                if (log.note != null && log.note!.isNotEmpty) ...[
-                  const Divider(color: _separator),
-                  const SizedBox(height: 14),
-                  const Text('Note',
-                      style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                          color: _inkMuted,
-                          letterSpacing: 0.3)),
-                  const SizedBox(height: 8),
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: _surfaceElevated,
-                      borderRadius: BorderRadius.circular(14)),
-                    child: Text(log.note!,
-                        style: const TextStyle(
-                            fontSize: 15, color: _ink, height: 1.55)),
-                  ),
-                ],
-                const SizedBox(height: 20),
+                const Divider(height: 1, color: _separator),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+                  child: Row(children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed:
+                            saving ? null : () => Navigator.pop(ctx),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: _inkMuted,
+                          side: const BorderSide(color: _separator),
+                          padding: const EdgeInsets.symmetric(vertical: 13),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12)),
+                        ),
+                        child: const Text('Cancel'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: saving
+                            ? null
+                            : () async {
+                                ss(() => saving = true);
+                                try {
+                                  await ref.read(updatePhotoAddressProvider((
+                                    log.id,
+                                    addressCtrl.text.trim(),
+                                    zipCtrl.text.trim(),
+                                  )).future);
+                                  await ref.read(updatePhotoNoteProvider((
+                                    log.id,
+                                    noteCtrl.text.trim(),
+                                  )).future);
+                                  await ref.read(updatePhotoCategoryProvider((
+                                    log.id,
+                                    selectedCat,
+                                  )).future);
+                                  ref.invalidate(logProvider(_filters));
+                                  if (ctx.mounted) Navigator.pop(ctx);
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                          content: Text('GeoTag updated'),
+                                          behavior: SnackBarBehavior.floating),
+                                    );
+                                  }
+                                } catch (e) {
+                                  ss(() => saving = false);
+                                  if (ctx.mounted) {
+                                    ScaffoldMessenger.of(ctx).showSnackBar(
+                                      SnackBar(
+                                          content:
+                                              Text('Update failed: $e'),
+                                          behavior: SnackBarBehavior.floating),
+                                    );
+                                  }
+                                }
+                              },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _accent,
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          padding: const EdgeInsets.symmetric(vertical: 13),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12)),
+                        ),
+                        child: saving
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: Colors.white))
+                            : const Text('Save Changes',
+                                style:
+                                    TextStyle(fontWeight: FontWeight.w600)),
+                      ),
+                    ),
+                  ]),
+                ),
               ],
             ),
           ),
@@ -2153,4 +2562,129 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
               ]),
         ),
       ]);
+}
+
+class _LocationText extends StatefulWidget {
+  const _LocationText({required this.log});
+  final LogEntryModel log;
+  @override
+  State<_LocationText> createState() => _LocationTextState();
+}
+
+class _LocationTextState extends State<_LocationText> {
+  String? _resolvedAddress;
+  bool _fetching = false;
+  static const Color _inkMuted = Color(0xFF4B5563);
+  static const Color _inkSubtle = Color(0xFF9CA3AF);
+
+  @override
+  void initState() {
+    super.initState();
+    _resolve();
+  }
+
+  void _resolve() async {
+    final log = widget.log;
+    if (log.address != null && log.address!.isNotEmpty) {
+      final addr = log.address!;
+      if (log.zipCode != null && log.zipCode!.isNotEmpty && !addr.contains(log.zipCode!)) {
+        setState(() => _resolvedAddress = '$addr, ${log.zipCode}');
+      } else {
+        setState(() => _resolvedAddress = addr);
+      }
+      return;
+    }
+    if (log.zipCode != null && log.zipCode!.isNotEmpty) {
+      setState(() => _resolvedAddress = 'ZIP ${log.zipCode}');
+      return;
+    }
+    if (_fetching) return;
+    _fetching = true;
+    try {
+      final addr = await LocationService.reverseGeocode(log.latitude, log.longitude);
+      if (mounted && addr != null && addr.isNotEmpty) {
+        setState(() => _resolvedAddress = addr);
+      }
+    } catch (_) {}
+    _fetching = false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final text = _resolvedAddress ?? '${widget.log.latitude.toStringAsFixed(4)}, ${widget.log.longitude.toStringAsFixed(4)}';
+    return Row(children: [
+      const Icon(Icons.location_on_rounded, size: 13, color: _inkSubtle),
+      const SizedBox(width: 4),
+      Expanded(child: Text(text,
+        style: const TextStyle(fontSize: 13, color: _inkMuted, fontWeight: FontWeight.w500),
+        maxLines: 1, overflow: TextOverflow.ellipsis)),
+    ]);
+  }
+}
+
+class _LiveLocationRow extends StatefulWidget {
+  const _LiveLocationRow({required this.log});
+  final LogEntryModel log;
+  @override
+  State<_LiveLocationRow> createState() => _LiveLocationRowState();
+}
+
+class _LiveLocationRowState extends State<_LiveLocationRow> {
+  String? _resolved;
+  bool _fetching = false;
+  static const Color _ink = Color(0xFF0D1117);
+  static const Color _inkSubtle = Color(0xFF9CA3AF);
+
+  @override
+  void initState() {
+    super.initState();
+    _resolve();
+  }
+
+  void _resolve() async {
+    final log = widget.log;
+    if (log.address != null && log.address!.isNotEmpty) {
+      final addr = log.address!;
+      if (log.zipCode != null && log.zipCode!.isNotEmpty && !addr.contains(log.zipCode!)) {
+        setState(() => _resolved = '$addr, ${log.zipCode}');
+      } else {
+        setState(() => _resolved = addr);
+      }
+      return;
+    }
+    if (log.zipCode != null && log.zipCode!.isNotEmpty) {
+      setState(() => _resolved = 'ZIP ${log.zipCode}');
+      return;
+    }
+    if (_fetching) return;
+    _fetching = true;
+    try {
+      final addr = await LocationService.reverseGeocode(log.latitude, log.longitude);
+      if (mounted && addr != null && addr.isNotEmpty) {
+        setState(() => _resolved = addr);
+      }
+    } catch (_) {}
+    _fetching = false;
+  }
+
+  @override
+  Widget build(BuildContext context) => Row(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const Icon(Icons.location_on_rounded, size: 15, color: _inkSubtle),
+      const SizedBox(width: 10),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Location',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: _inkSubtle, letterSpacing: 0.3)),
+            const SizedBox(height: 3),
+            Text(_resolved ?? '${widget.log.latitude.toStringAsFixed(4)}, ${widget.log.longitude.toStringAsFixed(4)}',
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: _ink)),
+          ],
+        ),
+      ),
+    ],
+  );
 }

@@ -17,6 +17,7 @@ class PhotoModel {
     this.profileId,
     this.profileName,
     this.serviceType,
+    this.category,
     this.profiles,
   });
 
@@ -44,6 +45,8 @@ class PhotoModel {
   final String? profileName;
   @JsonKey(name: 'service_type')
   final String? serviceType;
+  /// Per-photo priority category: standard | special | next_day | asap
+  final String? category;
   final List<ProfileModel>? profiles;
 
   Map<String, dynamic> toJson() => _$PhotoModelToJson(this);
@@ -60,6 +63,7 @@ class PhotoModel {
     int? profileId,
     String? profileName,
     String? serviceType,
+    String? category,
     List<ProfileModel>? profiles,
   }) =>
       PhotoModel(
@@ -74,6 +78,7 @@ class PhotoModel {
         profileId: profileId ?? this.profileId,
         profileName: profileName ?? this.profileName,
         serviceType: serviceType ?? this.serviceType,
+        category: category ?? this.category,
         profiles: profiles ?? this.profiles,
       );
 }

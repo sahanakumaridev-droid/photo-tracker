@@ -28,10 +28,10 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
   static const Color _inkMuted = Color(0xFF4B5563);
   static const Color _inkSubtle = Color(0xFF9CA3AF);
   static const Color _separator = Color(0xFFE5E7EB);
-  static const Color _accent = Color(0xFF5B5BD6);
-  static const Color _accentSoft = Color(0xFFEEEEFD);
+  static const Color _accent = Color(0xFF7C3AED);
+  static const Color _accentSoft = Color(0xFFEDE9FE);
   static const Color _rushRed = Color(0xFFDC2626);
-  static const Color _standardGreen = Color(0xFF059669);
+  static const Color _standardGreen = Color(0xFF10B981);
   static const Color _airportBlue = Color(0xFF0284C7);
 
   bool _imageExpanded = false;
@@ -715,13 +715,13 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                 width: 36,
                 height: 36,
                 decoration: BoxDecoration(
-                  color: const Color(0xFF059669).withValues(alpha: 0.1),
+                  color: const Color(0xFF6B7280).withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: const Icon(
                   Icons.location_on_rounded,
                   size: 18,
-                  color: Color(0xFF059669),
+                  color: Color(0xFF6B7280),
                 ),
               ),
               const SizedBox(width: 14),
@@ -1052,9 +1052,9 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
   static const Color _inkMuted = Color(0xFF4B5563);
   static const Color _inkSubtle = Color(0xFF9CA3AF);
   static const Color _separator = Color(0xFFE5E7EB);
-  static const Color _accent = Color(0xFF5B5BD6);
-  static const Color _accentSoft = Color(0xFFEEEEFD);
-  static const Color _successGreen = Color(0xFF059669);
+  static const Color _accent = Color(0xFF7C3AED);
+  static const Color _accentSoft = Color(0xFFEDE9FE);
+  static const Color _successGreen = Color(0xFF10B981);
   static const Color _errorRed = Color(0xFFDC2626);
 
   late final TextEditingController _noteController;
@@ -1567,7 +1567,7 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
                   // ── Edit location ────────────────────────────────────────
                   _sectionCard(
                     icon: Icons.location_on_rounded,
-                    iconColor: const Color(0xFF059669),
+                    iconColor: const Color(0xFF6B7280),
                     title: 'Edit Location',
                     subtitle:
                         '${widget.photo.latitude.toStringAsFixed(5)}, ${widget.photo.longitude.toStringAsFixed(5)}',

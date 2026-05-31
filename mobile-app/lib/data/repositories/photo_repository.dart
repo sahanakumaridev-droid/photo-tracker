@@ -31,6 +31,7 @@ class PhotoRepository {
     String? zipCode,
     String? address,
     String? note,
+    String? category,
   }) async {
     try {
       final formData = FormData.fromMap({
@@ -41,6 +42,7 @@ class PhotoRepository {
         if (zipCode != null && zipCode.isNotEmpty) 'zip_code': zipCode,
         if (address != null && address.isNotEmpty) 'address': address,
         if (note != null && note.isNotEmpty) 'note': note,
+        if (category != null && category.isNotEmpty) 'category': category,
       });
 
       final response = await _dio.post('/api/upload', data: formData);
@@ -112,6 +114,21 @@ class PhotoRepository {
           'address': address,
           if (zipCode.isNotEmpty) 'zip_code': zipCode,
         },
+      );
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  /// Update photo category (standard | special | next_day | asap)
+  Future<void> updatePhotoCategory({
+    required int photoId,
+    required String category,
+  }) async {
+    try {
+      await _dio.patch(
+        '/api/photos/$photoId/category',
+        data: {'category': category},
       );
     } on DioException catch (e) {
       throw _handleError(e);

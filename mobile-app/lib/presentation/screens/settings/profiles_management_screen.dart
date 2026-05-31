@@ -105,7 +105,7 @@ class _ProfilesManagementScreenState
   @override
   Widget build(BuildContext context) {
     const grayBg = Color(0xFFF8FAFC);
-    const grayText = Color(0xFF475569);
+    const grayText = Color(0xFF6B7280);
     const grayBorder = Color(0xFFE2E8F0);
     const graySubtle = Color(0xFF94A3B8);
 

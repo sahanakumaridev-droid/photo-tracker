@@ -1,4 +1,14 @@
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800;900&family=Geist+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+
+/* ─── ONE CONSTANT FONT: Inter, app-wide ─── */
+*,
+body,
+button,
+input,
+textarea,
+select {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
 
 /* ─── THEME TOKENS (set by ThemeContext.jsx via JS) ─── */
 :root {
@@ -270,6 +280,23 @@ body {
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
+}
+
+/* ─── GEO BANNER ─── */
+.geo-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9999;
+  background: #fef3c7;
+  border-bottom: 2px solid #f59e0b;
+  color: #92400e;
+  padding: 10px 20px;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  font-family: 'Geist', sans-serif;
 }
 
 /* ─── APP SHELL (LIGHT) ─── */
@@ -4293,3 +4320,127 @@ select option { background: #ffffff; color: #0f172a; }
   .dk-stat-val { font-size: 18px !important; }
   .dk-stat-label { font-size: 9px !important; }
 }
+
+/* ─────────────────────────────────────────────────────────────
+   Activity Log — UX polish
+   ───────────────────────────────────────────────────────────── */
+.log-table-wrap {
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid var(--border-c, #e2e8f0);
+  background: var(--bg-surface, #fff);
+  box-shadow: 0 4px 20px rgba(15, 23, 42, 0.05);
+  margin: 0 24px 24px;
+}
+.log-table { border-collapse: separate; border-spacing: 0; width: 100%; }
+.log-table thead th {
+  position: sticky; top: 0; z-index: 2;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 11px; font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 14px 16px; text-align: left;
+  border-bottom: 1px solid var(--border-c, #e2e8f0);
+}
+.log-table tbody td {
+  padding: 14px 16px;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: 13.5px; color: #0f172a;
+  vertical-align: middle;
+}
+.log-table tbody tr:last-child td { border-bottom: none; }
+.log-row-clickable { transition: background 0.12s ease, box-shadow 0.12s ease; }
+.log-row-clickable:hover { background: #faf5ff !important; }
+.log-thumb {
+  width: 46px; height: 46px; object-fit: cover; border-radius: 10px;
+  background: #f1f5f9;
+}
+.log-mono { font-variant-numeric: tabular-nums; color: #475569; }
+.log-note { color: #475569; max-width: 320px; }
+/* Stat pills — friendlier */
+.log-stat-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 12px; border-radius: 999px;
+  font-size: 12px; font-weight: 700;
+  background: #f1f5f9; color: #475569;
+  border: 1px solid var(--border-c, #e2e8f0);
+}
+.log-stat-rush { background: #fef2f2; color: #dc2626; border-color: #fecaca; }
+.log-stat-std  { background: #ecfdf5; color: #059669; border-color: #a7f3d0; }
+
+/* ─────────────────────────────────────────────────────────────
+   Upload page — dashboard polish
+   ───────────────────────────────────────────────────────────── */
+.upload-page .page-header { display: flex; align-items: center; }
+.upload-progress { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+.upload-progress-label { font-size: 12.5px; font-weight: 600; color: #64748b; }
+.upload-progress-track {
+  width: 140px; height: 7px; border-radius: 999px;
+  background: #e9e4f7; overflow: hidden;
+}
+.upload-progress-fill {
+  height: 100%; border-radius: 999px;
+  background: linear-gradient(90deg, #7C3AED, #6D28D9);
+  transition: width 0.3s ease;
+}
+.upload-progress-count {
+  font-size: 13px; font-weight: 800; color: #7C3AED;
+  background: #EDE9FE; border: 1px solid #DDD6FE;
+  padding: 3px 10px; border-radius: 8px; min-width: 38px; text-align: center;
+}
+.upload-progress-count.done { color: #059669; background: #ecfdf5; border-color: #a7f3d0; }
+
+.upload-page .card {
+  border-radius: 16px;
+  border: 1px solid #ececf3;
+  background: #fff;
+  box-shadow: 0 4px 18px rgba(15,23,42,0.05);
+  padding: 18px;
+  margin-bottom: 16px;
+}
+.upload-page .step-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.upload-page .step-num {
+  width: 26px; height: 26px; border-radius: 8px;
+  background: #7C3AED; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 800; flex-shrink: 0;
+  box-shadow: 0 3px 8px rgba(124,58,237,0.35);
+}
+.upload-page .step-title { font-size: 15px; font-weight: 800; color: #0f172a; letter-spacing: -0.2px; }
+
+.upload-page .profile-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: 12px; cursor: pointer;
+  border: 1.5px solid transparent; transition: all 0.12s ease;
+}
+.upload-page .profile-row:hover { background: #faf5ff; }
+.upload-page .profile-row.selected {
+  background: #f5f0ff; border-color: #7C3AED;
+}
+.upload-page .avatar {
+  width: 38px; height: 38px; border-radius: 11px;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; color: #fff; font-size: 15px; flex-shrink: 0;
+}
+.upload-page .av-standard { background: #10b981; }
+.upload-page .av-rush { background: #ef4444; }
+
+.upload-page .drop-zone {
+  border: 2px dashed #d6cdf2; border-radius: 14px;
+  background: #faf8ff; min-height: 180px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; transition: all 0.15s ease; overflow: hidden;
+}
+.upload-page .drop-zone:hover { border-color: #7C3AED; background: #f5f0ff; }
+.upload-page .drop-zone.filled { border-style: solid; border-color: #ececf3; background: #000; padding: 0; }
+.upload-page .drop-zone img { width: 100%; height: 220px; object-fit: cover; display: block; }
+.upload-page .drop-icon { font-size: 30px; opacity: 0.7; }
+.upload-page .drop-title { font-weight: 700; color: #334155; font-size: 14px; }
+.upload-page .drop-sub { font-size: 12px; color: #94a3b8; }
+
+.upload-page .loc-box {
+  background: #ecfdf5; border: 1px solid #a7f3d0;
+  border-radius: 12px; padding: 12px 14px;
+}
+.upload-page .loc-head { font-weight: 800; color: #059669; font-size: 13px; margin-bottom: 6px; }
+.upload-page .loc-row { font-size: 12.5px; color: #475569; margin-top: 2px; }

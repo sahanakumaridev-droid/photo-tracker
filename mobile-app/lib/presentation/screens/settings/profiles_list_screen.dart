@@ -32,9 +32,9 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
 
   // ── Design tokens ─────────────────────────────────────────────────────────
   static const Color _grayBg   = Color(0xFFF8FAFC);
-  static const Color _grayText = Color(0xFF475569);
+  static const Color _grayText = Color(0xFF6B7280);
   static const Color _graySubtle = Color(0xFF94A3B8);
-  static const Color _accent   = Color(0xFF5B5BD6);
+  static const Color _accent   = Color(0xFF7C3AED);
   static const Color _border   = Color(0xFFE2E8F0);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
@@ -274,13 +274,13 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
                   color: const Color(0xFFECFDF5),
                   child: Row(children: [
                     const Icon(Icons.my_location_rounded,
-                        size: 14, color: Color(0xFF059669)),
+                        size: 14, color: Color(0xFF6B7280)),
                     const SizedBox(width: 8),
                     Text(
                       'Sorted by distance from your location'
                       ' · ±${userPos.accuracy.toStringAsFixed(0)}m',
                       style: const TextStyle(
-                          fontSize: 12, color: Color(0xFF059669)),
+                          fontSize: 12, color: Color(0xFF6B7280)),
                     ),
                   ]),
                 ),

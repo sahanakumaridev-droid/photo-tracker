@@ -103,6 +103,15 @@ export default function Log() {
       })
     }
 
+    // Deduplicate: keep only latest entry per profile name
+    const seen = new Set()
+    data = data.filter(r => {
+      const key = r.profile_name || r.id
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+
     setRows(data)
     setLoading(false)
   }, [date, dateTo, status, search, timeFrom, timeTo])
@@ -111,6 +120,27 @@ export default function Log() {
 
   const rush     = rows.filter(r => r.service_type === 'rush').length
   const standard = rows.filter(r => r.service_type === 'standard').length
+
+  // ── Row selection (for sharing/exporting a chosen subset) ────────────────
+  const [selectedIds, setSelectedIds] = useState(() => new Set())
+  // Rows used for any export: the selected subset, or all filtered rows.
+  const exportRows = selectedIds.size > 0
+    ? rows.filter(r => selectedIds.has(r.id))
+    : rows
+  const allSelected = rows.length > 0 && selectedIds.size === rows.length
+
+  const toggleRow = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) { next.delete(id) } else { next.add(id) }
+      return next
+    })
+  }
+  const toggleSelectAll = () => {
+    setSelectedIds(prev =>
+      prev.size === rows.length ? new Set() : new Set(rows.map(r => r.id)))
+  }
+  const clearSelection = () => setSelectedIds(new Set())
 
   const [shareToast, setShareToast] = useState('')
   const toastTimer = useRef(null)
@@ -133,20 +163,20 @@ export default function Log() {
 
   // 1. Download as CSV (opens in Excel, Numbers, Google Sheets)
   const handleDownloadCSV = () => {
-    if (rows.length === 0) { showToast('⚠️ No records to export — adjust your filters first.'); return }
+    if (exportRows.length === 0) { showToast('⚠️ No records to export — adjust your filters first.'); return }
     const ts = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' })
-    downloadFile(buildCSV(rows), `geotag-log-${ts}.csv`, 'text/csv;charset=utf-8;')
-    showToast(`✅ Downloaded ${rows.length} record${rows.length !== 1 ? 's' : ''} as CSV`)
+    downloadFile(buildCSV(exportRows), `geotag-log-${ts}.csv`, 'text/csv;charset=utf-8;')
+    showToast(`✅ Downloaded ${exportRows.length} record${exportRows.length !== 1 ? 's' : ''} as CSV`)
   }
 
   // 2. Share — tries native share sheet, then clipboard, then CSV download
   const handleShare = async () => {
-    if (rows.length === 0) { showToast('⚠️ No records to share — adjust your filters first.'); return }
+    if (exportRows.length === 0) { showToast('⚠️ No records to share — adjust your filters first.'); return }
 
     const ts    = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' })
-    const title = `GeoTag Log — ${rows.length} records — ${ts}`
-    const text  = buildEmailBody(rows)
-    const csv   = buildCSV(rows)
+    const title = `GeoTag Log — ${exportRows.length} records — ${ts}`
+    const text  = buildEmailBody(exportRows)
+    const csv   = buildCSV(exportRows)
 
     // Try native share sheet (works on mobile + macOS Safari/Sonoma+)
     if (navigator.share) {
@@ -170,7 +200,7 @@ export default function Log() {
     if (navigator.clipboard && window.isSecureContext) {
       try {
         await navigator.clipboard.writeText(csv)
-        showToast(`📋 ${rows.length} records copied to clipboard as CSV`)
+        showToast(`📋 ${exportRows.length} records copied to clipboard as CSV`)
         return
       } catch {
         // fall through
@@ -188,7 +218,7 @@ export default function Log() {
       const ok = document.execCommand('copy')
       document.body.removeChild(ta)
       if (ok) {
-        showToast(`📋 ${rows.length} records copied to clipboard`)
+        showToast(`📋 ${exportRows.length} records copied to clipboard`)
         return
       }
     } catch { /* fall through */ }
@@ -213,15 +243,15 @@ export default function Log() {
 
   // 4. Copy plain text to clipboard (with all fallbacks)
   const handleCopyClipboard = async () => {
-    if (rows.length === 0) { showToast('⚠️ No records to export.'); return }
+    if (exportRows.length === 0) { showToast('⚠️ No records to export.'); return }
 
-    const text = buildEmailBody(rows)
+    const text = buildEmailBody(exportRows)
 
     // Modern clipboard API
     if (navigator.clipboard && window.isSecureContext) {
       try {
         await navigator.clipboard.writeText(text)
-        showToast(`📋 ${rows.length} records copied to clipboard`)
+        showToast(`📋 ${exportRows.length} records copied to clipboard`)
         return
       } catch { /* fall through */ }
     }
@@ -237,7 +267,7 @@ export default function Log() {
       const ok = document.execCommand('copy')
       document.body.removeChild(ta)
       if (ok) {
-        showToast(`📋 ${rows.length} records copied to clipboard`)
+        showToast(`📋 ${exportRows.length} records copied to clipboard`)
         return
       }
     } catch { /* fall through */ }
@@ -247,11 +277,11 @@ export default function Log() {
 
   // 5. Prompts for email then sends via backend
   const handleEmailPrompt = () => {
-    if (rows.length === 0) {
+    if (exportRows.length === 0) {
       showToast('⚠️ No records to export — adjust your filters first.')
       return
     }
-    const email = prompt(`Send ${rows.length} record${rows.length !== 1 ? 's' : ''} by email.\nEnter recipient email:`, exportEmail)
+    const email = prompt(`Send ${exportRows.length} record${exportRows.length !== 1 ? 's' : ''} by email.\nEnter recipient email:`, exportEmail)
     if (!email || !email.includes('@')) return
     setExportEmail(email)
     handleSendEmailDirect(email)
@@ -260,7 +290,7 @@ export default function Log() {
   const handleSendEmailDirect = async (toEmail) => {
     setSendingEmail(true)
     try {
-      const records = rows.map(r => ({
+      const records = exportRows.map(r => ({
         id: r.id,
         timestamp: r.timestamp,
         profile_name: r.profile_name,
@@ -278,7 +308,7 @@ export default function Log() {
         showToast('📧 SMTP not configured — downloading CSV instead')
         handleDownloadCSV()
       } else {
-        showToast(`✅ Email sent to ${toEmail} — ${rows.length} records`)
+        showToast(`✅ Email sent to ${toEmail} — ${exportRows.length} records`)
       }
     } catch (err) {
       showToast(`❌ Failed to send: ${err.response?.data?.detail || err.message || 'Network error'}`)
@@ -289,7 +319,7 @@ export default function Log() {
 
   // 6. Send email via backend SMTP/SendGrid (from export panel)
   const handleSendEmail = () => {
-    if (rows.length === 0) { showToast('⚠️ No records to export — adjust your filters first.'); return }
+    if (exportRows.length === 0) { showToast('⚠️ No records to export — adjust your filters first.'); return }
     if (!exportEmail || !exportEmail.includes('@')) { showToast('⚠️ Please enter a valid recipient email address.'); return }
     handleSendEmailDirect(exportEmail)
   }
@@ -327,7 +357,7 @@ export default function Log() {
                 style={{ position: 'absolute', top: 12, right: 12, background: 'rgba(0,0,0,0.6)', border: 'none', color: '#fff', borderRadius: '50%', width: 32, height: 32, cursor: 'pointer', fontSize: 16 }}
               >✕</button>
               <div style={{ position: 'absolute', top: 12, left: 12, background: detailItem.service_type === 'rush' ? '#ef4444' : '#10b981', color: '#fff', borderRadius: 8, padding: '4px 10px', fontSize: 12, fontWeight: 700 }}>
-                {detailItem.service_type === 'rush' ? '🔴 Rush' : '🟢 Standard'}
+                {detailItem.service_type === 'rush' ? '🔴 ASAP' : '🟢 Standard'}
               </div>
             </div>
             <div style={{ padding: 20 }}>
@@ -364,9 +394,19 @@ export default function Log() {
           <div className="page-sub">Filter uploads by date, time, zip, status, or note · All times in PST</div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <span className="log-stat-pill log-stat-rush">{rush} Rush</span>
+          <span className="log-stat-pill log-stat-rush">{rush} ASAP</span>
           <span className="log-stat-pill log-stat-std">{standard} Standard</span>
           <span className="log-stat-pill">{rows.length} Total</span>
+          {selectedIds.size > 0 && (
+            <span
+              className="log-stat-pill"
+              onClick={clearSelection}
+              title="Clear selection"
+              style={{ background: '#7C3AED', color: '#fff', borderColor: '#7C3AED', cursor: 'pointer', fontWeight: 700 }}
+            >
+              {selectedIds.size} selected ✕
+            </span>
+          )}
 
           {/* ── Share button (always visible) ── */}
           <button
@@ -536,7 +576,7 @@ export default function Log() {
             style={{ marginBottom: 0, width: 130 }}
           >
             <option value="">All</option>
-            <option value="rush">Rush (ASAP)</option>
+            <option value="rush">ASAP</option>
             <option value="standard">Standard</option>
           </select>
         </div>
@@ -561,6 +601,44 @@ export default function Log() {
         </button>
       </div>
 
+      {/* ── Contextual selection action bar ── */}
+      {selectedIds.size > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+          margin: '0 24px 12px', padding: '12px 16px',
+          background: 'linear-gradient(90deg, #7C3AED 0%, #6D28D9 100%)',
+          borderRadius: 14, color: '#fff',
+          boxShadow: '0 8px 24px rgba(124,58,237,0.35)',
+          animation: 'fadeInDown 0.2s ease',
+        }}>
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            width: 28, height: 28, borderRadius: 8, background: 'rgba(255,255,255,0.2)',
+            fontWeight: 800, fontSize: 14,
+          }}>{selectedIds.size}</span>
+          <span style={{ fontWeight: 700, fontSize: 14 }}>
+            {selectedIds.size} record{selectedIds.size !== 1 ? 's' : ''} selected
+          </span>
+          <div style={{ flex: 1 }} />
+          <button onClick={handleShare}
+            style={{ background: 'rgba(255,255,255,0.18)', color: '#fff', border: '1px solid rgba(255,255,255,0.3)', borderRadius: 10, padding: '8px 14px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+            ⤴ Share
+          </button>
+          <button onClick={handleDownloadCSV}
+            style={{ background: '#fff', color: '#6D28D9', border: 'none', borderRadius: 10, padding: '8px 14px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+            ⬇ Export CSV
+          </button>
+          <button onClick={handleEmailPrompt}
+            style={{ background: 'rgba(255,255,255,0.18)', color: '#fff', border: '1px solid rgba(255,255,255,0.3)', borderRadius: 10, padding: '8px 14px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+            ✉ Email
+          </button>
+          <button onClick={clearSelection}
+            style={{ background: 'transparent', color: 'rgba(255,255,255,0.85)', border: 'none', borderRadius: 10, padding: '8px 10px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+            ✕ Clear
+          </button>
+        </div>
+      )}
+
       {/* Table */}
       <div className="log-table-wrap">
         {loading ? (
@@ -576,6 +654,22 @@ export default function Log() {
           <table className="log-table">
             <thead>
               <tr>
+                <th style={{ width: 44, textAlign: 'center' }}>
+                  <span
+                    role="checkbox"
+                    aria-checked={allSelected}
+                    aria-label="Select all"
+                    onClick={toggleSelectAll}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                      width: 22, height: 22, borderRadius: '50%', cursor: 'pointer',
+                      background: selectedIds.size > 0 ? '#7C3AED' : '#fff',
+                      border: `2px solid ${selectedIds.size > 0 ? '#7C3AED' : '#cbd5e1'}`,
+                      color: '#fff', fontSize: 13, fontWeight: 800, lineHeight: 1,
+                      transition: 'all .15s ease',
+                    }}
+                  >{allSelected ? '✓' : selectedIds.size > 0 ? '–' : ''}</span>
+                </th>
                 <th>Photo</th>
                 <th>Profile(s)</th>
                 <th>Status</th>
@@ -585,20 +679,42 @@ export default function Log() {
               </tr>
             </thead>
             <tbody>
-              {rows.map(r => (
-                <tr key={r.id} className="log-row-clickable" onClick={() => showDetail(r)} style={{ cursor: 'pointer' }}>
+              {rows.map(r => {
+                const isSel = selectedIds.has(r.id)
+                const sc = r.service_type === 'rush' ? '#ef4444' : '#10b981'
+                return (
+                <tr key={r.id} className="log-row-clickable" onClick={() => showDetail(r)}
+                    style={{ cursor: 'pointer', background: isSel ? 'rgba(124,58,237,0.06)' : undefined }}>
+                  <td style={{ textAlign: 'center', borderLeft: `4px solid ${sc}` }} onClick={e => { e.stopPropagation(); toggleRow(r.id) }}>
+                    <span
+                      role="checkbox"
+                      aria-checked={isSel}
+                      aria-label="Select row"
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                        width: 22, height: 22, borderRadius: '50%', cursor: 'pointer',
+                        background: isSel ? '#7C3AED' : '#fff',
+                        border: `2px solid ${isSel ? '#7C3AED' : '#cbd5e1'}`,
+                        color: '#fff', fontSize: 13, fontWeight: 800, lineHeight: 1,
+                        boxShadow: isSel ? '0 2px 6px rgba(124,58,237,0.45)' : 'none',
+                        transition: 'all .15s ease',
+                      }}
+                    >{isSel ? '✓' : ''}</span>
+                  </td>
                   <td>
                     <img
                       src={r.image_url}
                       alt=""
                       className="log-thumb"
+                      style={{ border: `2px solid ${sc}`, padding: 1, borderRadius: 10 }}
                       onError={e => { e.target.src = 'https://via.placeholder.com/48x48/e2e8f0/64748b?text=P' }}
                     />
                   </td>
                   <td>
                     <div className="log-profiles">
                       {(r.profiles && r.profiles.length > 0 ? r.profiles : [{ name: r.profile_name, service_type: r.service_type }]).map((p, i) => (
-                        <span key={i} className="log-profile-chip">{p.name}</span>
+                        <span key={i} className="log-profile-chip"
+                          style={{ background: '#EDE9FE', color: '#6D28D9', border: '1px solid #DDD6FE', borderRadius: 8, padding: '3px 10px', fontWeight: 600, fontSize: 12 }}>{p.name}</span>
                       ))}
                     </div>
                   </td>
@@ -613,7 +729,7 @@ export default function Log() {
                   </td>
                   <td className="log-note">{r.note || <span style={{ opacity: 0.3 }}>—</span>}</td>
                 </tr>
-              ))}
+              )})}
             </tbody>
           </table>
         )}

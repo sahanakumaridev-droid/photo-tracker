@@ -1,18 +1,24 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
+import 'package:shimmer/shimmer.dart';
 
 import '../../../config/app_config.dart';
+import '../../../core/utils/category.dart';
+import '../../../core/utils/location_service.dart';
 import '../../../data/models/photo_model.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
+import '../../widgets/common/app_logo.dart';
 
+/// GeoTag — consumer home. Photos & places are the hero: capture, recent
+/// uploads gallery, nearby discovery and a light activity feed. Apple-style
+/// white space, soft shadows, blue accent (#2563EB), no gradients.
 class HomeScreenV2 extends ConsumerStatefulWidget {
   const HomeScreenV2({super.key});
 
@@ -20,48 +26,66 @@ class HomeScreenV2 extends ConsumerStatefulWidget {
   ConsumerState<HomeScreenV2> createState() => _HomeScreenV2State();
 }
 
-class _HomeScreenV2State extends ConsumerState<HomeScreenV2>
-    with SingleTickerProviderStateMixin {
-  static const Color _canvas    = Color(0xFFF2F4F7);
-  static const Color _surface   = Color(0xFFFFFFFF);
-  static const Color _ink       = Color(0xFF0D1117);
-  static const Color _inkMuted  = Color(0xFF4B5563);
-  static const Color _inkSubtle = Color(0xFF9CA3AF);
-  static const Color _separator = Color(0xFFE5E7EB);
-  static const Color _accent    = Color(0xFF5B5BD6);
-  static const Color _accentSoft= Color(0xFFEEEEFD);
-  static const Color _rushRed   = Color(0xFFDC2626);
-  static const Color _standardGreen = Color(0xFF059669);
-  static const Color _airportBlue   = Color(0xFF0284C7);
+class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
+  // ── Palette ────────────────────────────────────────────────────────────────
+  static const Color _ink    = Color(0xFF0F0F0F); // text / black buttons
+  static const Color _muted  = Color(0xFF6B7280); // secondary text
+  static const Color _purple = Color(0xFF7C3AED); // purple accent
+  static const Color _purpleSoft = Color(0xFFEDE9FE);
+  static const Color _green  = Color(0xFF10B981); // success / verified
+  static const Color _bg     = Color(0xFFFAFAFA); // background
+  static const Color _card   = Color(0xFFFFFFFF); // cards
+  static const Color _hair   = Color(0xFFE5E7EB); // hairline
 
-  String _selectedProfileId = 'all';
-  bool   _isGridView        = true;
+  static const List<BoxShadow> _softShadow = [
+    BoxShadow(color: Color(0x0F0F172A), blurRadius: 16, offset: Offset(0, 6)),
+  ];
 
-  Color _svcColor(String? t) {
-    switch ((t ?? '').toLowerCase()) {
-      case 'rush':    return _rushRed;
-      case 'airport': return _airportBlue;
-      default:        return _standardGreen;
-    }
+  String? _selectedCategory; // null = All
+  final Set<int> _favorites = {};
+  Position? _devicePosition;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPosition();
   }
 
-  String _svcLabel(String? t) {
-    switch ((t ?? '').toLowerCase()) {
-      case 'rush':    return 'Rush';
-      case 'airport': return 'Airport';
-      default:        return 'Standard';
-    }
-  }
-
-  String _formatTs(String? ts) {
-    if (ts == null) return '';
+  Future<void> _loadPosition() async {
     try {
-      return DateFormat('MMM d, yyyy').format(DateTime.parse(ts).toLocal());
-    } catch (_) { return ts; }
+      final pos = await LocationService.getCurrentLocation();
+      if (mounted && pos != null) setState(() => _devicePosition = pos);
+    } catch (_) {/* nearby simply shows without distance */}
   }
 
+  // ── Helpers ──────────────────────────────────────────────────────────────
   String _fullUrl(String url) =>
       url.startsWith('http') ? url : '${AppConfig.apiBaseUrl}$url';
+
+  String _shortDate(String? ts) {
+    if (ts == null) return '';
+    try {
+      return DateFormat('MMM d').format(DateTime.parse(ts).toLocal());
+    } catch (_) {
+      return '';
+    }
+  }
+
+  String _relativeTime(String? ts) {
+    if (ts == null) return '';
+    try {
+      final d = DateTime.parse(ts).toLocal();
+      final diff = DateTime.now().difference(d);
+      if (diff.inMinutes < 1) return 'Just now';
+      if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+      if (diff.inHours < 24) return '${diff.inHours}h ago';
+      if (diff.inDays == 1) return 'Yesterday';
+      if (diff.inDays < 7) return '${diff.inDays}d ago';
+      return DateFormat('MMM d').format(d);
+    } catch (_) {
+      return '';
+    }
+  }
 
   int _thisMonthCount(List<PhotoModel> photos) {
     final now = DateTime.now();
@@ -70,46 +94,60 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2>
       try {
         final d = DateTime.parse(p.timestamp!);
         return d.year == now.year && d.month == now.month;
-      } catch (_) { return false; }
+      } catch (_) {
+        return false;
+      }
     }).length;
   }
 
-  List<PhotoModel> _filtered(List<PhotoModel> photos) {
-    if (_selectedProfileId == 'all') return photos;
-    return photos.where((p) {
-      if (p.profileId?.toString() == _selectedProfileId) return true;
-      return p.profiles?.any((pr) => pr.id.toString() == _selectedProfileId) ?? false;
-    }).toList();
+  int _locationCount(List<PhotoModel> photos) {
+    final keys = <String>{};
+    for (final p in photos) {
+      keys.add((p.address?.trim().isNotEmpty ?? false)
+          ? p.address!.trim().toLowerCase()
+          : (p.zipCode?.trim().isNotEmpty ?? false)
+              ? 'zip:${p.zipCode}'
+              : '${p.latitude.toStringAsFixed(3)},${p.longitude.toStringAsFixed(3)}');
+    }
+    return keys.length;
   }
 
-  /// One card per profile — all photos for that profile in one carousel.
-  List<List<PhotoModel>> _groupByProfile(List<PhotoModel> photos) {
-    final map = <int, List<PhotoModel>>{};
-    for (final photo in photos) {
-      final key = photo.profileId ?? -1;
-      map.putIfAbsent(key, () => []).add(photo);
+  String _placeLabel(PhotoModel p) {
+    if (p.address != null && p.address!.trim().isNotEmpty) {
+      return p.address!.split(',').first.trim();
     }
-    for (final group in map.values) {
-      group.sort((a, b) {
-        if (a.timestamp == null) return 1;
-        if (b.timestamp == null) return -1;
-        return b.timestamp!.compareTo(a.timestamp!);
-      });
-    }
-    final groups = map.values.toList()
-      ..sort((a, b) {
-        final aTs = a.first.timestamp ?? '';
-        final bTs = b.first.timestamp ?? '';
-        return bTs.compareTo(aTs);
-      });
-    return groups;
+    if (p.zipCode != null && p.zipCode!.trim().isNotEmpty) return 'ZIP ${p.zipCode}';
+    return '${p.latitude.toStringAsFixed(3)}, ${p.longitude.toStringAsFixed(3)}';
+  }
+
+  String? _distanceLabel(PhotoModel p) {
+    final pos = _devicePosition;
+    if (pos == null) return null;
+    final meters = Geolocator.distanceBetween(
+        pos.latitude, pos.longitude, p.latitude, p.longitude);
+    final miles = meters / 1609.34;
+    if (miles < 0.1) return 'Nearby';
+    if (miles < 10) return '${miles.toStringAsFixed(1)} mi';
+    return '${miles.round()} mi';
+  }
+
+  List<PhotoModel> _filtered(List<PhotoModel> photos) {
+    final list = photos.where((p) {
+      if (_selectedCategory != null &&
+          categoryOf(p.category).value != _selectedCategory) {
+        return false;
+      }
+      return true;
+    }).toList();
+    list.sort((a, b) => (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
+    return list;
   }
 
   String _firstName(String? email) {
-    if (email == null || email.isEmpty) return 'there';
+    if (email == null || email.isEmpty) return 'Admin';
     final local = email.split('@').first;
-    final name  = local.replaceAll(RegExp(r'[._\-0-9]'), ' ').trim();
-    if (name.isEmpty) return 'there';
+    final name = local.replaceAll(RegExp(r'[._\-0-9]'), ' ').trim();
+    if (name.isEmpty) return 'Admin';
     return name.split(' ').first.capitalize();
   }
 
@@ -120,136 +158,106 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2>
     return 'Good evening';
   }
 
+  void _toggleFav(int id) {
+    HapticFeedback.selectionClick();
+    setState(() {
+      if (!_favorites.add(id)) _favorites.remove(id);
+    });
+  }
+
+  // ── Build ───────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    final photosAsync   = ref.watch(photosProvider);
+    final photosAsync = ref.watch(photosProvider);
     final profilesAsync = ref.watch(profilesProvider);
-    final authState     = ref.watch(authProvider);
+    final authState = ref.watch(authProvider);
 
     return Scaffold(
-      backgroundColor: _canvas,
-      body: RefreshIndicator(
-        color: _accent,
-        backgroundColor: _surface,
-        onRefresh: () async {
-          HapticFeedback.lightImpact();
-          ref.invalidate(photosProvider);
-          ref.invalidate(profilesProvider);
-        },
-        child: CustomScrollView(
-          slivers: [
-            _buildSliverHeader(authState),
-            photosAsync.when(
-              loading: () => const SliverFillRemaining(
-                child: Center(child: CircularProgressIndicator(strokeWidth: 2, color: _accent)),
-              ),
-              error: (err, _) => SliverFillRemaining(child: _buildError(err)),
-              data: (photos) => profilesAsync.when(
-                loading: () => const SliverFillRemaining(
-                  child: Center(child: CircularProgressIndicator(strokeWidth: 2, color: _accent)),
+      backgroundColor: _bg,
+      body: Column(
+        children: [
+          _topBar(authState),
+          Expanded(
+            child: RefreshIndicator(
+              color: _purple,
+              backgroundColor: _card,
+              onRefresh: () async {
+                HapticFeedback.lightImpact();
+                ref.invalidate(photosProvider);
+                ref.invalidate(profilesProvider);
+                await _loadPosition();
+              },
+              child: photosAsync.when(
+                loading: _skeleton,
+                error: (e, _) => _error(),
+                data: (photos) => profilesAsync.when(
+                  loading: _skeleton,
+                  error: (e, _) => _error(),
+                  data: (profiles) =>
+                      _content(authState, photos, profiles),
                 ),
-                error: (err, _) => SliverFillRemaining(child: _buildError(err)),
-                data: (profiles) => _buildContent(photos, profiles),
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildSliverHeader(AuthState authState) => SliverAppBar(
-    expandedHeight: 0,
-    pinned: true,
-    floating: false,
-    elevation: 0,
-    toolbarHeight: 100,
-    backgroundColor: const Color(0xFF4F46E5),
-    surfaceTintColor: Colors.transparent,
-    flexibleSpace: _buildHeaderBackground(authState),
-    bottom: PreferredSize(
-      preferredSize: const Size.fromHeight(1),
-      child: Container(height: 1, color: _separator),
-    ),
-  );
-
-  Widget _buildHeaderBackground(AuthState authState) {
-    final firstName = _firstName(authState.email);
-    final greeting  = _greeting();
+  // ── Section 1 · Top bar ──────────────────────────────────────────────────────
+  Widget _topBar(AuthState auth) {
+    final name = _firstName(auth.email);
     return Container(
       decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF4F46E5), Color(0xFF7C3AED)],
-        ),
+        color: _card,
+        border: Border(bottom: BorderSide(color: _hair)),
       ),
       child: SafeArea(
         bottom: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 8, 14, 12),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
+        child: SizedBox(
+          height: 56,
+          child: Stack(
+            alignment: Alignment.center,
             children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          width: 30, height: 30,
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(9),
-                            border: Border.all(color: Colors.white.withValues(alpha: 0.25), width: 1),
-                          ),
-                          child: Stack(
-                            alignment: Alignment.center,
-                            children: [
-                              const Icon(Icons.location_on_rounded, size: 15, color: Colors.white),
-                              Positioned(
-                                bottom: 5, right: 5,
-                                child: Container(
-                                  width: 8, height: 8,
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF34D399),
-                                    shape: BoxShape.circle,
-                                    border: Border.all(color: Colors.white, width: 1.5),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        RichText(
-                          text: const TextSpan(children: [
-                            TextSpan(text: 'Geo', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Colors.white, letterSpacing: -0.5)),
-                            TextSpan(text: 'Tag', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w400, color: Color(0xFFA5B4FC), letterSpacing: -0.5)),
-                          ]),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text('$greeting, $firstName 👋',
-                      style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700, color: Colors.white, letterSpacing: -0.4, height: 1.1)),
-                    const SizedBox(height: 2),
-                    Text(DateFormat('EEEE, MMMM d').format(DateTime.now()),
-                      style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: 0.65), fontWeight: FontWeight.w400)),
-                  ],
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: EdgeInsets.only(left: 16),
+                  child: AppLogo(size: 40, radius: 11),
                 ),
               ),
-              Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _headerBtn(icon: Icons.map_rounded, tooltip: 'Map View', onTap: () {
-                    HapticFeedback.lightImpact();
-                    context.push('/map');
-                  }),
-                ],
+              const Text('GeoTag',
+                  style: TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                      color: _ink,
+                      letterSpacing: -0.3)),
+              Align(
+                alignment: Alignment.centerRight,
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    _circleIcon(Icons.notifications_none_rounded,
+                        onTap: () => context.push('/log')),
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        context.push('/settings');
+                      },
+                      child: CircleAvatar(
+                        radius: 17,
+                        backgroundColor: _purple,
+                        child: Text(
+                            name.isEmpty ? 'A' : name[0].toUpperCase(),
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700)),
+                      ),
+                    ),
+                  ]),
+                ),
               ),
             ],
           ),
@@ -258,470 +266,330 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2>
     );
   }
 
-  Widget _headerBtn({required IconData icon, required String tooltip, required VoidCallback onTap}) =>
-    Tooltip(
-      message: tooltip,
-      child: GestureDetector(
-        onTap: onTap,
+  Widget _circleIcon(IconData icon, {required VoidCallback onTap}) =>
+      GestureDetector(
+        onTap: () {
+          HapticFeedback.selectionClick();
+          onTap();
+        },
         child: Container(
-          width: 38, height: 38,
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.15),
-            borderRadius: BorderRadius.circular(11),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.2), width: 1),
-          ),
-          child: Icon(icon, size: 18, color: Colors.white),
+          width: 36,
+          height: 36,
+          decoration: const BoxDecoration(color: _bg, shape: BoxShape.circle),
+          child: Icon(icon, size: 20, color: _ink),
         ),
-      ),
-    );
+      );
 
-  Widget _buildContent(List<PhotoModel> photos, List<ProfileModel> profiles) {
+  // ── Content ───────────────────────────────────────────────────────────────
+  Widget _content(
+      AuthState auth, List<PhotoModel> photos, List<ProfileModel> profiles) {
     final filtered = _filtered(photos);
-    final groups   = _groupByProfile(filtered);
-    return SliverList(
-      delegate: SliverChildListDelegate([
-        _buildStatCards(photos, profiles),
-        _buildProfileFilter(photos, profiles),
-        _buildSectionHeader(groups.length),
-        if (groups.isEmpty)
-          _buildEmptyState()
-        else if (_isGridView)
-          _buildPhotoGrid(groups)
-        else
-          _buildPhotoList(groups),
-        const SizedBox(height: 100),
-      ]),
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.only(bottom: 120),
+      children: [
+        const SizedBox(height: 20),
+        _welcome(auth),
+        const SizedBox(height: 20),
+        _captureCard(),
+        const SizedBox(height: 24),
+        _quickStats(photos, profiles),
+        const SizedBox(height: 28),
+        _recentUploads(filtered),
+        const SizedBox(height: 28),
+        _categoryChips(photos),
+        const SizedBox(height: 24),
+        _nearby(filtered),
+        const SizedBox(height: 28),
+        _activity(photos),
+      ],
     );
   }
 
-  static const List<List<Color>> _statGradients = [
-    [Color(0xFF4F46E5), Color(0xFF7C3AED)],
-    [Color(0xFF059669), Color(0xFF0D9488)],
-    [Color(0xFF0284C7), Color(0xFF0EA5E9)],
-    [Color(0xFFDC2626), Color(0xFFEA580C)],
-  ];
+  // ── Section 2 · Welcome ──────────────────────────────────────────────────────
+  Widget _welcome(AuthState auth) => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('${_greeting()}, ${_firstName(auth.email)}',
+                style: const TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.w800,
+                    color: _ink,
+                    letterSpacing: -0.8,
+                    height: 1.1)),
+            const SizedBox(height: 6),
+            const Text('Discover and capture places around you',
+                style: TextStyle(fontSize: 15, color: _muted, height: 1.3)),
+          ],
+        ),
+      );
 
-  Widget _buildStatCards(List<PhotoModel> photos, List<ProfileModel> profiles) {
-    final stats = [
-      (label: 'Total Photos', value: '${photos.length}',                                          icon: Icons.photo_library_rounded,  gradIdx: 0),
-      (label: 'Profiles',     value: '${profiles.length}',                                        icon: Icons.people_rounded,         gradIdx: 1),
-      (label: 'This Month',   value: '${_thisMonthCount(photos)}',                                icon: Icons.calendar_month_rounded, gradIdx: 2),
-      (label: 'Rush Jobs',    value: '${photos.where((p) => p.serviceType == 'rush').length}',    icon: Icons.bolt_rounded,           gradIdx: 3),
-    ];
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-      child: Column(children: [
-        Row(children: [Expanded(child: _statCard(stats[0])), const SizedBox(width: 12), Expanded(child: _statCard(stats[1]))]),
-        const SizedBox(height: 12),
-        Row(children: [Expanded(child: _statCard(stats[2])), const SizedBox(width: 12), Expanded(child: _statCard(stats[3]))]),
-      ]),
-    );
-  }
-
-  Widget _statCard(({String label, String value, IconData icon, int gradIdx}) s) {
-    final grad = _statGradients[s.gradIdx];
-    return GestureDetector(
-      onTap: () {
-        HapticFeedback.lightImpact();
-        switch (s.gradIdx) {
-          case 0: // Total Photos — go to home with all filter
-            setState(() => _selectedProfileId = 'all');
-            break;
-          case 1: // Profiles — go to settings
-            context.push('/settings');
-            break;
-          case 2: // This Month — go to log with today's month
-            context.push('/log');
-            break;
-          case 3: // Rush Jobs — filter to rush
-            setState(() => _selectedProfileId = 'all');
-            context.push('/log');
-            break;
-        }
-      },
-      child: Container(
-      height: 110,
-      decoration: BoxDecoration(
-        gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: grad),
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [BoxShadow(color: grad[0].withValues(alpha: 0.30), blurRadius: 14, offset: const Offset(0, 6))],
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(20),
-        child: Stack(children: [
-          Positioned(top: -16, right: -16,
-            child: Container(width: 72, height: 72,
-              decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.08), shape: BoxShape.circle))),
-          Positioned.fill(
-            child: Padding(
-              padding: const EdgeInsets.all(14),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Container(width: 32, height: 32,
-                    decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(10)),
-                    child: Icon(s.icon, size: 17, color: Colors.white)),
-                  Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-                    Text(s.value, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: Colors.white, letterSpacing: -1, height: 1)),
-                    const SizedBox(height: 2),
-                    Text(s.label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: Colors.white.withValues(alpha: 0.8))),
-                  ]),
-                ],
-              ),
-            ),
+  // ── Section 3 · Capture card ─────────────────────────────────────────────────
+  Widget _captureCard() => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        child: Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: _card,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: const Color(0xFFE5E7EB)),
+            boxShadow: _softShadow,
           ),
-          // Tap ripple hint
-          Positioned(top: 8, right: 8,
-            child: Icon(Icons.arrow_forward_ios_rounded, size: 10,
-              color: Colors.white.withValues(alpha: 0.4))),
-        ]),
-      ),
-    ),
-    );
-  }
-
-  Widget _buildProfileFilter(List<PhotoModel> photos, List<ProfileModel> profiles) {
-    final items = <({String id, String name, int count, String? svcType})>[
-      (id: 'all', name: 'All Photos', count: photos.length, svcType: null),
-      ...profiles.map((p) {
-        final count = photos.where((ph) =>
-          ph.profileId == p.id || (ph.profiles?.any((pr) => pr.id == p.id) ?? false)).length;
-        return (id: p.id.toString(), name: p.name, count: count, svcType: p.serviceType);
-      }),
-    ];
-    final selected = items.firstWhere((i) => i.id == _selectedProfileId, orElse: () => items.first);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-      child: Row(children: [
-        Expanded(
-          child: GestureDetector(
-            onTap: () => _showProfilePicker(items),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              decoration: BoxDecoration(
-                color: _surface,
+          child: Row(
+            children: [
+              Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0F0F0F),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: const Icon(
+                  Icons.camera_alt_rounded,
+                  color: Colors.white,
+                  size: 28,
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Capture New GeoTag',
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700,
+                        color: _ink,
+                        letterSpacing: -0.3,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Save a location with photos & coordinates.',
+                      style: TextStyle(
+                        fontSize: 13.5,
+                        color: _muted,
+                        height: 1.35,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Material(
+                color: const Color(0xFF0F0F0F),
                 borderRadius: BorderRadius.circular(14),
-                boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 8, offset: const Offset(0, 2))],
-              ),
-              child: Row(children: [
-                Container(width: 10, height: 10,
-                  decoration: BoxDecoration(
-                    color: selected.id == 'all' ? _accent : _svcColor(selected.svcType),
-                    shape: BoxShape.circle)),
-                const SizedBox(width: 10),
-                Expanded(child: Text(selected.name,
-                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: _ink),
-                  maxLines: 1, overflow: TextOverflow.ellipsis)),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                  decoration: BoxDecoration(color: _canvas, borderRadius: BorderRadius.circular(8)),
-                  child: Text('${selected.count}', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: _inkMuted))),
-                const SizedBox(width: 8),
-                const Icon(Icons.keyboard_arrow_down_rounded, size: 18, color: _inkSubtle),
-              ]),
-            ),
-          ),
-        ),
-        const SizedBox(width: 10),
-        GestureDetector(
-          onTap: () => context.push('/settings'),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            decoration: BoxDecoration(color: _accentSoft, borderRadius: BorderRadius.circular(14)),
-            child: const Text('Manage', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _accent)),
-          ),
-        ),
-      ]),
-    );
-  }
-
-  void _showProfilePicker(List<({String id, String name, int count, String? svcType})> items) {
-    HapticFeedback.lightImpact();
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (_) => Container(
-        constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.6),
-        decoration: const BoxDecoration(color: _surface, borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          const SizedBox(height: 12),
-          Center(child: Container(width: 36, height: 4,
-            decoration: BoxDecoration(color: _separator, borderRadius: BorderRadius.circular(2)))),
-          const SizedBox(height: 16),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: Row(children: [
-              const Text('Filter by Profile', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: _ink, letterSpacing: -0.3)),
-              const Spacer(),
-              Text('${items.length - 1} profiles', style: const TextStyle(fontSize: 13, color: _inkSubtle)),
-            ]),
-          ),
-          const SizedBox(height: 12),
-          Flexible(
-            child: ListView.builder(
-              shrinkWrap: true,
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-              itemCount: items.length,
-              itemBuilder: (_, i) {
-                final item  = items[i];
-                final sel   = _selectedProfileId == item.id;
-                final color = item.id == 'all' ? _accent : _svcColor(item.svcType);
-                return GestureDetector(
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(14),
                   onTap: () {
-                    HapticFeedback.selectionClick();
-                    setState(() => _selectedProfileId = item.id);
-                    Navigator.pop(context);
+                    HapticFeedback.lightImpact();
+                    context.push('/upload');
                   },
                   child: Container(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
-                    decoration: BoxDecoration(
-                      color: sel ? color.withValues(alpha: 0.08) : _canvas,
-                      borderRadius: BorderRadius.circular(14),
-                      border: sel ? Border.all(color: color.withValues(alpha: 0.3), width: 1.5) : null,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 20, vertical: 13),
+                    child: const Text(
+                      'Capture',
+                      style: TextStyle(
+                        fontSize: 14.5,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                      ),
                     ),
-                    child: Row(children: [
-                      Container(width: 36, height: 36,
-                        decoration: BoxDecoration(color: color.withValues(alpha: 0.12), shape: BoxShape.circle),
-                        child: Center(child: item.id == 'all'
-                          ? Icon(Icons.photo_library_rounded, size: 16, color: color)
-                          : Text(item.name[0].toUpperCase(), style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: color)))),
-                      const SizedBox(width: 12),
-                      Expanded(child: Text(item.name,
-                        style: TextStyle(fontSize: 14, fontWeight: sel ? FontWeight.w600 : FontWeight.w400, color: sel ? color : _ink))),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                        decoration: BoxDecoration(color: sel ? color.withValues(alpha: 0.15) : _separator, borderRadius: BorderRadius.circular(8)),
-                        child: Text('${item.count}', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: sel ? color : _inkMuted))),
-                      if (sel) ...[const SizedBox(width: 8), Icon(Icons.check_circle_rounded, size: 18, color: color)],
-                    ]),
                   ),
-                );
-              },
-            ),
+                ),
+              ),
+            ],
           ),
-        ]),
+        ),
+      );
+
+  // ── Section 4 · Quick stats ──────────────────────────────────────────────────
+  Widget _quickStats(List<PhotoModel> photos, List<ProfileModel> profiles) {
+    final stats = [
+      (icon: Icons.photo_camera_rounded, value: '${photos.length}', label: 'Photos', tint: _purple),
+      (icon: Icons.place_rounded, value: '${_locationCount(photos)}', label: 'Locations', tint: _green),
+      (icon: Icons.favorite_rounded, value: '${_favorites.length}', label: 'Favorites', tint: const Color(0xFFEF4444)),
+      (icon: Icons.calendar_today_rounded, value: '${_thisMonthCount(photos)}', label: 'This Month', tint: const Color(0xFFF59E0B)),
+    ];
+    return SizedBox(
+      height: 96,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        itemCount: stats.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 12),
+        itemBuilder: (_, i) {
+          final s = stats[i];
+          return Container(
+            width: 112,
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: _card,
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: _softShadow,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Icon(s.icon, size: 20, color: s.tint),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(s.value,
+                        style: const TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                            color: _ink,
+                            letterSpacing: -0.5,
+                            height: 1)),
+                    const SizedBox(height: 2),
+                    Text(s.label,
+                        style: const TextStyle(fontSize: 12, color: _muted)),
+                  ],
+                ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }
 
-  Widget _buildSectionHeader(int count) => Padding(
-    padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
-    child: Row(children: [
-      const Text('Photos', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: _ink, letterSpacing: -0.2)),
-      const SizedBox(width: 8),
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-        decoration: BoxDecoration(color: _separator, borderRadius: BorderRadius.circular(10)),
-        child: Text('$count', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: _inkMuted))),
-      const Spacer(),
-      Container(
-        decoration: BoxDecoration(color: _surface, borderRadius: BorderRadius.circular(8), border: Border.all(color: _separator)),
-        child: Row(children: [
-          _toggleBtn(Icons.grid_view_rounded,  _isGridView,  () => setState(() => _isGridView = true)),
-          _toggleBtn(Icons.view_list_rounded,  !_isGridView, () => setState(() => _isGridView = false)),
-        ]),
-      ),
-    ]),
-  );
-
-  Widget _toggleBtn(IconData icon, bool active, VoidCallback onTap) =>
-    GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.all(7),
-        decoration: BoxDecoration(color: active ? _accent : Colors.transparent, borderRadius: BorderRadius.circular(7)),
-        child: Icon(icon, size: 16, color: active ? Colors.white : _inkSubtle),
-      ),
+  // ── Section 5 · Recent uploads (hero) ─────────────────────────────────────────
+  Widget _recentUploads(List<PhotoModel> photos) {
+    final recent = photos.take(10).toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionHeader('Recent Uploads',
+            action: 'See all', onAction: () => context.push('/log')),
+        const SizedBox(height: 14),
+        if (recent.isEmpty)
+          _inlineEmpty('No uploads yet', 'Capture your first GeoTag.')
+        else
+          SizedBox(
+            height: 268,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              itemCount: recent.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 14),
+              itemBuilder: (_, i) => _uploadCard(recent[i]),
+            ),
+          ),
+      ],
     );
+  }
 
-  // ── Grid ──────────────────────────────────────────────────────────────────
-  Widget _buildPhotoGrid(List<List<PhotoModel>> groups) => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 16),
-    child: GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 2, crossAxisSpacing: 10, mainAxisSpacing: 10, childAspectRatio: 0.82),
-      itemCount: groups.length,
-      itemBuilder: (_, i) => _GridCard(
-        group:    groups[i],
-        svcColor: _svcColor(groups[i].first.serviceType),
-        svcLabel: _svcLabel(groups[i].first.serviceType),
-        formatTs: _formatTs,
-        fullUrl:  _fullUrl,
-        onTap:    (id) => context.push('/photo/$id'),
-      ),
-    ),
-  );
-
-  // ── List ──────────────────────────────────────────────────────────────────
-  Widget _buildPhotoList(List<List<PhotoModel>> groups) => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 16),
-    child: ListView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      itemCount: groups.length,
-      itemBuilder: (_, i) => _ListCard(
-        group:    groups[i],
-        svcColor: _svcColor(groups[i].first.serviceType),
-        svcLabel: _svcLabel(groups[i].first.serviceType),
-        formatTs: _formatTs,
-        fullUrl:  _fullUrl,
-        onTap:    (id) => context.push('/photo/$id'),
-      ),
-    ),
-  );
-
-  // ── Empty ─────────────────────────────────────────────────────────────────
-  Widget _buildEmptyState() => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 60, horizontal: 32),
-    child: Column(children: [
-      Container(width: 72, height: 72,
-        decoration: const BoxDecoration(color: _accentSoft, shape: BoxShape.circle),
-        child: const Icon(Icons.photo_library_outlined, size: 36, color: _accent)),
-      const SizedBox(height: 16),
-      const Text('No photos yet', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: _ink, letterSpacing: -0.3)),
-      const SizedBox(height: 6),
-      Text(
-        _selectedProfileId == 'all' ? 'Upload your first photo to get started' : 'No photos for this profile',
-        textAlign: TextAlign.center,
-        style: const TextStyle(fontSize: 13, color: _inkSubtle)),
-      const SizedBox(height: 24),
-      ElevatedButton.icon(
-        onPressed: () => context.push('/upload'),
-        icon: const Icon(Icons.add_a_photo_rounded, size: 18),
-        label: const Text('Upload Photo'),
-        style: ElevatedButton.styleFrom(
-          backgroundColor: _accent, foregroundColor: Colors.white,
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          elevation: 0)),
-    ]),
-  );
-
-  // ── Error ─────────────────────────────────────────────────────────────────
-  Widget _buildError(Object error) => Center(
-    child: Padding(
-      padding: const EdgeInsets.all(32),
-      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Container(width: 64, height: 64,
-          decoration: BoxDecoration(color: _rushRed.withValues(alpha: 0.1), shape: BoxShape.circle),
-          child: const Icon(Icons.wifi_off_rounded, size: 32, color: _rushRed)),
-        const SizedBox(height: 16),
-        const Text('Failed to load photos', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: _ink)),
-        const SizedBox(height: 8),
-        Text(error.toString().replaceAll('Exception: ', ''),
-          textAlign: TextAlign.center,
-          style: const TextStyle(fontSize: 13, color: _inkSubtle)),
-        const SizedBox(height: 24),
-        ElevatedButton.icon(
-          onPressed: () {
-            ref.invalidate(photosProvider);
-            ref.invalidate(profilesProvider);
-          },
-          icon: const Icon(Icons.refresh_rounded, size: 18),
-          label: const Text('Try Again'),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: _accent, foregroundColor: Colors.white,
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            elevation: 0)),
-      ]),
-    ),
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Grid card — stateful so info updates as user swipes carousel
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _GridCard extends StatefulWidget {
-  const _GridCard({
-    required this.group,
-    required this.svcColor,
-    required this.svcLabel,
-    required this.formatTs,
-    required this.fullUrl,
-    required this.onTap,
-  });
-  final List<PhotoModel> group;
-  final Color svcColor;
-  final String svcLabel;
-  final String Function(String?) formatTs;
-  final String Function(String) fullUrl;
-  final void Function(int id) onTap;
-
-  @override
-  State<_GridCard> createState() => _GridCardState();
-}
-
-class _GridCardState extends State<_GridCard> {
-  int _current = 0;
-
-  static const Color _surface   = Color(0xFFFFFFFF);
-  static const Color _ink       = Color(0xFF0D1117);
-  static const Color _inkSubtle = Color(0xFF9CA3AF);
-  static const Color _accent    = Color(0xFF5B5BD6);
-  static const Color _accentSoft= Color(0xFFEEEEFD);
-
-  PhotoModel get _photo => widget.group[_current];
-
-  @override
-  Widget build(BuildContext context) => GestureDetector(
-      onTap: () => widget.onTap(_photo.id),
+  Widget _uploadCard(PhotoModel p) {
+    final fav = _favorites.contains(p.id);
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        context.push('/photo/${p.id}');
+      },
       child: Container(
+        width: 240,
         decoration: BoxDecoration(
-          color: _surface,
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 2))],
+          color: _card,
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: _softShadow,
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Expanded(
-              child: ClipRRect(
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(15)),
-                child: _CarouselImages(
-                  group:         widget.group,
-                  svcColor:      widget.svcColor,
-                  svcLabel:      widget.svcLabel,
-                  fullUrl:       widget.fullUrl,
-                  onPageChanged: (i) => setState(() => _current = i),
+            Stack(
+              children: [
+                ClipRRect(
+                  borderRadius:
+                      const BorderRadius.vertical(top: Radius.circular(20)),
+                  child: Image.network(
+                    _fullUrl(p.imageUrl),
+                    width: 240,
+                    height: 160,
+                    fit: BoxFit.cover,
+                    loadingBuilder: (_, child, prog) => prog == null
+                        ? child
+                        : Container(width: 240, height: 160, color: _bg),
+                    errorBuilder: (_, __, ___) => Container(
+                      width: 240,
+                      height: 160,
+                      color: _bg,
+                      child: const Icon(Icons.image_outlined,
+                          color: _muted, size: 28),
+                    ),
+                  ),
                 ),
-              ),
+                Positioned(
+                  top: 10,
+                  right: 10,
+                  child: GestureDetector(
+                    onTap: () => _toggleFav(p.id),
+                    child: Container(
+                      width: 34,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.92),
+                        shape: BoxShape.circle,
+                        boxShadow: _softShadow,
+                      ),
+                      child: Icon(
+                          fav
+                              ? Icons.favorite_rounded
+                              : Icons.favorite_border_rounded,
+                          size: 18,
+                          color: fav ? const Color(0xFFEF4444) : _ink),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  top: 10,
+                  left: 10,
+                  child: _verifiedBadge(),
+                ),
+              ],
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  Text(p.profileName ?? 'Untitled',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: _ink,
+                          letterSpacing: -0.3)),
+                  const SizedBox(height: 4),
                   Row(children: [
-                    Expanded(child: Text(_photo.profileName ?? 'Unknown',
-                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _ink),
-                      maxLines: 1, overflow: TextOverflow.ellipsis)),
-                    if (widget.group.length > 1)
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                        decoration: BoxDecoration(color: _accentSoft, borderRadius: BorderRadius.circular(6)),
-                        child: Text('${_current + 1}/${widget.group.length}',
-                          style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: _accent))),
-                  ]),
-                  const SizedBox(height: 3),
-                  Row(children: [
-                    const Icon(Icons.location_on_rounded, size: 11, color: _inkSubtle),
+                    const Icon(Icons.location_on_rounded,
+                        size: 13, color: _muted),
                     const SizedBox(width: 3),
-                    Expanded(child: Text(
-                      _photo.zipCode ?? '${_photo.latitude.toStringAsFixed(2)}, ${_photo.longitude.toStringAsFixed(2)}',
-                      style: const TextStyle(fontSize: 11, color: _inkSubtle),
-                      maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    Expanded(
+                      child: Text(_placeLabel(p),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 13, color: _muted)),
+                    ),
                   ]),
-                  if (_photo.timestamp != null) ...[
-                    const SizedBox(height: 2),
-                    Text(widget.formatTs(_photo.timestamp), style: const TextStyle(fontSize: 10, color: _inkSubtle)),
-                  ],
+                  const SizedBox(height: 8),
+                  Row(children: [
+                    Text(_shortDate(p.timestamp),
+                        style: const TextStyle(
+                            fontSize: 12.5,
+                            color: _muted,
+                            fontWeight: FontWeight.w500)),
+                    const Spacer(),
+                    _miniCategoryDot(categoryOf(p.category)),
+                  ]),
                 ],
               ),
             ),
@@ -729,250 +597,445 @@ class _GridCardState extends State<_GridCard> {
         ),
       ),
     );
-}
+  }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// List card — stateful so info updates as user swipes carousel
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _ListCard extends StatefulWidget {
-  const _ListCard({
-    required this.group,
-    required this.svcColor,
-    required this.svcLabel,
-    required this.formatTs,
-    required this.fullUrl,
-    required this.onTap,
-  });
-  final List<PhotoModel> group;
-  final Color svcColor;
-  final String svcLabel;
-  final String Function(String?) formatTs;
-  final String Function(String) fullUrl;
-  final void Function(int id) onTap;
-
-  @override
-  State<_ListCard> createState() => _ListCardState();
-}
-
-class _ListCardState extends State<_ListCard> {
-  int _current = 0;
-
-  static const Color _surface   = Color(0xFFFFFFFF);
-  static const Color _ink       = Color(0xFF0D1117);
-  static const Color _inkMuted  = Color(0xFF4B5563);
-  static const Color _inkSubtle = Color(0xFF9CA3AF);
-  static const Color _accent    = Color(0xFF5B5BD6);
-  static const Color _accentSoft= Color(0xFFEEEEFD);
-
-  PhotoModel get _photo => widget.group[_current];
-
-  @override
-  Widget build(BuildContext context) => GestureDetector(
-      onTap: () => widget.onTap(_photo.id),
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 10),
+  Widget _verifiedBadge() => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
-          color: _surface,
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 10, offset: const Offset(0, 2))],
+          color: Colors.white.withValues(alpha: 0.92),
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: _softShadow,
         ),
-        child: Row(children: [
-          ClipRRect(
-            borderRadius: const BorderRadius.horizontal(left: Radius.circular(15)),
-            child: SizedBox(
-              width: 88, height: 88,
-              child: _ListCarouselImages(
-                group:         widget.group,
-                fullUrl:       widget.fullUrl,
-                onPageChanged: (i) => setState(() => _current = i),
+        child: const Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.verified_rounded, size: 13, color: _green),
+          SizedBox(width: 4),
+          Text('Verified',
+              style: TextStyle(
+                  fontSize: 11, fontWeight: FontWeight.w700, color: _green)),
+        ]),
+      );
+
+  Widget _miniCategoryDot(PhotoCategory c) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 7,
+            height: 7,
+            decoration: BoxDecoration(color: c.color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 5),
+          Text(c.label,
+              style: TextStyle(
+                  fontSize: 12, fontWeight: FontWeight.w600, color: c.color)),
+        ],
+      );
+
+  // ── Section 6 · Category chips ───────────────────────────────────────────────
+  Widget _categoryChips(List<PhotoModel> photos) {
+    final chips = <({String? value, String label})>[
+      (value: null, label: 'All'),
+      (value: 'asap', label: 'ASAP'),
+      (value: 'special', label: 'Special'),
+      (value: 'standard', label: 'Standard'),
+      (value: 'next_day', label: 'Next Day'),
+    ];
+    return SizedBox(
+      height: 42,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        itemCount: chips.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 12),
+        itemBuilder: (_, i) {
+          final chip = chips[i];
+          final selected = _selectedCategory == chip.value;
+          final cat = chip.value != null ? categoryOf(chip.value) : null;
+          final activeColor = cat?.color ?? _ink;
+          final softColor = cat?.softColor ?? _bg;
+          return GestureDetector(
+            onTap: () {
+              HapticFeedback.selectionClick();
+              setState(() => _selectedCategory = chip.value);
+            },
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              width: chip.value == null ? 64 : 108,
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: selected
+                    ? activeColor
+                    : (chip.value != null ? softColor : _card),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: selected ? activeColor : _hair,
+                  width: 1.5,
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (cat != null)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 7),
+                      child: Icon(cat.icon,
+                          size: 16,
+                          color: selected ? Colors.white : activeColor),
+                    ),
+                  Text(
+                    chip.label,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: selected ? Colors.white : _muted,
+                    ),
+                  ),
+                ],
               ),
             ),
-          ),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Row(children: [
-                  Expanded(child: Text(_photo.profileName ?? 'Unknown',
-                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: _ink),
-                    maxLines: 1, overflow: TextOverflow.ellipsis)),
-                  if (widget.group.length > 1)
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(color: _accentSoft, borderRadius: BorderRadius.circular(6)),
-                      child: Text('${_current + 1}/${widget.group.length}',
-                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: _accent)))
-                  else
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                      decoration: BoxDecoration(color: widget.svcColor.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6)),
-                      child: Text(widget.svcLabel, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: widget.svcColor))),
-                ]),
-                const SizedBox(height: 5),
-                Row(children: [
-                  const Icon(Icons.location_on_rounded, size: 12, color: _inkSubtle),
-                  const SizedBox(width: 3),
-                  Expanded(child: Text(
-                    _photo.zipCode != null ? 'ZIP ${_photo.zipCode}' : '${_photo.latitude.toStringAsFixed(4)}, ${_photo.longitude.toStringAsFixed(4)}',
-                    style: const TextStyle(fontSize: 12, color: _inkMuted),
-                    maxLines: 1, overflow: TextOverflow.ellipsis)),
-                ]),
-                if (_photo.timestamp != null) ...[
-                  const SizedBox(height: 3),
-                  Row(children: [
-                    const Icon(Icons.access_time_rounded, size: 12, color: _inkSubtle),
-                    const SizedBox(width: 3),
-                    Text(widget.formatTs(_photo.timestamp), style: const TextStyle(fontSize: 12, color: _inkMuted)),
-                  ]),
-                ],
-              ]),
-            ),
-          ),
-          const Padding(
-            padding: EdgeInsets.only(right: 12),
-            child: Icon(Icons.chevron_right_rounded, color: _inkSubtle, size: 20)),
-        ]),
+          );
+        },
       ),
     );
-}
+  }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Grid carousel
-// ─────────────────────────────────────────────────────────────────────────────
+  // ── Section 7 · Nearby ─────────────────────────────────────────────────────────
+  Widget _nearby(List<PhotoModel> photos) {
+    var list = List<PhotoModel>.from(photos);
+    if (_devicePosition != null) {
+      list.sort((a, b) {
+        final da = Geolocator.distanceBetween(_devicePosition!.latitude,
+            _devicePosition!.longitude, a.latitude, a.longitude);
+        final db = Geolocator.distanceBetween(_devicePosition!.latitude,
+            _devicePosition!.longitude, b.latitude, b.longitude);
+        return da.compareTo(db);
+      });
+    }
+    list = list.take(8).toList();
+    if (list.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionHeader('Nearby Locations',
+            action: 'Map', onAction: () => context.push('/map')),
+        const SizedBox(height: 14),
+        SizedBox(
+          height: 188,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            itemCount: list.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 14),
+            itemBuilder: (_, i) => _nearbyCard(list[i]),
+          ),
+        ),
+      ],
+    );
+  }
 
-class _CarouselImages extends StatefulWidget {
-  const _CarouselImages({
-    required this.group,
-    required this.svcColor,
-    required this.svcLabel,
-    required this.fullUrl,
-    required this.onPageChanged,
-  });
-  final List<PhotoModel> group;
-  final Color svcColor;
-  final String svcLabel;
-  final String Function(String) fullUrl;
-  final void Function(int) onPageChanged;
-
-  @override
-  State<_CarouselImages> createState() => _CarouselImagesState();
-}
-
-class _CarouselImagesState extends State<_CarouselImages> {
-  final _controller = PageController();
-  int _current = 0;
-
-  static const Color _accent    = Color(0xFF5B5BD6);
-  static const Color _inkSubtle = Color(0xFF9CA3AF);
-
-  @override
-  void dispose() { _controller.dispose(); super.dispose(); }
-
-  @override
-  Widget build(BuildContext context) => Stack(fit: StackFit.expand, children: [
-      PageView.builder(
-        controller: _controller,
-        itemCount: widget.group.length,
-        onPageChanged: (i) { setState(() => _current = i); widget.onPageChanged(i); },
-        itemBuilder: (_, i) {
-          final url = widget.fullUrl(widget.group[i].imageUrl);
-          return Image.network(url, fit: BoxFit.cover,
-            loadingBuilder: (_, child, p) => p == null ? child
-              : Container(color: const Color(0xFFF2F4F7),
-                  child: const Center(child: CircularProgressIndicator(strokeWidth: 1.5, color: _accent))),
-            errorBuilder: (_, __, ___) => Container(color: const Color(0xFFF2F4F7),
-              child: const Center(child: Icon(Icons.broken_image_outlined, color: _inkSubtle, size: 28))));
-        },
+  Widget _nearbyCard(PhotoModel p) {
+    final dist = _distanceLabel(p);
+    final cat = categoryOf(p.category);
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        context.push('/photo/${p.id}');
+      },
+      child: Container(
+        width: 168,
+        decoration: BoxDecoration(
+          color: _card,
+          borderRadius: BorderRadius.circular(18),
+          boxShadow: _softShadow,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ClipRRect(
+              borderRadius:
+                  const BorderRadius.vertical(top: Radius.circular(18)),
+              child: Image.network(
+                _fullUrl(p.imageUrl),
+                width: 168,
+                height: 104,
+                fit: BoxFit.cover,
+                loadingBuilder: (_, child, prog) => prog == null
+                    ? child
+                    : Container(width: 168, height: 104, color: _bg),
+                errorBuilder: (_, __, ___) => Container(
+                  width: 168,
+                  height: 104,
+                  color: _bg,
+                  child: const Icon(Icons.image_outlined,
+                      color: _muted, size: 24),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(_placeLabel(p),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: _ink,
+                          letterSpacing: -0.2)),
+                  const SizedBox(height: 5),
+                  Row(children: [
+                    if (dist != null) ...[
+                      const Icon(Icons.near_me_rounded,
+                          size: 12, color: _purple),
+                      const SizedBox(width: 3),
+                      Text(dist,
+                          style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: _purple)),
+                      const SizedBox(width: 8),
+                    ],
+                    Expanded(child: _miniCategoryDot(cat)),
+                  ]),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
-      // Service badge
-      Positioned(top: 8, right: 8,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-          decoration: BoxDecoration(color: widget.svcColor, borderRadius: BorderRadius.circular(6)),
-          child: Text(widget.svcLabel, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: Colors.white)))),
-      // Dot indicators
-      if (widget.group.length > 1)
-        Positioned(bottom: 8, left: 0, right: 0,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: List.generate(math.min(widget.group.length, 6), (i) =>
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                margin: const EdgeInsets.symmetric(horizontal: 2),
-                width: _current == i ? 14 : 5, height: 5,
-                decoration: BoxDecoration(
-                  color: _current == i ? Colors.white : Colors.white.withValues(alpha: 0.5),
-                  borderRadius: BorderRadius.circular(3)))))),
-      // Left tap
-      if (widget.group.length > 1)
-        Positioned(left: 0, top: 0, bottom: 0, width: 36,
-          child: GestureDetector(onTap: () {
-            if (_current > 0) _controller.previousPage(duration: const Duration(milliseconds: 250), curve: Curves.easeInOut);
-          })),
-      // Right tap
-      if (widget.group.length > 1)
-        Positioned(right: 0, top: 0, bottom: 0, width: 36,
-          child: GestureDetector(onTap: () {
-            if (_current < widget.group.length - 1) _controller.nextPage(duration: const Duration(milliseconds: 250), curve: Curves.easeInOut);
-          })),
-    ]);
-}
+    );
+  }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// List carousel (compact thumbnail)
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _ListCarouselImages extends StatefulWidget {
-  const _ListCarouselImages({
-    required this.group,
-    required this.fullUrl,
-    required this.onPageChanged,
-  });
-  final List<PhotoModel> group;
-  final String Function(String) fullUrl;
-  final void Function(int) onPageChanged;
-
-  @override
-  State<_ListCarouselImages> createState() => _ListCarouselImagesState();
-}
-
-class _ListCarouselImagesState extends State<_ListCarouselImages> {
-  final _controller = PageController();
-  int _current = 0;
-
-  static const Color _accent    = Color(0xFF5B5BD6);
-  static const Color _inkSubtle = Color(0xFF9CA3AF);
-
-  @override
-  void dispose() { _controller.dispose(); super.dispose(); }
-
-  @override
-  Widget build(BuildContext context) => Stack(fit: StackFit.expand, children: [
-      PageView.builder(
-        controller: _controller,
-        itemCount: widget.group.length,
-        onPageChanged: (i) { setState(() => _current = i); widget.onPageChanged(i); },
-        itemBuilder: (_, i) {
-          final url = widget.fullUrl(widget.group[i].imageUrl);
-          return Image.network(url, fit: BoxFit.cover,
-            loadingBuilder: (_, child, p) => p == null ? child
-              : Container(color: const Color(0xFFF2F4F7),
-                  child: const Center(child: CircularProgressIndicator(strokeWidth: 1.5, color: _accent))),
-            errorBuilder: (_, __, ___) => Container(color: const Color(0xFFF2F4F7),
-              child: const Center(child: Icon(Icons.broken_image_outlined, color: _inkSubtle, size: 20))));
-        },
-      ),
-      if (widget.group.length > 1)
-        Positioned(bottom: 4, right: 4,
+  // ── Section 8 · Activity ──────────────────────────────────────────────────────
+  Widget _activity(List<PhotoModel> photos) {
+    final recent = (List<PhotoModel>.from(photos)
+          ..sort((a, b) => (b.timestamp ?? '').compareTo(a.timestamp ?? '')))
+        .take(4)
+        .toList();
+    if (recent.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionHeader('Recent Activity',
+            action: 'See all', onAction: () => context.push('/log')),
+        const SizedBox(height: 14),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-            decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.55), borderRadius: BorderRadius.circular(5)),
-            child: Text('${_current + 1}/${widget.group.length}',
-              style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: Colors.white)))),
-    ]);
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            decoration: BoxDecoration(
+              color: _card,
+              borderRadius: BorderRadius.circular(18),
+              boxShadow: _softShadow,
+            ),
+            child: Column(
+              children: [
+                for (var i = 0; i < recent.length; i++)
+                  _activityRow(recent[i], last: i == recent.length - 1),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _activityRow(PhotoModel p, {required bool last}) => GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          HapticFeedback.selectionClick();
+          context.push('/photo/${p.id}');
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Column(children: [
+            Row(children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: _purple.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(11),
+              ),
+              child: const Icon(Icons.cloud_upload_rounded,
+                  size: 18, color: _purple),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Uploaded ${p.profileName ?? 'a GeoTag'}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: _ink)),
+                  const SizedBox(height: 2),
+                  Text(_placeLabel(p),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12.5, color: _muted)),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(_relativeTime(p.timestamp),
+                style: const TextStyle(fontSize: 12, color: _muted)),
+          ]),
+            if (!last) ...[
+              const SizedBox(height: 6),
+              const Divider(height: 1, color: _hair),
+            ],
+          ]),
+        ),
+      );
+
+  // ── Shared bits ────────────────────────────────────────────────────────────
+  Widget _sectionHeader(String title, {String? action, VoidCallback? onAction}) =>
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        child: Row(children: [
+          Text(title,
+              style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                  color: _ink,
+                  letterSpacing: -0.5)),
+          const Spacer(),
+          if (action != null)
+            GestureDetector(
+              onTap: () {
+                HapticFeedback.selectionClick();
+                onAction?.call();
+              },
+              child: Text(action,
+                  style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: _purple)),
+            ),
+        ]),
+      );
+
+  Widget _inlineEmpty(String title, String subtitle) => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 36, horizontal: 20),
+          decoration: BoxDecoration(
+            color: _card,
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: _softShadow,
+          ),
+          child: Column(children: [
+            Container(
+              width: 52,
+              height: 52,
+              decoration: const BoxDecoration(color: _bg, shape: BoxShape.circle),
+              child: const Icon(Icons.photo_camera_outlined,
+                  color: _muted, size: 24),
+            ),
+            const SizedBox(height: 14),
+            Text(title,
+                style: const TextStyle(
+                    fontSize: 16, fontWeight: FontWeight.w700, color: _ink)),
+            const SizedBox(height: 4),
+            Text(subtitle,
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 13, color: _muted)),
+            const SizedBox(height: 18),
+            ElevatedButton(
+              onPressed: () => context.push('/upload'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _purple,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
+              ),
+              child: const Text('Capture Now'),
+            ),
+          ]),
+        ),
+      );
+
+  Widget _error() => ListView(
+        padding: const EdgeInsets.fromLTRB(24, 100, 24, 24),
+        children: const [
+          Column(children: [
+            Icon(Icons.cloud_off_rounded, size: 44, color: _muted),
+            SizedBox(height: 14),
+            Text('Something went wrong',
+                style: TextStyle(
+                    fontSize: 17, fontWeight: FontWeight.w700, color: _ink)),
+            SizedBox(height: 6),
+            Text('Pull down to refresh and try again.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13, color: _muted)),
+          ]),
+        ],
+      );
+
+  // ── Skeleton ────────────────────────────────────────────────────────────────
+  Widget _skeleton() => Shimmer.fromColors(
+        baseColor: const Color(0xFFE9EEF5),
+        highlightColor: const Color(0xFFF8FAFC),
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 120),
+          physics: const NeverScrollableScrollPhysics(),
+          children: [
+            _box(180, 30, radius: 8),
+            const SizedBox(height: 20),
+            _box(double.infinity, 150, radius: 20),
+            const SizedBox(height: 24),
+            SizedBox(
+              height: 96,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                physics: const NeverScrollableScrollPhysics(),
+                child: Row(children: [
+                  for (var i = 0; i < 3; i++) ...[
+                    _box(112, 96, radius: 16),
+                    const SizedBox(width: 12),
+                  ],
+                ]),
+              ),
+            ),
+            const SizedBox(height: 28),
+            _box(160, 24, radius: 8),
+            const SizedBox(height: 14),
+            SizedBox(
+              height: 268,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                physics: const NeverScrollableScrollPhysics(),
+                child: Row(children: [
+                  _box(240, 268, radius: 20),
+                  const SizedBox(width: 14),
+                  _box(240, 268, radius: 20),
+                ]),
+              ),
+            ),
+          ],
+        ),
+      );
+
+  Widget _box(double w, double h, {double radius = 12}) => Container(
+        width: w,
+        height: h,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(radius),
+        ),
+      );
 }
 
 extension _StringExt on String {
-  String capitalize() => isEmpty ? this : '${this[0].toUpperCase()}${substring(1).toLowerCase()}';
+  String capitalize() =>
+      isEmpty ? this : '${this[0].toUpperCase()}${substring(1).toLowerCase()}';
 }

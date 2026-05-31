@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../../data/models/profile_model.dart';
 import '../providers/auth_provider.dart';
 import '../screens/auth/login_screen.dart';
+import '../screens/auth/onboarding_screen.dart';
 import '../screens/auth/splash_screen.dart';
 import '../screens/home/edit_location_screen.dart';
 import '../screens/home/home_screen_v2.dart';
@@ -18,31 +19,42 @@ import '../screens/upload/upload_screen_v2.dart';
 import '../widgets/common/bottom_nav.dart';
 
 final routerProvider = Provider<GoRouter>((ref) {
-  final authState = ref.watch(authProvider);
+  // Re-run redirects on auth changes WITHOUT recreating the router (which would
+  // reset navigation). A bump on this notifier re-evaluates the redirect.
+  final refresh = ValueNotifier<int>(0);
+  ref.listen(authProvider, (_, __) => refresh.value++);
+  ref.onDispose(refresh.dispose);
 
   return GoRouter(
     initialLocation: '/splash',
+    refreshListenable: refresh,
     redirect: (context, state) {
-      final isAuthenticated = authState.isAuthenticated;
+      final auth = ref.read(authProvider);
       final location = state.matchedLocation;
 
-      // Always allow splash through
+      // Splash owns its own timed branding + first navigation.
       if (location == '/splash') return null;
 
-      if (!isAuthenticated && location != '/login') {
-        return '/login';
+      if (auth.isAuthenticated) {
+        // Logged in — keep the user out of the auth funnel.
+        if (location == '/login' || location == '/onboarding') return '/home';
+        return null;
       }
 
-      if (isAuthenticated && location == '/login') {
-        return '/home';
+      // Not authenticated: show onboarding until it's been seen, then login.
+      if (!auth.seenOnboarding) {
+        return location == '/onboarding' ? null : '/onboarding';
       }
-
-      return null;
+      return location == '/login' ? null : '/login';
     },
     routes: [
       GoRoute(
         path: '/splash',
         builder: (context, state) => const SplashScreen(),
+      ),
+      GoRoute(
+        path: '/onboarding',
+        builder: (context, state) => const OnboardingScreen(),
       ),
       GoRoute(
         path: '/login',

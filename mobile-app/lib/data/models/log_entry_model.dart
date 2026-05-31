@@ -17,6 +17,7 @@ class LogEntryModel {
     this.profileId,
     this.profileName,
     this.serviceType,
+    this.category,
     this.profiles,
   });
 
@@ -38,6 +39,8 @@ class LogEntryModel {
   final String? profileName;
   @JsonKey(name: 'service_type')
   final String? serviceType;
+  /// Per-photo priority category: standard | special | next_day | asap
+  final String? category;
   final List<ProfileModel>? profiles;
 
   Map<String, dynamic> toJson() => _$LogEntryModelToJson(this);
