@@ -19,6 +19,7 @@ class PhotoModel {
     this.serviceType,
     this.category,
     this.profiles,
+    this.isFavorited = false,
   });
 
   factory PhotoModel.fromJson(Map<String, dynamic> json) {
@@ -48,6 +49,8 @@ class PhotoModel {
   /// Per-photo priority category: standard | special | next_day | asap
   final String? category;
   final List<ProfileModel>? profiles;
+  @JsonKey(name: 'is_favorited', defaultValue: false)
+  final bool isFavorited;
 
   Map<String, dynamic> toJson() => _$PhotoModelToJson(this);
 
@@ -65,6 +68,7 @@ class PhotoModel {
     String? serviceType,
     String? category,
     List<ProfileModel>? profiles,
+    bool? isFavorited,
   }) =>
       PhotoModel(
         id: id ?? this.id,
@@ -80,5 +84,6 @@ class PhotoModel {
         serviceType: serviceType ?? this.serviceType,
         category: category ?? this.category,
         profiles: profiles ?? this.profiles,
+        isFavorited: isFavorited ?? this.isFavorited,
       );
 }

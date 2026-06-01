@@ -109,7 +109,7 @@ class SettingsScreenV2 extends ConsumerWidget {
                         color: _green.withValues(alpha: 0.10),
                         borderRadius: BorderRadius.circular(7),
                       ),
-                      child: Row(mainAxisSize: MainAxisSize.min, children: const [
+                      child: const Row(mainAxisSize: MainAxisSize.min, children: [
                         Icon(Icons.check_circle_rounded,
                             size: 12, color: _green),
                         SizedBox(width: 4),
@@ -179,8 +179,8 @@ class SettingsScreenV2 extends ConsumerWidget {
                     color: _purple.withValues(alpha: 0.10),
                     borderRadius: BorderRadius.circular(8),
                   ),
-                  child: Text('v${AppConfig.appVersion}',
-                      style: const TextStyle(
+                  child: const Text('v${AppConfig.appVersion}',
+                      style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.w700,
                           color: _purple)),

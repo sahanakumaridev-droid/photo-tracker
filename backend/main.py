@@ -83,8 +83,9 @@ class Photo(Base):
     # per-photo priority category: standard | special | next_day | asap
     category  = Column(String, nullable=True, default="standard")
     # legacy single profile_id kept for backward compat
-    profile_id = Column(Integer, nullable=True)
-    profiles   = relationship("Profile", secondary=pin_profile, back_populates="photos")
+    profile_id    = Column(Integer, nullable=True)
+    is_favorited  = Column(Integer, nullable=False, default=0)
+    profiles      = relationship("Profile", secondary=pin_profile, back_populates="photos")
 
 
 Base.metadata.create_all(bind=engine)
@@ -100,6 +101,10 @@ def _ensure_columns():
         if "category" not in existing:
             conn.execute(text(
                 "ALTER TABLE photos ADD COLUMN category VARCHAR DEFAULT 'standard'"))
+            conn.commit()
+        if "is_favorited" not in existing:
+            conn.execute(text(
+                "ALTER TABLE photos ADD COLUMN is_favorited INTEGER NOT NULL DEFAULT 0"))
             conn.commit()
 
 
@@ -131,6 +136,7 @@ def _photo_dict(ph):
         "profile_name": primary["name"] if primary else "Unknown",
         "service_type": primary["service_type"] if primary else "standard",
         "profiles":     profiles,
+        "is_favorited": bool(ph.is_favorited),
     }
 
 
@@ -422,6 +428,20 @@ async def update_photo_category(photo_id: int, data: dict = Body(...)):
     db.commit()
     db.close()
     return {"ok": True, "category": cat}
+
+
+@app.patch("/photos/{photo_id}/favorite")
+async def toggle_favorite(photo_id: int):
+    db = SessionLocal()
+    photo = db.query(Photo).filter(Photo.id == photo_id).first()
+    if not photo:
+        db.close()
+        raise HTTPException(status_code=404, detail="Photo not found")
+    new_val = 0 if photo.is_favorited else 1
+    photo.is_favorited = new_val
+    db.commit()
+    db.close()
+    return {"ok": True, "is_favorited": bool(new_val)}
 
 
 @app.patch("/photos/{photo_id}/profiles")

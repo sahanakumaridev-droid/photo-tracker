@@ -42,7 +42,8 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
   ];
 
   String? _selectedCategory; // null = All
-  final Set<int> _favorites = {};
+  // IDs whose favorite state is flipped optimistically while API call is in flight
+  final Set<int> _optimisticFlips = {};
   Position? _devicePosition;
 
   @override
@@ -158,10 +159,18 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
     return 'Good evening';
   }
 
-  void _toggleFav(int id) {
+  bool _isFav(PhotoModel p) =>
+      p.isFavorited ^ _optimisticFlips.contains(p.id);
+
+  void _toggleFav(PhotoModel p) {
     HapticFeedback.selectionClick();
-    setState(() {
-      if (!_favorites.add(id)) _favorites.remove(id);
+    setState(() => _optimisticFlips.contains(p.id)
+        ? _optimisticFlips.remove(p.id)
+        : _optimisticFlips.add(p.id));
+    ref.read(toggleFavoriteProvider(p.id).future).then((_) {
+      if (mounted) setState(() => _optimisticFlips.remove(p.id));
+    }).catchError((_) {
+      if (mounted) setState(() => _optimisticFlips.remove(p.id));
     });
   }
 
@@ -208,58 +217,84 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
   Widget _topBar(AuthState auth) {
     final name = _firstName(auth.email);
     return Container(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: _card,
-        border: Border(bottom: BorderSide(color: _hair)),
+        border: const Border(bottom: BorderSide(color: _hair)),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF7C3AED).withValues(alpha: 0.06),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       child: SafeArea(
         bottom: false,
         child: SizedBox(
-          height: 56,
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Padding(
-                  padding: EdgeInsets.only(left: 16),
-                  child: AppLogo(size: 40, radius: 11),
-                ),
-              ),
-              const Text('GeoTag',
-                  style: TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700,
-                      color: _ink,
-                      letterSpacing: -0.3)),
-              Align(
-                alignment: Alignment.centerRight,
-                child: Padding(
-                  padding: const EdgeInsets.only(right: 12),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    _circleIcon(Icons.notifications_none_rounded,
-                        onTap: () => context.push('/log')),
-                    const SizedBox(width: 8),
-                    GestureDetector(
-                      onTap: () {
-                        HapticFeedback.selectionClick();
-                        context.push('/settings');
-                      },
-                      child: CircleAvatar(
-                        radius: 17,
-                        backgroundColor: _purple,
-                        child: Text(
-                            name.isEmpty ? 'A' : name[0].toUpperCase(),
-                            style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 14,
-                                fontWeight: FontWeight.w700)),
+          height: 64,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                // ── Brand lockup: icon + wordmark ────────────────────────────
+                const AppLogo(size: 46, radius: 13, withShadow: false),
+                const SizedBox(width: 10),
+                Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ShaderMask(
+                      shaderCallback: (bounds) => const LinearGradient(
+                        colors: [Color(0xFF7C3AED), Color(0xFF5B21B6)],
+                      ).createShader(bounds),
+                      child: const Text(
+                        'GeoTag',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white,
+                          letterSpacing: -0.6,
+                          height: 1.1,
+                        ),
                       ),
                     ),
-                  ]),
+                    const Text(
+                      'Location · Photo',
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w500,
+                        color: _muted,
+                        letterSpacing: 0.2,
+                        height: 1.2,
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-            ],
+                const Spacer(),
+                // ── Right actions ──────────────────────────────────────
+                _circleIcon(Icons.notifications_none_rounded,
+                    onTap: () => context.push('/log')),
+                const SizedBox(width: 8),
+                GestureDetector(
+                  onTap: () {
+                    HapticFeedback.selectionClick();
+                    context.push('/settings');
+                  },
+                  child: CircleAvatar(
+                    radius: 18,
+                    backgroundColor: _purple,
+                    child: Text(
+                      name.isEmpty ? 'A' : name[0].toUpperCase(),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -353,11 +388,11 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
                 ),
               ),
               const SizedBox(width: 16),
-              Expanded(
+              const Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
+                    Text(
                       'Capture New GeoTag',
                       style: TextStyle(
                         fontSize: 17,
@@ -366,8 +401,8 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
                         letterSpacing: -0.3,
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    const Text(
+                    SizedBox(height: 4),
+                    Text(
                       'Save a location with photos & coordinates.',
                       style: TextStyle(
                         fontSize: 13.5,
@@ -412,7 +447,7 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
     final stats = [
       (icon: Icons.photo_camera_rounded, value: '${photos.length}', label: 'Photos', tint: _purple),
       (icon: Icons.place_rounded, value: '${_locationCount(photos)}', label: 'Locations', tint: _green),
-      (icon: Icons.favorite_rounded, value: '${_favorites.length}', label: 'Favorites', tint: const Color(0xFFEF4444)),
+      (icon: Icons.favorite_rounded, value: '${photos.where(_isFav).length}', label: 'Favorites', tint: const Color(0xFFEF4444)),
       (icon: Icons.calendar_today_rounded, value: '${_thisMonthCount(photos)}', label: 'This Month', tint: const Color(0xFFF59E0B)),
     ];
     return SizedBox(
@@ -488,7 +523,7 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
   }
 
   Widget _uploadCard(PhotoModel p) {
-    final fav = _favorites.contains(p.id);
+    final fav = _isFav(p);
     return GestureDetector(
       onTap: () {
         HapticFeedback.selectionClick();
@@ -530,7 +565,7 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
                   top: 10,
                   right: 10,
                   child: GestureDetector(
-                    onTap: () => _toggleFav(p.id),
+                    onTap: () => _toggleFav(p),
                     child: Container(
                       width: 34,
                       height: 34,

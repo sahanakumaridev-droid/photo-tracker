@@ -22,6 +22,7 @@ PhotoModel _$PhotoModelFromJson(Map<String, dynamic> json) => PhotoModel(
       profiles: (json['profiles'] as List<dynamic>?)
           ?.map((e) => ProfileModel.fromJson(e as Map<String, dynamic>))
           .toList(),
+      isFavorited: json['is_favorited'] as bool? ?? false,
     );
 
 Map<String, dynamic> _$PhotoModelToJson(PhotoModel instance) =>
@@ -39,4 +40,5 @@ Map<String, dynamic> _$PhotoModelToJson(PhotoModel instance) =>
       'service_type': instance.serviceType,
       'category': instance.category,
       'profiles': instance.profiles,
+      'is_favorited': instance.isFavorited,
     };

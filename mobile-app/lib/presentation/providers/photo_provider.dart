@@ -115,3 +115,12 @@ final deletePhotoProvider = FutureProvider.family<void, int>((ref, photoId) asyn
   await repository.deletePhoto(photoId);
   ref.invalidate(photosProvider);
 });
+
+/// Toggle favorite — returns updated is_favorited bool
+final toggleFavoriteProvider =
+    FutureProvider.family<bool, int>((ref, photoId) async {
+  final repository = ref.watch(photoRepositoryProvider);
+  final result = await repository.toggleFavorite(photoId);
+  ref.invalidate(photosProvider);
+  return result;
+});

@@ -170,6 +170,16 @@ class PhotoRepository {
     }
   }
 
+  /// Toggle favorite — returns the new is_favorited value
+  Future<bool> toggleFavorite(int photoId) async {
+    try {
+      final response = await _dio.patch('/api/photos/$photoId/favorite');
+      return response.data['is_favorited'] as bool? ?? false;
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
   /// Delete a photo
   Future<void> deletePhoto(int photoId) async {
     try {
