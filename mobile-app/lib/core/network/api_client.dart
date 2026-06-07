@@ -145,7 +145,7 @@ class ApiService {
     }
   }
 
-  /// Upload a photo
+  /// Upload a photo / pin attempt
   Future<PhotoResponse> uploadPhoto({
     required String filePath,
     required int profileId,
@@ -153,6 +153,12 @@ class ApiService {
     required double longitude,
     String? zipCode,
     String? note,
+    String? address,
+    String? category,          // F2/F4 service level
+    int? payRate,              // F7 pay rate (whole dollars)
+    String? takenAt,           // F6 device capture time (ISO)
+    int? locationGroupId,      // F1 append to existing master pin
+    int? userId,               // F8/F9 attribution
   }) async {
     try {
       final formData = FormData.fromMap({
@@ -162,6 +168,13 @@ class ApiService {
         'longitude': longitude,
         if (zipCode != null && zipCode.isNotEmpty) 'zip_code': zipCode,
         if (note != null && note.isNotEmpty) 'note': note,
+        if (address != null && address.isNotEmpty) 'address': address,
+        if (category != null && category.isNotEmpty) 'category': category,
+        if (payRate != null) 'pay_rate': payRate,
+        // F6: lock timestamp to capture time; default to now if not supplied
+        'taken_at': takenAt ?? DateTime.now().toUtc().toIso8601String(),
+        if (locationGroupId != null) 'location_group_id': locationGroupId,
+        if (userId != null) 'user_id': userId,
       });
 
       final response = await _dio.post('/api/upload', data: formData);
@@ -317,6 +330,150 @@ class ApiService {
     } catch (e) {
       rethrow;
     }
+  }
+
+  // ─── F1: nearby detection + attempt history ───────────────────────────────
+
+  /// Existing master pins within [radiusFt] feet of a coordinate.
+  Future<List<Map<String, dynamic>>> getNearby({
+    required double latitude,
+    required double longitude,
+    double radiusFt = 100,
+  }) async {
+    final response = await _dio.get('/api/locations/nearby', queryParameters: {
+      'lat': latitude, 'lng': longitude, 'radius_ft': radiusFt,
+    });
+    return (response.data as List).cast<Map<String, dynamic>>();
+  }
+
+  /// Master pins, optionally filtered by service levels / status.
+  Future<List<Map<String, dynamic>>> getLocations({
+    List<String>? serviceLevels,
+    String? status,
+  }) async {
+    final response = await _dio.get('/api/locations', queryParameters: {
+      if (serviceLevels != null && serviceLevels.isNotEmpty)
+        'service_levels': serviceLevels.join(','),
+      if (status != null) 'status': status,
+    });
+    return (response.data as List).cast<Map<String, dynamic>>();
+  }
+
+  /// Full attempt history for one master pin.
+  Future<Map<String, dynamic>> getAttempts(int groupId) async {
+    final response = await _dio.get('/api/locations/$groupId/attempts');
+    return response.data as Map<String, dynamic>;
+  }
+
+  // ─── F4: scheduling queues ────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> getSchedule({String? queue}) async {
+    final response = await _dio.get('/api/schedule',
+        queryParameters: {if (queue != null) 'queue': queue});
+    return response.data as Map<String, dynamic>;
+  }
+
+  // ─── F6: timestamp edit (10-min window) + audit ───────────────────────────
+
+  Future<void> editTimestamp({
+    required int photoId,
+    required String timestamp,
+    int? userId,
+  }) async {
+    await _dio.patch('/api/photos/$photoId/timestamp',
+        data: {'timestamp': timestamp, if (userId != null) 'user_id': userId});
+  }
+
+  Future<Map<String, dynamic>> getTimestampHistory(int photoId) async {
+    final response = await _dio.get('/api/photos/$photoId/timestamp-history');
+    return response.data as Map<String, dynamic>;
+  }
+
+  // ─── F7: pay rate ─────────────────────────────────────────────────────────
+
+  Future<void> updatePayRate({required int photoId, required int payRate}) async {
+    await _dio.patch('/api/photos/$photoId/pay-rate', data: {'pay_rate': payRate});
+  }
+
+  // ─── F10: archive / status workflow ───────────────────────────────────────
+
+  Future<void> updateStatus({required int photoId, required String status}) async {
+    await _dio.patch('/api/photos/$photoId/status', data: {'status': status});
+  }
+
+  Future<List<Map<String, dynamic>>> getArchive(
+      {String? search, String? serviceLevel}) async {
+    final response = await _dio.get('/api/archive', queryParameters: {
+      if (search != null) 'search': search,
+      if (serviceLevel != null) 'service_level': serviceLevel,
+    });
+    return (response.data as List).cast<Map<String, dynamic>>();
+  }
+
+  // ─── F8 / F9: earnings + payouts ──────────────────────────────────────────
+
+  Future<Map<String, dynamic>> getEarnings({String period = 'today', int? userId}) async {
+    final response = await _dio.get('/api/earnings/summary', queryParameters: {
+      'period': period, if (userId != null) 'user_id': userId,
+    });
+    return response.data as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> getPayouts({int? userId}) async {
+    final response = await _dio.get('/api/payouts',
+        queryParameters: {if (userId != null) 'user_id': userId});
+    return response.data as Map<String, dynamic>;
+  }
+
+  // ─── F5: draft auto-save ──────────────────────────────────────────────────
+
+  Future<String> saveDraft({
+    required String id,
+    required Map<String, dynamic> payload,
+    int? userId,
+  }) async {
+    final response = await _dio.put('/api/drafts',
+        data: {'id': id, 'payload': payload, if (userId != null) 'user_id': userId});
+    return (response.data as Map<String, dynamic>)['id'] as String;
+  }
+
+  Future<List<Map<String, dynamic>>> getDrafts({int? userId}) async {
+    final response = await _dio.get('/api/drafts',
+        queryParameters: {if (userId != null) 'user_id': userId});
+    return (response.data as List).cast<Map<String, dynamic>>();
+  }
+
+  Future<void> deleteDraft(String id) async {
+    await _dio.delete('/api/drafts/$id');
+  }
+
+  // ─── F11: saved recipients + Excel export ─────────────────────────────────
+
+  Future<List<Map<String, dynamic>>> getRecipients({int? userId}) async {
+    final response = await _dio.get('/api/recipients',
+        queryParameters: {if (userId != null) 'user_id': userId});
+    return (response.data as List).cast<Map<String, dynamic>>();
+  }
+
+  Future<Map<String, dynamic>> addRecipient({required String email, String? label, int? userId}) async {
+    final response = await _dio.post('/api/recipients', data: {
+      'email': email, if (label != null) 'label': label, if (userId != null) 'user_id': userId,
+    });
+    return response.data as Map<String, dynamic>;
+  }
+
+  Future<void> deleteRecipient(int id) async {
+    await _dio.delete('/api/recipients/$id');
+  }
+
+  /// F11: generate an Excel file server-side and email to recipients.
+  Future<Map<String, dynamic>> exportExcel({
+    required List<String> recipients,
+    required List<Map<String, dynamic>> records,
+  }) async {
+    final response = await _dio.post('/api/export/excel',
+        data: {'recipients': recipients, 'records': records});
+    return response.data as Map<String, dynamic>;
   }
 }
 

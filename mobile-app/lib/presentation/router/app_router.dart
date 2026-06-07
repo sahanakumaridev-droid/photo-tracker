@@ -7,11 +7,14 @@ import '../providers/auth_provider.dart';
 import '../screens/auth/login_screen.dart';
 import '../screens/auth/onboarding_screen.dart';
 import '../screens/auth/splash_screen.dart';
+import '../screens/archive/archive_screen.dart';
+import '../screens/earnings/earnings_screen.dart';
 import '../screens/home/edit_location_screen.dart';
 import '../screens/home/home_screen_v2.dart';
 import '../screens/home/map_view_screen.dart';
 import '../screens/home/photo_detail_screen.dart';
 import '../screens/log/log_screen_v2.dart';
+import '../screens/schedule/schedule_screen.dart';
 import '../screens/settings/profiles_list_screen.dart';
 import '../screens/settings/profiles_management_screen.dart';
 import '../screens/settings/settings_screen_v2.dart';
@@ -82,6 +85,18 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: '/settings',
             builder: (context, state) => const SettingsScreenV2(),
+          ),
+          GoRoute(
+            path: '/earnings',
+            builder: (context, state) => const EarningsScreen(),
+          ),
+          GoRoute(
+            path: '/archive',
+            builder: (context, state) => const ArchiveScreen(),
+          ),
+          GoRoute(
+            path: '/schedule',
+            builder: (context, state) => const ScheduleScreen(),
           ),
         ],
       ),

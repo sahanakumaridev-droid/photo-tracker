@@ -8,6 +8,9 @@ import Upload from './pages/Upload'
 import ProfileDetail from './pages/ProfileDetail'
 import Login from './pages/Login'
 import Log from './pages/Log'
+import Schedule from './pages/Schedule'
+import Earnings from './pages/Earnings'
+import Archive from './pages/Archive'
 import { ThemeProvider } from './context/ThemeContext'
 import { GeoContext } from './context/GeoContext'
 
@@ -143,6 +146,9 @@ export default function App() {
               <Route path="/profiles/:id" element={<ProfileDetail />} />
               <Route path="/upload"       element={<Upload showToast={showToast} />} />
               <Route path="/log"          element={<Log />} />
+              <Route path="/schedule"     element={<Schedule />} />
+              <Route path="/earnings"     element={<Earnings />} />
+              <Route path="/archive"      element={<Archive />} />
             </Routes>
           </main>
           <MobileNav />

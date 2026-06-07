@@ -1,0 +1,279 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../../config/app_config.dart';
+import '../../../config/theme.dart';
+import '../../../core/network/api_client.dart';
+
+/// F10 — Job Archive (search / review / filter archived jobs).
+/// Uses a virtualized ListView so it scales to large datasets.
+class ArchiveScreen extends ConsumerStatefulWidget {
+  const ArchiveScreen({super.key});
+
+  @override
+  ConsumerState<ArchiveScreen> createState() => _ArchiveScreenState();
+}
+
+const _catColors = {
+  'asap': Color(0xFFEF4444),
+  'special': Color(0xFFF59E0B),
+  'next_day': Color(0xFFEAB308),
+  'standard': Color(0xFF10B981),
+};
+
+class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
+  static const _levels = [
+    ['', 'All'],
+    ['asap', 'ASAP'],
+    ['next_day', 'Next Day'],
+    ['standard', 'Standard'],
+    ['special', 'Special'],
+  ];
+
+  String _search = '';
+  String _level = '';
+  List<Map<String, dynamic>> _rows = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    try {
+      final rows = await ref.read(apiServiceProvider).getArchive(
+            search: _search.isEmpty ? null : _search,
+            serviceLevel: _level.isEmpty ? null : _level,
+          );
+      if (!mounted) return;
+      setState(() {
+        _rows = rows;
+        _loading = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Color _color(String? cat) =>
+      _catColors[(cat ?? 'standard').toLowerCase()] ?? _catColors['standard']!;
+
+  int get _totalPay =>
+      _rows.fold(0, (s, r) => s + ((r['pay_rate'] as int?) ?? 0));
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppTheme.offWhite,
+      appBar: AppBar(
+        title: const Text('Archive'),
+        backgroundColor: AppTheme.white,
+        foregroundColor: AppTheme.black,
+        elevation: 0,
+      ),
+      body: Column(
+        children: [
+          // Search (sticky above the list)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+            child: TextField(
+              decoration: InputDecoration(
+                hintText: 'Search archived jobs…',
+                prefixIcon: const Icon(Icons.search, size: 20),
+                isDense: true,
+                filled: true,
+                fillColor: AppTheme.white,
+                contentPadding:
+                    const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide.none,
+                ),
+              ),
+              onChanged: (v) {
+                _search = v;
+                _load();
+              },
+            ),
+          ),
+          // Filter chips
+          SizedBox(
+            height: 40,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              children: _levels.map((l) {
+                final sel = _level == l[0];
+                final c = l[0].isEmpty ? AppTheme.primary : _color(l[0]);
+                return Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: ChoiceChip(
+                    label: Text(l[1]),
+                    selected: sel,
+                    selectedColor: c,
+                    backgroundColor: AppTheme.white,
+                    labelStyle: TextStyle(
+                        color: sel ? Colors.white : const Color(0xFF6B7280),
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12.5),
+                    side: BorderSide(
+                        color: sel ? c : const Color(0xFFE5E7EB)),
+                    onSelected: (_) {
+                      setState(() => _level = l[0]);
+                      _load();
+                    },
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+          // Result count bar
+          if (!_loading)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+              child: Row(
+                children: [
+                  Text('${_rows.length} archived job${_rows.length == 1 ? '' : 's'}',
+                      style: const TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF6B7280))),
+                  const Spacer(),
+                  if (_totalPay > 0)
+                    Text('\$$_totalPay total',
+                        style: const TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w800,
+                            color: Color(0xFF10B981))),
+                ],
+              ),
+            ),
+          Expanded(
+            child: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _rows.isEmpty
+                    ? const Center(
+                        child: Text('No archived jobs found.',
+                            style: TextStyle(color: Colors.grey)))
+                    : RefreshIndicator(
+                        onRefresh: _load,
+                        child: ListView.separated(
+                          padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
+                          itemCount: _rows.length,
+                          separatorBuilder: (_, __) =>
+                              const SizedBox(height: 8),
+                          itemBuilder: (_, i) => _row(_rows[i]),
+                        ),
+                      ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _row(Map<String, dynamic> r) {
+    final cat = (r['category'] ?? 'standard').toString();
+    final c = _color(cat);
+    final img = r['image_url'] as String?;
+    return Container(
+      decoration: BoxDecoration(
+        color: AppTheme.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFEEEDF4)),
+      ),
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Category color stripe
+            Container(
+              width: 4,
+              decoration: BoxDecoration(
+                color: c,
+                borderRadius: const BorderRadius.horizontal(
+                    left: Radius.circular(14)),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(10),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: img != null
+                    ? Image.network(
+                        img.startsWith('http')
+                            ? img
+                            : '${AppConfig.apiBaseUrl}$img',
+                        width: 52,
+                        height: 52,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => _imgFallback(),
+                      )
+                    : _imgFallback(),
+              ),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(r['profile_name']?.toString() ?? 'Pin',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w700, fontSize: 14)),
+                    const SizedBox(height: 3),
+                    Text(r['address']?.toString() ?? '—',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 12, color: Color(0xFF6B7280))),
+                    const SizedBox(height: 5),
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 7, vertical: 2),
+                          decoration: BoxDecoration(
+                              color: c.withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(6)),
+                          child: Text(cat.replaceAll('_', ' ').toUpperCase(),
+                              style: TextStyle(
+                                  fontSize: 9.5,
+                                  fontWeight: FontWeight.w800,
+                                  color: c)),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (r['pay_rate'] != null)
+              Padding(
+                padding: const EdgeInsets.only(right: 12),
+                child: Center(
+                  child: Text('\$${r['pay_rate']}',
+                      style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 15,
+                          color: Color(0xFF10B981))),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _imgFallback() => Container(
+        width: 52,
+        height: 52,
+        color: const Color(0xFFF1F5F9),
+        child: const Icon(Icons.photo, color: Color(0xFF94A3B8)),
+      );
+}

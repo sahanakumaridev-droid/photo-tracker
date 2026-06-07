@@ -57,6 +57,19 @@ class LocalStorage {
     return DateTime.fromMillisecondsSinceEpoch(timestamp);
   }
 
+  // ─── F5: Pin draft auto-save ──────────────────────────────────────────────
+  static const String _draftKey = 'pin_draft';
+
+  /// Save the in-progress pin draft (JSON string).
+  static Future<bool> savePinDraft(String json) async =>
+      _prefs.setString(_draftKey, json);
+
+  /// Get the saved pin draft, or null if none.
+  static String? getPinDraft() => _prefs.getString(_draftKey);
+
+  /// Clear the saved pin draft.
+  static Future<bool> clearPinDraft() async => _prefs.remove(_draftKey);
+
   // ─── General ────────────────────────────────────────────────────────────
 
   /// Clear all data

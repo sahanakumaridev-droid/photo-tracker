@@ -1,5 +1,12 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react'
-import { getLog, exportLogEmail } from '../api'
+import { getLog, exportLogEmail, exportExcel, getRecipients, addRecipient, deleteRecipient } from '../api'
+
+const SERVICE_META = {
+  asap:     { label: 'ASAP',     color: '#DC2626' },
+  next_day: { label: 'Next Day', color: '#CA8A04' },
+  standard: { label: 'Standard', color: '#059669' },
+  special:  { label: 'Special',  color: '#EA580C' },
+}
 
 // PST formatter
 function toPST(ts) {
@@ -64,7 +71,13 @@ export default function Log() {
   const [date,      setDate]      = useState('')
   const [dateTo,    setDateTo]    = useState('')
   const [status,    setStatus]    = useState('')
+  const [serviceLevel, setServiceLevel] = useState('')   // F2/F3 category filter
   const [search,    setSearch]    = useState('')
+  // F11 — saved recipients
+  const [recipients,         setRecipients]         = useState([])
+  const [selectedRecipients, setSelectedRecipients] = useState(() => new Set())
+  const [newRecipient,       setNewRecipient]       = useState('')
+  const [exportingExcel,     setExportingExcel]     = useState(false)
   const [timeFrom,  setTimeFrom]  = useState('')
   const [timeTo,    setTimeTo]    = useState('')
   const [exporting, setExporting] = useState(false)
@@ -103,6 +116,11 @@ export default function Log() {
       })
     }
 
+    // F2/F3 — client-side service-level (category) filter
+    if (serviceLevel) {
+      data = data.filter(r => (r.category || 'standard') === serviceLevel)
+    }
+
     // Deduplicate: keep only latest entry per profile name
     const seen = new Set()
     data = data.filter(r => {
@@ -114,9 +132,14 @@ export default function Log() {
 
     setRows(data)
     setLoading(false)
-  }, [date, dateTo, status, search, timeFrom, timeTo])
+  }, [date, dateTo, status, serviceLevel, search, timeFrom, timeTo])
 
   useEffect(() => { load() }, [load])
+
+  // F11 — load saved recipients once
+  useEffect(() => {
+    getRecipients().then(setRecipients).catch(() => {})
+  }, [])
 
   const rush     = rows.filter(r => r.service_type === 'rush').length
   const standard = rows.filter(r => r.service_type === 'standard').length
@@ -156,7 +179,7 @@ export default function Log() {
   }
 
   const resetFilters = () => {
-    setDate(''); setDateTo(''); setStatus(''); setSearch(''); setTimeFrom(''); setTimeTo('')
+    setDate(''); setDateTo(''); setStatus(''); setServiceLevel(''); setSearch(''); setTimeFrom(''); setTimeTo('')
   }
 
   // ── Export handlers ──────────────────────────────────────────────────────
@@ -317,6 +340,67 @@ export default function Log() {
     }
   }
 
+  // ── F11: Excel export + saved recipients ────────────────────────────────
+  const buildExportRecords = () => exportRows.map(r => ({
+    id: r.id,
+    timestamp: toPST(r.timestamp),
+    profile_name: (r.profiles?.length ? r.profiles.map(p => p.name).join(', ') : r.profile_name),
+    service_type: r.service_type,
+    category: r.category || 'standard',
+    pay_rate: r.pay_rate ?? '',
+    address: r.address || '',
+    zip_code: r.zip_code || '',
+    latitude: r.latitude,
+    longitude: r.longitude,
+    note: r.note || '',
+  }))
+
+  const handleExportExcel = async () => {
+    if (exportRows.length === 0) { showToast('⚠️ No records to export — adjust your filters first.'); return }
+    const targets = recipients.filter(r => selectedRecipients.has(r.id)).map(r => r.email)
+    if (targets.length === 0) { showToast('⚠️ Select at least one saved recipient.'); return }
+    setExportingExcel(true)
+    try {
+      const result = await exportExcel(targets, buildExportRecords())
+      if (result.file_base64) {
+        // email not configured — download the file the server returned
+        const bin = atob(result.file_base64)
+        const bytes = new Uint8Array(bin.length)
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+        downloadFile(bytes, result.filename || 'log_export.xlsx',
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        showToast('📥 Email not configured — Excel downloaded')
+      } else {
+        showToast(`✅ Excel sent to ${targets.length} recipient${targets.length !== 1 ? 's' : ''}`)
+      }
+    } catch (err) {
+      showToast(`❌ Export failed: ${err.response?.data?.detail || err.message}`)
+    } finally {
+      setExportingExcel(false)
+    }
+  }
+
+  const handleAddRecipient = async () => {
+    const email = newRecipient.trim()
+    if (!email.includes('@')) { showToast('⚠️ Enter a valid email.'); return }
+    try {
+      const r = await addRecipient({ email })
+      setRecipients(prev => [...prev, r])
+      setNewRecipient('')
+      showToast('✅ Recipient saved')
+    } catch (err) { showToast(`❌ ${err.response?.data?.detail || 'Could not save'}`) }
+  }
+
+  const handleDeleteRecipient = async (id) => {
+    await deleteRecipient(id).catch(() => {})
+    setRecipients(prev => prev.filter(r => r.id !== id))
+    setSelectedRecipients(prev => { const n = new Set(prev); n.delete(id); return n })
+  }
+
+  const toggleRecipient = (id) => setSelectedRecipients(prev => {
+    const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n
+  })
+
   // 6. Send email via backend SMTP/SendGrid (from export panel)
   const handleSendEmail = () => {
     if (exportRows.length === 0) { showToast('⚠️ No records to export — adjust your filters first.'); return }
@@ -366,7 +450,15 @@ export default function Log() {
                   <span key={i} style={{ marginRight: 8 }}>{p.name}{i < (detailItem.profiles?.length || 1) - 1 ? ',' : ''}</span>
                 ))}
               </div>
-              <div style={{ fontSize: 13, color: '#64748b', marginBottom: 16 }}>🕐 {toPST(detailItem.timestamp)}</div>
+              <div style={{ fontSize: 13, color: '#64748b', marginBottom: 12 }}>🕐 {toPST(detailItem.timestamp)}</div>
+              {/* F2/F4 service level + F7 pay rate */}
+              <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+                {(() => { const m = SERVICE_META[detailItem.category || 'standard'] || SERVICE_META.standard
+                  return <span style={{ fontSize: 12, fontWeight: 700, color: '#fff', background: m.color, borderRadius: 8, padding: '4px 10px' }}>{m.label}</span> })()}
+                {detailItem.pay_rate != null && (
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#16a34a', background: '#dcfce7', borderRadius: 8, padding: '4px 10px' }}>${detailItem.pay_rate}</span>
+                )}
+              </div>
               {detailItem.address && (
                 <div style={{ fontSize: 14, marginBottom: 8, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
                   <span style={{ color: '#10b981' }}>📍</span>
@@ -451,6 +543,19 @@ export default function Log() {
             Email
           </button>
 
+          {/* ── Excel export (F11) ── */}
+          <button
+            className="btn btn-dark"
+            style={{ fontSize: 12, padding: '7px 14px', display: 'flex', alignItems: 'center', gap: 6, background: '#16a34a' }}
+            onClick={() => setShowExport(true)}
+            title="Export to Excel and send to saved recipients"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M3 9h18"/>
+            </svg>
+            Excel
+          </button>
+
           {/* ── More export options toggle ── */}
           <button
             className="btn btn-outline"
@@ -516,6 +621,46 @@ export default function Log() {
             <span style={{ fontSize: 11, opacity: 0.5 }}>Sends CSV via server email</span>
           </div>
 
+          {/* ── F11: Excel export with saved recipients ── */}
+          <div style={{ borderTop: '1px dashed var(--border-c,#e2e8f0)', paddingTop: 12, marginTop: 4 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>📊 Excel Export → Saved Recipients</div>
+
+            {/* recipient chips */}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+              {recipients.length === 0 && <span style={{ fontSize: 12, opacity: 0.5 }}>No saved recipients yet — add one below.</span>}
+              {recipients.map(r => {
+                const sel = selectedRecipients.has(r.id)
+                return (
+                  <span key={r.id} onClick={() => toggleRecipient(r.id)}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer',
+                      fontSize: 12, fontWeight: 600, padding: '5px 10px', borderRadius: 20,
+                      border: '1px solid ' + (sel ? '#16a34a' : '#cbd5e1'),
+                      background: sel ? '#16a34a' : 'transparent', color: sel ? '#fff' : '#64748b',
+                    }}>
+                    {sel ? '✓ ' : ''}{r.label || r.email}
+                    <span onClick={e => { e.stopPropagation(); handleDeleteRecipient(r.id) }}
+                      style={{ opacity: 0.6, fontWeight: 800 }} title="Delete">×</span>
+                  </span>
+                )
+              })}
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input type="email" placeholder="add@recipient.com (max 10)" value={newRecipient}
+                onChange={e => setNewRecipient(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleAddRecipient()}
+                style={{ marginBottom: 0, width: 220, fontSize: 12 }} />
+              <button className="btn btn-outline" style={{ fontSize: 12, padding: '8px 14px' }}
+                onClick={handleAddRecipient}>+ Add</button>
+              <button className="btn btn-green" style={{ fontSize: 12, padding: '8px 16px' }}
+                onClick={handleExportExcel}
+                disabled={exportRows.length === 0 || selectedRecipients.size === 0 || exportingExcel}>
+                {exportingExcel ? 'Sending…' : '📊 Export Excel & Send'}
+              </button>
+            </div>
+          </div>
+
           <button
             className="btn btn-outline"
             style={{ fontSize: 11, padding: '5px 10px', alignSelf: 'flex-start' }}
@@ -578,6 +723,22 @@ export default function Log() {
             <option value="">All</option>
             <option value="rush">ASAP</option>
             <option value="standard">Standard</option>
+          </select>
+        </div>
+
+        {/* F2/F3 — Service level filter */}
+        <div className="log-filter-group">
+          <label>Service Level</label>
+          <select
+            value={serviceLevel}
+            onChange={e => setServiceLevel(e.target.value)}
+            style={{ marginBottom: 0, width: 130 }}
+          >
+            <option value="">All</option>
+            <option value="asap">ASAP</option>
+            <option value="next_day">Next Day</option>
+            <option value="standard">Standard</option>
+            <option value="special">Special / S.O.</option>
           </select>
         </div>
 

@@ -22,7 +22,7 @@ class PhotoRepository {
     }
   }
 
-  /// Upload a photo
+  /// Upload a photo / pin attempt
   Future<PhotoModel> uploadPhoto({
     required String filePath,
     required int profileId,
@@ -32,6 +32,10 @@ class PhotoRepository {
     String? address,
     String? note,
     String? category,
+    int? payRate,              // F7
+    String? takenAt,           // F6 device capture time (ISO)
+    int? locationGroupId,      // F1 append to existing master pin
+    int? userId,               // F8/F9
   }) async {
     try {
       final formData = FormData.fromMap({
@@ -43,6 +47,11 @@ class PhotoRepository {
         if (address != null && address.isNotEmpty) 'address': address,
         if (note != null && note.isNotEmpty) 'note': note,
         if (category != null && category.isNotEmpty) 'category': category,
+        if (payRate != null) 'pay_rate': payRate,
+        // F6: lock timestamp to device capture time
+        'taken_at': takenAt ?? DateTime.now().toUtc().toIso8601String(),
+        if (locationGroupId != null) 'location_group_id': locationGroupId,
+        if (userId != null) 'user_id': userId,
       });
 
       final response = await _dio.post('/api/upload', data: formData);

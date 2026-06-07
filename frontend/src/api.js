@@ -86,3 +86,39 @@ export const replacePhotoImage   = (id, file) => { const fd = new FormData(); fd
 export const getLog = (params) => api.get('/log', { params }).then(r => r.data)
 
 export const exportLogEmail = (to, records) => api.post('/export/email', { to, records }).then(r => r.data)
+
+// ── F1: master pins / attempt history ───────────────────────────────────────
+export const getLocations      = (params)   => api.get('/locations', { params }).then(r => r.data)
+export const getNearby         = (lat, lng, radius_ft = 100) => api.get('/locations/nearby', { params: { lat, lng, radius_ft } }).then(r => r.data)
+export const getAttempts       = (groupId)  => api.get(`/locations/${groupId}/attempts`).then(r => r.data)
+
+// ── F4: scheduling queues ────────────────────────────────────────────────────
+export const getSchedule       = (queue)    => api.get('/schedule', { params: queue ? { queue } : {} }).then(r => r.data)
+
+// ── F6: timestamp edit + audit ───────────────────────────────────────────────
+export const editTimestamp     = (id, timestamp, user_id) => api.patch(`/photos/${id}/timestamp`, { timestamp, user_id }).then(r => r.data).then(r => { invalidate('photos'); return r })
+export const getTimestampHistory = (id)     => api.get(`/photos/${id}/timestamp-history`).then(r => r.data)
+
+// ── F7: pay rate ─────────────────────────────────────────────────────────────
+export const updatePayRate     = (id, pay_rate) => api.patch(`/photos/${id}/pay-rate`, { pay_rate }).then(r => r.data).then(r => { invalidate('photos'); return r })
+
+// ── F10: archive / status ────────────────────────────────────────────────────
+export const updateStatus      = (id, status) => api.patch(`/photos/${id}/status`, { status }).then(r => r.data).then(r => { invalidate('photos'); return r })
+export const getArchive        = (params)    => api.get('/archive', { params }).then(r => r.data)
+
+// ── F8/F9: earnings + payouts ────────────────────────────────────────────────
+export const getEarnings       = (period = 'today', user_id) => api.get('/earnings/summary', { params: { period, ...(user_id ? { user_id } : {}) } }).then(r => r.data)
+export const getPayouts        = (user_id)   => api.get('/payouts', { params: user_id ? { user_id } : {} }).then(r => r.data)
+export const finalizePayout    = (data)      => api.post('/payouts/finalize', data).then(r => r.data)
+
+// ── F5: drafts ───────────────────────────────────────────────────────────────
+export const saveDraft         = (data)      => api.put('/drafts', data).then(r => r.data)
+export const getDrafts         = (user_id)   => api.get('/drafts', { params: user_id ? { user_id } : {} }).then(r => r.data)
+export const deleteDraft       = (id)        => api.delete(`/drafts/${id}`).then(r => r.data)
+
+// ── F11: saved recipients + Excel export ─────────────────────────────────────
+export const getRecipients     = (user_id)   => api.get('/recipients', { params: user_id ? { user_id } : {} }).then(r => r.data)
+export const addRecipient      = (data)      => api.post('/recipients', data).then(r => r.data)
+export const editRecipient     = (id, data)  => api.patch(`/recipients/${id}`, data).then(r => r.data)
+export const deleteRecipient   = (id)        => api.delete(`/recipients/${id}`).then(r => r.data)
+export const exportExcel       = (recipients, records) => api.post('/export/excel', { recipients, records }).then(r => r.data)

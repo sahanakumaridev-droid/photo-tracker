@@ -135,6 +135,20 @@ class SettingsScreenV2 extends ConsumerWidget {
                 subtitle: 'Manage permissions in system Settings',
                 onTap: openAppSettings),
           ]),
+          const SizedBox(height: 24),
+
+          // Enhancement features (F4/F8/F9/F10)
+          _section('Jobs & Earnings', [
+            _row(Icons.attach_money_rounded, 'Earnings',
+                subtitle: 'Today, week, bi-weekly & monthly payouts',
+                onTap: () => context.push('/earnings')),
+            _row(Icons.event_note_rounded, 'Schedule',
+                subtitle: 'ASAP, Next Day, Standard & Special queues',
+                onTap: () => context.push('/schedule')),
+            _row(Icons.inventory_2_outlined, 'Archive',
+                subtitle: 'Search and review completed jobs',
+                onTap: () => context.push('/archive')),
+          ]),
 
           _section('Account', [
             _row(Icons.email_outlined, 'Email',

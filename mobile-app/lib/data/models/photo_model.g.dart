@@ -23,6 +23,12 @@ PhotoModel _$PhotoModelFromJson(Map<String, dynamic> json) => PhotoModel(
           ?.map((e) => ProfileModel.fromJson(e as Map<String, dynamic>))
           .toList(),
       isFavorited: json['is_favorited'] as bool? ?? false,
+      payRate: (json['pay_rate'] as num?)?.toInt(),
+      status: json['status'] as String?,
+      takenAt: json['taken_at'] as String?,
+      locationGroupId: (json['location_group_id'] as num?)?.toInt(),
+      userId: (json['user_id'] as num?)?.toInt(),
+      completedAt: json['completed_at'] as String?,
     );
 
 Map<String, dynamic> _$PhotoModelToJson(PhotoModel instance) =>
@@ -41,4 +47,10 @@ Map<String, dynamic> _$PhotoModelToJson(PhotoModel instance) =>
       'category': instance.category,
       'profiles': instance.profiles,
       'is_favorited': instance.isFavorited,
+      'pay_rate': instance.payRate,
+      'status': instance.status,
+      'taken_at': instance.takenAt,
+      'location_group_id': instance.locationGroupId,
+      'user_id': instance.userId,
+      'completed_at': instance.completedAt,
     };

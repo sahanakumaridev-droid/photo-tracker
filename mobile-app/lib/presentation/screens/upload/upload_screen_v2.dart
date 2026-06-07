@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -10,6 +11,8 @@ import 'package:latlong2/latlong.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shimmer/shimmer.dart';
 
+import '../../../core/network/api_client.dart';
+import '../../../core/storage/local_storage.dart';
 import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../data/models/profile_model.dart';
@@ -54,23 +57,93 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   String? _locationErrorMsg;
   bool _isEditingAddress = false;
   String _selectedCategory = kDefaultCategory;
+  // F6: device capture time, locked the moment the photo is taken/picked.
+  String? _takenAt;
+  // F1: when the user chooses to append to an existing pin.
+  int? _locationGroupId;
 
   final _noteController = TextEditingController();
   final _addressController = TextEditingController();
+  final _payRateController = TextEditingController();   // F7
   final _imagePicker = ImagePicker();
 
   @override
   void initState() {
     super.initState();
     // Small delay so the screen renders first, then fetch location
-    WidgetsBinding.instance.addPostFrameCallback((_) => _fetchLocation());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _fetchLocation();
+      _maybeRestoreDraft();
+    });
+    // F5: auto-save the draft whenever the text fields change.
+    _noteController.addListener(_saveDraft);
+    _addressController.addListener(_saveDraft);
+    _payRateController.addListener(_saveDraft);
   }
 
   @override
   void dispose() {
     _noteController.dispose();
     _addressController.dispose();
+    _payRateController.dispose();
     super.dispose();
+  }
+
+  // ── F5: Draft auto-save & recovery ────────────────────────────────────────
+  void _saveDraft() {
+    // Only persist once there's something worth resuming.
+    if (_noteController.text.isEmpty &&
+        _addressController.text.isEmpty &&
+        _payRateController.text.isEmpty) {
+      return;
+    }
+    LocalStorage.savePinDraft(jsonEncode({
+      'note': _noteController.text,
+      'address': _addressController.text,
+      'category': _selectedCategory,
+      'payRate': _payRateController.text,
+      'profileId': _selectedProfile?.id,
+    }));
+  }
+
+  Future<void> _maybeRestoreDraft() async {
+    final raw = LocalStorage.getPinDraft();
+    if (raw == null || !mounted) return;
+    Map<String, dynamic> draft;
+    try {
+      draft = jsonDecode(raw) as Map<String, dynamic>;
+    } catch (_) {
+      return;
+    }
+    final resume = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Resume Draft?'),
+        content: const Text(
+            'You have an unsaved pin in progress. Resume where you left off?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Discard'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Resume'),
+          ),
+        ],
+      ),
+    );
+    if (resume ?? false) {
+      setState(() {
+        _noteController.text = (draft['note'] ?? '') as String;
+        _addressController.text = (draft['address'] ?? '') as String;
+        _payRateController.text = (draft['payRate'] ?? '') as String;
+        _selectedCategory =
+            (draft['category'] ?? kDefaultCategory) as String;
+      });
+    } else {
+      await LocalStorage.clearPinDraft();
+    }
   }
 
   // ── Location ──────────────────────────────────────────────────────────────
@@ -309,7 +382,12 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       );
       if (picked != null && mounted) {
         HapticFeedback.mediumImpact();
-        setState(() => _selectedImage = File(picked.path));
+        setState(() {
+          _selectedImage = File(picked.path);
+          // F6: lock the timestamp to the moment the photo was taken/picked,
+          // NOT upload time.
+          _takenAt = DateTime.now().toUtc().toIso8601String();
+        });
       }
     } on PlatformException catch (e) {
       debugPrint('[Picker] PlatformException: ${e.code} – ${e.message}');
@@ -408,8 +486,16 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       return;
     }
 
+    // F1: detect existing pins within ~100ft and offer to reuse one.
+    if (_locationGroupId == null) {
+      await _checkNearbyAndMaybeReuse();
+      if (!mounted) return;
+    }
+
     HapticFeedback.mediumImpact();
     setState(() => _uploadState = _UploadState.uploading);
+
+    final payRate = int.tryParse(_payRateController.text.trim());
 
     try {
       await ref.read(uploadPhotoProvider({
@@ -424,12 +510,19 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
             ? null
             : _noteController.text.trim(),
         'category': _selectedCategory,
+        'payRate': payRate,
+        'takenAt': _takenAt,
+        'locationGroupId': _locationGroupId,
       }).future);
 
       if (!mounted) return;
+      // F5: pin committed — clear the saved draft.
+      await LocalStorage.clearPinDraft();
       HapticFeedback.heavyImpact();
       setState(() => _uploadState = _UploadState.success);
-      _showSnack('Photo uploaded successfully');
+      _showSnack(_locationGroupId != null
+          ? 'Attempt added to existing pin'
+          : 'Photo uploaded successfully');
       await Future<void>.delayed(const Duration(milliseconds: 1000));
       if (mounted) context.go('/home');
     } catch (e) {
@@ -442,6 +535,45 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       );
       await Future<void>.delayed(const Duration(milliseconds: 1000));
       if (mounted) setState(() => _uploadState = _UploadState.idle);
+    }
+  }
+
+  // ── F1: nearby duplicate detection + existing-pin reuse ───────────────────
+  Future<void> _checkNearbyAndMaybeReuse() async {
+    try {
+      final nearby = await ref.read(apiServiceProvider).getNearby(
+            latitude: _latitude!,
+            longitude: _longitude!,
+          );
+      if (nearby.isEmpty || !mounted) return;
+      final nearest = nearby.first;
+      final dist = (nearest['distance_ft'] as num?)?.toStringAsFixed(0) ?? '?';
+      final useExisting = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Existing location detected'),
+          content: Text(
+              'A pin already exists ~$dist ft away with '
+              '${nearest['attempt_count']} attempt(s). Add this attempt to the '
+              'existing pin, or create a new pin?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Create New Pin'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Use Existing Pin'),
+            ),
+          ],
+        ),
+      );
+      if ((useExisting ?? false) && mounted) {
+        setState(() =>
+            _locationGroupId = nearest['location_group_id'] as int?);
+      }
+    } catch (_) {
+      // Nearby detection is best-effort — never block an upload on it.
     }
   }
 
@@ -867,6 +999,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                   onTap: () {
                     HapticFeedback.selectionClick();
                     setState(() => _selectedCategory = c.value);
+                    _saveDraft();
                   },
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 160),
@@ -1371,6 +1504,17 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
               hint: 'Add a note about this photo…',
               icon: Icons.notes_rounded,
               maxLines: 3,
+            ),
+            const SizedBox(height: 16),
+            // F7 — Pay rate
+            _fieldLabel('Pay Rate (\$)', optional: true),
+            const SizedBox(height: 6),
+            _inputField(
+              controller: _payRateController,
+              hint: 'e.g. 30',
+              icon: Icons.attach_money_rounded,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
             ),
           ],
         ),

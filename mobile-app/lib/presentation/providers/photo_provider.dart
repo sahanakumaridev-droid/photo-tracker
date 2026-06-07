@@ -23,6 +23,10 @@ final uploadPhotoProvider =
       address: params['address'] as String?,
       note: params['note'] as String?,
       category: params['category'] as String?,
+      payRate: params['payRate'] as int?,
+      takenAt: params['takenAt'] as String?,
+      locationGroupId: params['locationGroupId'] as int?,
+      userId: params['userId'] as int?,
     );
     ref.invalidate(photosProvider);
     return photo;

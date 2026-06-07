@@ -200,16 +200,26 @@ class _MapBody extends ConsumerStatefulWidget {
 }
 
 class _MapBodyState extends ConsumerState<_MapBody> {
+  // F2 — selected service levels (empty = show all).
+  final Set<String> _levels = {};
+
   @override
   Widget build(BuildContext context) {
     // Filter by selected profile
-    final filtered = widget.selectedProfile == 'all'
+    var filtered = widget.selectedProfile == 'all'
         ? widget.photos
         : widget.photos.where((p) {
             final pid = widget.selectedProfile;
             return p.profileId?.toString() == pid ||
                 (p.profiles?.any((pr) => pr.id.toString() == pid) ?? false);
           }).toList();
+
+    // F2 — filter by selected service levels (category)
+    if (_levels.isNotEmpty) {
+      filtered = filtered
+          .where((p) => _levels.contains(p.category ?? 'standard'))
+          .toList();
+    }
 
     // Only geotagged
     final geotagged = filtered.where((p) => p.latitude != 0 || p.longitude != 0).toList();
@@ -313,6 +323,42 @@ class _MapBodyState extends ConsumerState<_MapBody> {
             profiles: widget.profiles,
             selectedProfile: widget.selectedProfile,
             onProfileChanged: widget.onProfileChanged,
+          ),
+        ),
+
+        // ── F2: service-level filter chips ────────────────────────────────
+        Positioned(
+          top: 62,
+          left: 8,
+          right: 8,
+          child: SizedBox(
+            height: 38,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              children: const [
+                ['asap', 'ASAP'],
+                ['next_day', 'Next Day'],
+                ['standard', 'Standard'],
+                ['special', 'Special'],
+              ].map((lvl) {
+                final sel = _levels.contains(lvl[0]);
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: FilterChip(
+                    label: Text(lvl[1], style: const TextStyle(fontSize: 12)),
+                    selected: sel,
+                    backgroundColor: Colors.white,
+                    selectedColor: _kAccent,
+                    labelStyle: TextStyle(
+                        color: sel ? Colors.white : const Color(0xFF374151),
+                        fontWeight: FontWeight.w600),
+                    onSelected: (_) => setState(() {
+                      sel ? _levels.remove(lvl[0]) : _levels.add(lvl[0]);
+                    }),
+                  ),
+                );
+              }).toList(),
+            ),
           ),
         ),
 

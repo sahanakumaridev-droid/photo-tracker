@@ -44,6 +44,8 @@ export default function Upload({ showToast }) {
   const [address,      setAddress]      = useState('')
   const [addrLoading,  setAddrLoading]  = useState(false)
   const [note,         setNote]         = useState('')
+  const [category,     setCategory]     = useState('standard')  // F2/F4 service level
+  const [payRate,      setPayRate]      = useState('')          // F7 pay rate
   // inline new profile
   const [showNewProf,  setShowNewProf]  = useState(false)
   const [newProfName,  setNewProfName]  = useState('')
@@ -199,6 +201,10 @@ export default function Upload({ showToast }) {
     fd.append('longitude',  location.lng)
     fd.append('address',    address)
     fd.append('note',       note)
+    fd.append('category',   category)                          // F2/F4 service level
+    if (payRate !== '') fd.append('pay_rate', payRate)         // F7 pay rate
+    // F6: lock the timestamp to capture time (now), sent as ISO to the backend
+    fd.append('taken_at',   new Date().toISOString())
     try {
       await uploadPhoto(fd)
       // Small delay to ensure backend has committed before dashboard re-fetches
@@ -453,6 +459,34 @@ export default function Upload({ showToast }) {
               <div className="step-num">4</div>
               <div className="step-title">Metadata</div>
             </div>
+
+            {/* F2/F4 — Service level */}
+            <label style={{marginBottom:4}}>Service Level</label>
+            <div style={{display:'flex', gap:6, marginBottom:12, flexWrap:'wrap'}}>
+              {[
+                { k:'asap',     l:'ASAP',     c:'#DC2626' },
+                { k:'next_day', l:'Next Day', c:'#CA8A04' },
+                { k:'standard', l:'Standard', c:'#059669' },
+                { k:'special',  l:'Special',  c:'#EA580C' },
+              ].map(s => (
+                <button key={s.k} type="button" onClick={() => setCategory(s.k)}
+                  style={{
+                    flex:'1 1 40%', padding:'7px 10px', borderRadius:8, fontSize:12, fontWeight:700, cursor:'pointer',
+                    border:'1px solid ' + (category === s.k ? s.c : 'rgba(0,0,0,0.12)'),
+                    background: category === s.k ? s.c : 'transparent',
+                    color: category === s.k ? '#fff' : '#64748b',
+                  }}>{s.l}</button>
+              ))}
+            </div>
+
+            {/* F7 — Pay rate */}
+            <label style={{marginBottom:4}}>Pay Rate ($)</label>
+            <input type="number" min="0" step="1" value={payRate}
+              onChange={e => setPayRate(e.target.value.replace(/[^0-9]/g, ''))}
+              placeholder="e.g. 30"
+              style={{width:'100%', padding:'10px 13px', background:'rgba(0,0,0,0.04)',
+                border:'1px solid rgba(0,0,0,0.12)', borderRadius:9, fontSize:13.5, marginBottom:12}} />
+
             <label>Note</label>
             {/* Note textarea — standalone, no click-to-upload behavior */}
             <textarea

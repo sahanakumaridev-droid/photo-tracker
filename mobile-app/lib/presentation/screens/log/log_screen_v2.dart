@@ -12,6 +12,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shimmer/shimmer.dart';
 
 import '../../../config/app_config.dart';
+import '../../../core/network/api_client.dart';
 import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../data/models/log_entry_model.dart';
@@ -861,12 +862,164 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                     ),
                   ),
                 ),
+                const SizedBox(height: 10),
+                // Row 3: F11 — Excel → saved recipients (full width)
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: exportLogs.isEmpty
+                        ? null
+                        : () {
+                            setState(() => _selectedExportProfileIds =
+                                tempSelected);
+                            Navigator.pop(ctx);
+                            _exportExcel(exportLogs);
+                          },
+                    icon: const Icon(Icons.grid_on_rounded, size: 16),
+                    label: const Text('Export Excel → Email'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF16A34A),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ),
               ],
             ),
           );
         },
       ),
     );
+  }
+
+  // ── F11: Excel export with saved recipients ───────────────────────────────
+  Future<void> _exportExcel(List<LogEntryModel> logs) async {
+    if (logs.isEmpty) {
+      _showSnack('No records to export — adjust your filters first.');
+      return;
+    }
+    final api = ref.read(apiServiceProvider);
+
+    // Load saved recipients (F11 manager) so the user can pick from a dropdown.
+    var recipients = <Map<String, dynamic>>[];
+    try {
+      recipients = await api.getRecipients();
+    } catch (_) {}
+    if (!mounted) return;
+
+    final selected = <String>{};
+    final addCtrl = TextEditingController();
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, ss) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Text('Export Excel'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('${logs.length} record(s) → .xlsx',
+                  style: const TextStyle(fontSize: 13, color: _inkMuted)),
+              const SizedBox(height: 12),
+              if (recipients.isEmpty)
+                const Text('No saved recipients — add one below.',
+                    style: TextStyle(fontSize: 12, color: _inkSubtle)),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: recipients.map((r) {
+                  final email = r['email'].toString();
+                  final sel = selected.contains(email);
+                  return FilterChip(
+                    label: Text(r['label']?.toString() ?? email),
+                    selected: sel,
+                    onSelected: (_) => ss(() {
+                      sel ? selected.remove(email) : selected.add(email);
+                    }),
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: addCtrl,
+                      keyboardType: TextInputType.emailAddress,
+                      decoration: const InputDecoration(
+                        hintText: 'add@recipient.com',
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.add_circle, color: _accent),
+                    onPressed: () async {
+                      final email = addCtrl.text.trim();
+                      if (!email.contains('@')) return;
+                      try {
+                        final r = await api.addRecipient(email: email);
+                        ss(() {
+                          recipients.add(r);
+                          selected.add(email);
+                          addCtrl.clear();
+                        });
+                      } catch (_) {}
+                    },
+                  ),
+                ],
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel')),
+            ElevatedButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Send Excel')),
+          ],
+        ),
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+    if (selected.isEmpty) {
+      _showSnack('Select at least one recipient.');
+      return;
+    }
+
+    _showSnack('Generating Excel…');
+    try {
+      final records = logs
+          .map((log) => {
+                'id': log.id,
+                'timestamp': log.timestamp,
+                'profile_name': log.profileName,
+                'service_type': log.serviceType,
+                'category': log.category,
+                'address': log.address,
+                'zip_code': log.zipCode,
+                'latitude': log.latitude,
+                'longitude': log.longitude,
+                'note': log.note,
+              })
+          .toList();
+      final result = await api.exportExcel(
+          recipients: selected.toList(), records: records);
+      if (!mounted) return;
+      _showSnack(result['file_base64'] != null
+          ? 'Email not configured — Excel generated on server'
+          : '✓ Excel sent to ${selected.length} recipient(s)');
+    } catch (e) {
+      if (mounted) _showSnack('Excel export failed: $e');
+    }
   }
 
   // ── Filter sheet ──────────────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 import 'package:json_annotation/json_annotation.dart';
 
+import '../../config/app_config.dart';
 import 'profile_model.dart';
 
 part 'photo_model.g.dart';
@@ -20,6 +21,12 @@ class PhotoModel {
     this.category,
     this.profiles,
     this.isFavorited = false,
+    this.payRate,
+    this.status,
+    this.takenAt,
+    this.locationGroupId,
+    this.userId,
+    this.completedAt,
   });
 
   factory PhotoModel.fromJson(Map<String, dynamic> json) {
@@ -27,7 +34,7 @@ class PhotoModel {
     // Fix relative image_url to full URL
     final imageUrl = raw.imageUrl.startsWith('http')
         ? raw.imageUrl
-        : 'http://24.199.85.230${raw.imageUrl}';
+        : '${AppConfig.apiBaseUrl}${raw.imageUrl}';
     return raw.copyWith(imageUrl: imageUrl);
   }
   final int id;
@@ -51,6 +58,18 @@ class PhotoModel {
   final List<ProfileModel>? profiles;
   @JsonKey(name: 'is_favorited', defaultValue: false)
   final bool isFavorited;
+  // ── Enhancement fields ──
+  @JsonKey(name: 'pay_rate')
+  final int? payRate;                 // F7
+  final String? status;               // F10: open | completed | archived
+  @JsonKey(name: 'taken_at')
+  final String? takenAt;              // F6: device capture time
+  @JsonKey(name: 'location_group_id')
+  final int? locationGroupId;         // F1: master pin group
+  @JsonKey(name: 'user_id')
+  final int? userId;                  // F8/F9
+  @JsonKey(name: 'completed_at')
+  final String? completedAt;          // F8/F9
 
   Map<String, dynamic> toJson() => _$PhotoModelToJson(this);
 
@@ -69,6 +88,12 @@ class PhotoModel {
     String? category,
     List<ProfileModel>? profiles,
     bool? isFavorited,
+    int? payRate,
+    String? status,
+    String? takenAt,
+    int? locationGroupId,
+    int? userId,
+    String? completedAt,
   }) =>
       PhotoModel(
         id: id ?? this.id,
@@ -85,5 +110,11 @@ class PhotoModel {
         category: category ?? this.category,
         profiles: profiles ?? this.profiles,
         isFavorited: isFavorited ?? this.isFavorited,
+        payRate: payRate ?? this.payRate,
+        status: status ?? this.status,
+        takenAt: takenAt ?? this.takenAt,
+        locationGroupId: locationGroupId ?? this.locationGroupId,
+        userId: userId ?? this.userId,
+        completedAt: completedAt ?? this.completedAt,
       );
 }
