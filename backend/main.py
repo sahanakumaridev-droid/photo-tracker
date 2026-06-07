@@ -1125,20 +1125,37 @@ def earnings_summary(period: str = "today", user_id: Optional[int] = None):
 
 @app.get("/payouts")
 def get_payouts(user_id: Optional[int] = None):
-    """Closed jobs with running earnings, grouped by completion day."""
+    """Closed-out pins grouped by completion day — works like the daily log but
+    for completed jobs (Don #8). Each day lists its individual closed pins,
+    its daily total, and a cumulative running total across all days."""
     db = SessionLocal()
     q = db.query(Photo).filter(Photo.status == "completed")
     if user_id is not None:
         q = q.filter(Photo.user_id == user_id)
     jobs = q.order_by(Photo.completed_at.desc()).all()
-    db.close()
+    # Build per-day buckets with the actual closed-pin entries (like the log)
     days = {}
     for j in jobs:
         day = (_to_pst_iso(j.completed_at) or "")[:10]
-        days.setdefault(day, {"date": day, "jobs": 0, "amount": 0})
-        days[day]["jobs"] += 1
-        days[day]["amount"] += (j.pay_rate or 0)
+        bucket = days.setdefault(day, {"date": day, "jobs": 0, "amount": 0, "entries": []})
+        bucket["jobs"]   += 1
+        bucket["amount"] += (j.pay_rate or 0)
+        bucket["entries"].append({
+            "id":           j.id,
+            "profile_name": (j.profiles[0].name if j.profiles else "Unknown"),
+            "category":     j.category or "standard",
+            "pay_rate":     j.pay_rate or 0,
+            "address":      j.address,
+            "image_url":    j.image_url,
+            "completed_at": _to_pst_iso(j.completed_at),
+        })
+    db.close()
+    # Newest day first; keep a cumulative running total (oldest→newest), Uber-style
     daily = sorted(days.values(), key=lambda d: d["date"], reverse=True)
+    cumulative = 0
+    for d in sorted(daily, key=lambda d: d["date"]):     # ascending for running sum
+        cumulative += d["amount"]
+        d["running_total"] = cumulative
     return {
         "total_earnings": sum(d["amount"] for d in daily),
         "total_jobs":     sum(d["jobs"] for d in daily),

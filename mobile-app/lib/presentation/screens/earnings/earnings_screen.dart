@@ -144,26 +144,110 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
                 title:
                     'Payouts / Timesheets · ${_money(_payouts?['total_earnings'])} · ${_payouts?['total_jobs'] ?? 0} jobs',
                 child: payoutDays.isEmpty
-                    ? const Text('No closed jobs yet.',
+                    ? const Text('No closed jobs yet. Close out a pin to log a payout.',
                         style: TextStyle(color: Colors.grey))
                     : Column(
-                        children: payoutDays.map((d) {
-                          return ListTile(
-                            contentPadding: EdgeInsets.zero,
-                            dense: true,
-                            title: Text('${d['date']}'),
-                            subtitle: Text('${d['jobs']} job(s)'),
-                            trailing: Text(_money(d['amount']),
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: AppTheme.success)),
-                          );
-                        }).toList(),
+                        children: payoutDays
+                            .map((d) => _payoutDay(d as Map<String, dynamic>))
+                            .toList(),
                       ),
               ),
             ],
           ],
         ),
+      ),
+    );
+  }
+
+  static const _catColor = {
+    'asap': Color(0xFFEF4444),
+    'special': Color(0xFFF59E0B),
+    'next_day': Color(0xFFEAB308),
+    'standard': Color(0xFF10B981),
+  };
+
+  // A single day in the payouts log: header (date · daily total · running
+  // total) followed by each closed-out pin — works like the daily log (Don #8).
+  Widget _payoutDay(Map<String, dynamic> d) {
+    final entries = (d['entries'] as List?) ?? [];
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Day header
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+                color: const Color(0xFFF1F5F9),
+                borderRadius: BorderRadius.circular(10)),
+            child: Row(
+              children: [
+                Text('${d['date']}',
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w800, fontSize: 13)),
+                const SizedBox(width: 8),
+                Text('${d['jobs']} job${d['jobs'] == 1 ? '' : 's'}',
+                    style: const TextStyle(
+                        fontSize: 11.5, color: Color(0xFF6B7280))),
+                const Spacer(),
+                Text(_money(d['amount']),
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        color: AppTheme.success,
+                        fontSize: 14)),
+              ],
+            ),
+          ),
+          // Running total
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 6),
+            child: Text('Running total: ${_money(d['running_total'])}',
+                style: const TextStyle(
+                    fontSize: 11,
+                    color: Color(0xFF7C3AED),
+                    fontWeight: FontWeight.w700)),
+          ),
+          // Closed-pin entries for the day
+          ...entries.map((e) {
+            final m = e as Map<String, dynamic>;
+            final c = _catColor[(m['category'] ?? 'standard').toString()] ??
+                AppTheme.primary;
+            return Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+              child: Row(
+                children: [
+                  Container(width: 8, height: 8, decoration: BoxDecoration(
+                      color: c, shape: BoxShape.circle)),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(m['profile_name']?.toString() ?? 'Pin',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontWeight: FontWeight.w600, fontSize: 13)),
+                        Text(m['address']?.toString() ?? '—',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 11, color: Color(0xFF9CA3AF))),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(_money(m['pay_rate']),
+                      style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.success,
+                          fontSize: 13)),
+                ],
+              ),
+            );
+          }),
+        ],
       ),
     );
   }

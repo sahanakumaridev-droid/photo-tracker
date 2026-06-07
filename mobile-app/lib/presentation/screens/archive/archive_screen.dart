@@ -76,9 +76,35 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
       ),
       body: Column(
         children: [
+          // Premium stat header
+          if (!_loading)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF0F172A), Color(0xFF334155)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(18),
+                  boxShadow: const [
+                    BoxShadow(color: Color(0x220F172A), blurRadius: 18, offset: Offset(0, 8)),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    _stat('${_rows.length}', 'Archived jobs', Icons.inventory_2_rounded),
+                    Container(width: 1, height: 38, color: Colors.white24),
+                    _stat('\$$_totalPay', 'Total pay', Icons.payments_rounded),
+                  ],
+                ),
+              ),
+            ),
           // Search (sticky above the list)
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
             child: TextField(
               decoration: InputDecoration(
                 hintText: 'Search archived jobs…',
@@ -173,6 +199,30 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
       ),
     );
   }
+
+  Widget _stat(String value, String label, IconData icon) => Expanded(
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, color: Colors.white70, size: 22),
+            const SizedBox(width: 10),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(value,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 22)),
+                Text(label,
+                    style: const TextStyle(
+                        color: Colors.white60, fontSize: 11)),
+              ],
+            ),
+          ],
+        ),
+      );
 
   Widget _row(Map<String, dynamic> r) {
     final cat = (r['category'] ?? 'standard').toString();
