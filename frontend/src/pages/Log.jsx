@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react'
-import { getLog, exportLogEmail, exportExcel, getRecipients, addRecipient, deleteRecipient } from '../api'
+import { getLog, exportLogEmail, exportExcel, getRecipients, addRecipient, deleteRecipient, updatePayRate, updateStatus } from '../api'
 
 const SERVICE_META = {
   asap:     { label: 'ASAP',     color: '#DC2626' },
@@ -85,6 +85,10 @@ export default function Log() {
   const [showExport,  setShowExport]  = useState(false)
   const [sendingEmail, setSendingEmail] = useState(false)
   const [detailItem,  setDetailItem]  = useState(null)
+  // F7/F10 — pay-rate edit + job-status workflow (feeds payouts/earnings)
+  const [payInput,     setPayInput]     = useState('')
+  const [savingPay,    setSavingPay]    = useState(false)
+  const [savingStatus, setSavingStatus] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -176,6 +180,50 @@ export default function Log() {
 
   const showDetail = (r) => {
     setDetailItem(r)
+    setPayInput(r.pay_rate != null ? String(r.pay_rate) : '')
+  }
+
+  // Reflect an edit in both the open modal and the table row, without a full reload
+  const applyItemUpdate = (id, patch) => {
+    setRows(prev => prev.map(r => (r.id === id ? { ...r, ...patch } : r)))
+    setDetailItem(prev => (prev && prev.id === id ? { ...prev, ...patch } : prev))
+  }
+
+  // F7 — set/edit the per-job pay rate (whole dollars)
+  const handleSavePayRate = async () => {
+    if (!detailItem) return
+    const val = payInput.trim()
+    if (val === '' || isNaN(Number(val)) || Number(val) < 0) {
+      showToast('⚠️ Enter a valid dollar amount'); return
+    }
+    setSavingPay(true)
+    try {
+      const res = await updatePayRate(detailItem.id, Math.round(Number(val)))
+      applyItemUpdate(detailItem.id, { pay_rate: res.pay_rate })
+      showToast(`✅ Pay rate set to $${res.pay_rate}`)
+    } catch (err) {
+      showToast(`❌ ${err.response?.data?.detail || 'Could not save pay rate'}`)
+    } finally { setSavingPay(false) }
+  }
+
+  // F10 — job status workflow; "completed" is what makes pay count toward payouts
+  const handleSetStatus = async (newStatus) => {
+    if (!detailItem) return
+    setSavingStatus(true)
+    try {
+      await updateStatus(detailItem.id, newStatus)
+      applyItemUpdate(detailItem.id, {
+        status: newStatus,
+        completed_at: newStatus === 'completed'
+          ? (detailItem.completed_at || new Date().toISOString())
+          : detailItem.completed_at,
+      })
+      showToast(newStatus === 'completed'
+        ? '✅ Job marked complete — added to payouts'
+        : `Status set to ${newStatus}`)
+    } catch (err) {
+      showToast(`❌ ${err.response?.data?.detail || 'Could not update status'}`)
+    } finally { setSavingStatus(false) }
   }
 
   const resetFilters = () => {
@@ -451,12 +499,59 @@ export default function Log() {
                 ))}
               </div>
               <div style={{ fontSize: 13, color: '#64748b', marginBottom: 12 }}>🕐 {toPST(detailItem.timestamp)}</div>
-              {/* F2/F4 service level + F7 pay rate */}
+              {/* F2/F4 service level */}
               <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
                 {(() => { const m = SERVICE_META[detailItem.category || 'standard'] || SERVICE_META.standard
                   return <span style={{ fontSize: 12, fontWeight: 700, color: '#fff', background: m.color, borderRadius: 8, padding: '4px 10px' }}>{m.label}</span> })()}
-                {detailItem.pay_rate != null && (
-                  <span style={{ fontSize: 12, fontWeight: 700, color: '#16a34a', background: '#dcfce7', borderRadius: 8, padding: '4px 10px' }}>${detailItem.pay_rate}</span>
+              </div>
+
+              {/* F7/F10 — Payout & job-status controls (feeds Earnings/Payouts) */}
+              <div style={{ border: '1px solid #e2e8f0', borderRadius: 12, padding: 14, marginBottom: 16, background: '#fbfcfe' }}>
+                <div style={{ fontWeight: 800, fontSize: 11, color: '#94a3b8', letterSpacing: '0.05em', marginBottom: 10 }}>PAYOUT &amp; STATUS</div>
+
+                {/* Status row */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 13, color: '#64748b' }}>Status</span>
+                  {(() => {
+                    const st = detailItem.status || 'open'
+                    const meta = {
+                      open:      ['Open',      '#d97706', '#fffbeb'],
+                      completed: ['Completed', '#16a34a', '#dcfce7'],
+                      archived:  ['Archived',  '#64748b', '#f1f5f9'],
+                    }[st] || ['Open', '#d97706', '#fffbeb']
+                    return <span style={{ fontSize: 12, fontWeight: 700, color: meta[1], background: meta[2], border: `1px solid ${meta[1]}33`, borderRadius: 8, padding: '4px 10px' }}>{meta[0]}</span>
+                  })()}
+                  {detailItem.status === 'completed' ? (
+                    <button onClick={() => handleSetStatus('open')} disabled={savingStatus}
+                      className="btn btn-outline" style={{ marginLeft: 'auto', fontSize: 12, padding: '7px 14px' }}>
+                      {savingStatus ? 'Saving…' : '↩ Reopen'}
+                    </button>
+                  ) : (
+                    <button onClick={() => handleSetStatus('completed')} disabled={savingStatus}
+                      className="btn btn-green" style={{ marginLeft: 'auto', fontSize: 12, padding: '7px 14px' }}>
+                      {savingStatus ? 'Saving…' : '✓ Mark Complete'}
+                    </button>
+                  )}
+                </div>
+
+                {/* Pay-rate row */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 13, color: '#64748b' }}>Pay rate&nbsp;($)</span>
+                  <input type="number" min="0" step="1" value={payInput}
+                    onChange={e => setPayInput(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleSavePayRate()}
+                    placeholder="0"
+                    style={{ width: 110, marginBottom: 0, fontSize: 13 }} />
+                  <button onClick={handleSavePayRate} disabled={savingPay}
+                    className="btn btn-dark" style={{ fontSize: 12, padding: '7px 14px' }}>
+                    {savingPay ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
+
+                {detailItem.status !== 'completed' && (
+                  <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>
+                    Set a pay rate, then mark the job complete for it to count toward payouts &amp; earnings.
+                  </div>
                 )}
               </div>
               {detailItem.address && (
