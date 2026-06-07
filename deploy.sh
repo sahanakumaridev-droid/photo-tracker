@@ -14,9 +14,17 @@ npm install --legacy-peer-deps
 npm run build
 cd ..
 
-echo "==> Uploading backend files..."
+echo "==> Uploading backend CODE ONLY (preserves prod DB, uploads, .env)..."
 ssh $REMOTE "mkdir -p /opt/photo-tracker/backend /var/www/photo-tracker"
-scp -r backend/* $REMOTE:/opt/photo-tracker/backend/
+# Ship application code ONLY. No --delete, so the server's photo_tracker.db,
+# uploads/, and .env are never touched. Allowlist: .py, requirements.txt, render.yaml.
+rsync -az \
+  --include='*/' \
+  --include='*.py' \
+  --include='requirements.txt' \
+  --include='render.yaml' \
+  --exclude='*' \
+  backend/ $REMOTE:/opt/photo-tracker/backend/
 
 echo "==> Uploading frontend build..."
 scp -r frontend/dist/* $REMOTE:/var/www/photo-tracker/
