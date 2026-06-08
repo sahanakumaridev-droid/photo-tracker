@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef, useContext } from 'react'
 import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
-import { getProfiles, createProfile, uploadPhoto } from '../api'
+import { getProfiles, createProfile, uploadPhoto, getNearby } from '../api'
 import { useNavigate } from 'react-router-dom'
 import LocationSearch from '../components/LocationSearch'
 import { GeoContext } from '../context/GeoContext'
@@ -27,6 +27,65 @@ function toPST(isoString) {
   }) + ' PST'
 }
 
+// F5 — key for the resumable in-progress pin draft (survives navigate/refresh)
+const DRAFT_KEY = 'upload_draft_v1'
+
+// F6 — read the photo's real capture time from EXIF (DateTimeOriginal), so the
+// timestamp reflects when the picture was TAKEN, not when it was uploaded.
+// Falls back to the file's last-modified time, then null (caller uses now()).
+async function readCaptureTime(file) {
+  try {
+    if (!file || !/jpe?g$/i.test(file.type) && !/\.jpe?g$/i.test(file.name)) {
+      return file?.lastModified ? new Date(file.lastModified).toISOString() : null
+    }
+    const buf  = await file.slice(0, 256 * 1024).arrayBuffer()
+    const view = new DataView(buf)
+    if (view.getUint16(0) !== 0xFFD8) return fallback(file)   // not a JPEG
+    let offset = 2
+    while (offset + 4 < view.byteLength) {
+      const marker = view.getUint16(offset)
+      if (marker === 0xFFE1) {                                // APP1 (Exif)
+        const exifStart = offset + 4
+        if (view.getUint32(exifStart) !== 0x45786966) break   // "Exif"
+        const tiff   = exifStart + 6
+        const little = view.getUint16(tiff) === 0x4949
+        const g16 = o => view.getUint16(o, little)
+        const g32 = o => view.getUint32(o, little)
+        const findTag = (dir, tag) => {
+          const n = g16(dir)
+          for (let i = 0; i < n; i++) {
+            const e = dir + 2 + i * 12
+            if (g16(e) === tag) return e
+          }
+          return -1
+        }
+        const ifd0    = tiff + g32(tiff + 4)
+        const exifPtr = findTag(ifd0, 0x8769)
+        if (exifPtr < 0) break
+        const exifIFD = tiff + g32(exifPtr + 8)
+        let dt = findTag(exifIFD, 0x9003)                     // DateTimeOriginal
+        if (dt < 0) dt = findTag(exifIFD, 0x9004)             // DateTimeDigitized
+        if (dt < 0) break
+        const valOff = tiff + g32(dt + 8)
+        let s = ''
+        for (let i = 0; i < 19; i++) s += String.fromCharCode(view.getUint8(valOff + i))
+        const m = s.match(/^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})/)
+        if (m) {
+          const d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])
+          if (!isNaN(d)) return d.toISOString()
+        }
+        break
+      }
+      if ((marker & 0xFF00) !== 0xFF00) break
+      offset += 2 + view.getUint16(offset + 2)                // skip this segment
+    }
+  } catch { /* fall through */ }
+  return fallback(file)
+}
+function fallback(file) {
+  return file?.lastModified ? new Date(file.lastModified).toISOString() : null
+}
+
 export default function Upload({ showToast }) {
   const geo = useContext(GeoContext)   // global geo from App
 
@@ -46,6 +105,15 @@ export default function Upload({ showToast }) {
   const [note,         setNote]         = useState('')
   const [category,     setCategory]     = useState('standard')  // F2/F4 service level
   const [payRate,      setPayRate]      = useState('')          // F7 pay rate
+  const [takenAt,      setTakenAt]      = useState(null)        // F6 capture time (EXIF)
+  // F1 — nearby existing pins (reuse instead of creating a duplicate)
+  const [nearbyPins,   setNearbyPins]   = useState([])
+  const [reuseGroupId, setReuseGroupId] = useState(null)
+  const [nearbyDismissed, setNearbyDismissed] = useState(false)
+  // F5 — resumable draft
+  const [draftRestored, setDraftRestored] = useState(false)
+  const didRestore = useRef(false)
+  const pendingSelectId = useRef(null)
   // inline new profile
   const [showNewProf,  setShowNewProf]  = useState(false)
   const [newProfName,  setNewProfName]  = useState('')
@@ -85,6 +153,81 @@ export default function Upload({ showToast }) {
       reverseGeocode(location.lat, location.lng)
     }
   }, [location])
+
+  // F1 — when location changes, look for an existing pin within 100 ft so the
+  // user can append this attempt instead of creating a duplicate pin.
+  useEffect(() => {
+    if (!location) { setNearbyPins([]); return }
+    let alive = true
+    getNearby(location.lat, location.lng, 100)
+      .then(pins => {
+        if (!alive) return
+        setNearbyPins(Array.isArray(pins) ? pins : [])
+        setNearbyDismissed(false)
+        // If they had picked a reuse target that's no longer nearby, clear it
+        setReuseGroupId(prev =>
+          prev && (pins || []).some(p => p.location_group_id === prev) ? prev : null)
+      })
+      .catch(() => { if (alive) setNearbyPins([]) })
+    return () => { alive = false }
+  }, [location && location.lat, location && location.lng])
+
+  // F5 — restore an in-progress draft once (note/profile/category/pay/location).
+  // The image File can't be serialized, so only the metadata is restored.
+  useEffect(() => {
+    if (didRestore.current) return
+    didRestore.current = true
+    try {
+      const raw = localStorage.getItem(DRAFT_KEY)
+      if (!raw) return
+      const d = JSON.parse(raw)
+      const hasContent = d && (d.note || d.payRate || d.address ||
+        (d.category && d.category !== 'standard') || d.selectedId || d.location)
+      if (!hasContent) return
+      if (d.note)     setNote(d.note)
+      if (d.category) setCategory(d.category)
+      if (d.payRate)  setPayRate(d.payRate)
+      if (d.address)  setAddress(d.address)
+      if (d.location) setLocation(d.location)
+      if (d.selectedId) {
+        // profiles may not be loaded yet; resolve on next profiles update
+        pendingSelectId.current = d.selectedId
+      }
+      setDraftRestored(true)
+    } catch { /* ignore */ }
+  }, [])
+
+  // Resolve a restored profile id once profiles have loaded
+  useEffect(() => {
+    if (pendingSelectId.current && profiles.length) {
+      const p = profiles.find(x => String(x.id) === String(pendingSelectId.current))
+      if (p) setSelected(p)
+      pendingSelectId.current = null
+    }
+  }, [profiles])
+
+  // F5 — persist the draft whenever meaningful fields change
+  useEffect(() => {
+    if (!didRestore.current) return
+    const draft = {
+      note, category, payRate, address,
+      selectedId: selected ? selected.id : null,
+      location,
+    }
+    const empty = !note && !payRate && !address && category === 'standard' &&
+      !selected && !location
+    try {
+      if (empty) localStorage.removeItem(DRAFT_KEY)
+      else localStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
+    } catch { /* ignore */ }
+  }, [note, category, payRate, address, selected, location])
+
+  const clearDraft = () => {
+    try { localStorage.removeItem(DRAFT_KEY) } catch {}
+    setNote(''); setCategory('standard'); setPayRate('')
+    setSelected(null); setFile(null); setPreview(null); setTakenAt(null)
+    setDraftRestored(false)
+  }
 
   // Reverse geocode to get human-readable address
   const reverseGeocode = async (lat, lng) => {
@@ -169,7 +312,13 @@ export default function Upload({ showToast }) {
     setLocWarn(null)
   }
 
-  const pickFile = (f) => { setFile(f); setPreview(URL.createObjectURL(f)) }
+  const pickFile = async (f) => {
+    setFile(f)
+    setPreview(URL.createObjectURL(f))
+    // F6 — lock timestamp to the photo's actual capture time (EXIF), not upload time
+    const captured = await readCaptureTime(f)
+    setTakenAt(captured)
+  }
 
   // Create new profile inline
   const handleCreateProfile = async (e) => {
@@ -203,13 +352,16 @@ export default function Upload({ showToast }) {
     fd.append('note',       note)
     fd.append('category',   category)                          // F2/F4 service level
     if (payRate !== '') fd.append('pay_rate', payRate)         // F7 pay rate
-    // F6: lock the timestamp to capture time (now), sent as ISO to the backend
-    fd.append('taken_at',   new Date().toISOString())
+    // F6: send the photo's real capture time (EXIF); fall back to now
+    fd.append('taken_at',   takenAt || new Date().toISOString())
+    // F1: append to an existing pin instead of creating a duplicate
+    if (reuseGroupId) fd.append('location_group_id', String(reuseGroupId))
     try {
       await uploadPhoto(fd)
+      try { localStorage.removeItem(DRAFT_KEY) } catch {}      // F5: draft consumed
       // Small delay to ensure backend has committed before dashboard re-fetches
       await new Promise(r => setTimeout(r, 300))
-      showToast('Photo uploaded ✓')
+      showToast(reuseGroupId ? 'Attempt added to existing pin ✓' : 'Photo uploaded ✓')
       navigate('/')
     } catch { showToast('Upload failed', 'error') }
     setUploading(false)
@@ -237,6 +389,21 @@ export default function Upload({ showToast }) {
       </div>
 
       <div style={{flex:1, overflowY:'auto', padding:'24px 32px'}}>
+
+      {/* F5 — resumed draft banner */}
+      {draftRestored && (
+        <div style={{
+          display:'flex', alignItems:'center', gap:10, marginBottom:16,
+          background:'rgba(99,102,241,0.10)', border:'1px solid rgba(99,102,241,0.3)',
+          borderRadius:10, padding:'10px 14px', fontSize:13,
+        }}>
+          <span style={{fontSize:16}}>💾</span>
+          <span style={{flex:1}}>Resumed your in-progress pin. Re-select the photo (images can't be auto-restored).</span>
+          <button className="btn btn-outline" style={{fontSize:12, padding:'5px 12px'}}
+            onClick={clearDraft}>Start fresh</button>
+        </div>
+      )}
+
       <div className="grid-2">
 
         {/* LEFT — profile */}
@@ -413,7 +580,54 @@ export default function Upload({ showToast }) {
                 <div className="loc-row" style={{fontFamily:'Geist Mono, monospace', fontSize:11}}>
                   {location.lat.toFixed(6)}, {location.lng.toFixed(6)}
                 </div>
-                <div className="loc-row">🕐 {toPST(geo.timestamp || new Date().toISOString())}</div>
+                <div className="loc-row">
+                  🕐 {toPST(takenAt || geo.timestamp || new Date().toISOString())}
+                  {takenAt && <span style={{marginLeft:6, fontSize:10, color:'#10b981', fontWeight:700}}>· from photo</span>}
+                </div>
+              </div>
+            )}
+
+            {/* F1 — reuse an existing pin within 100 ft instead of duplicating */}
+            {nearbyPins.length > 0 && !nearbyDismissed && (
+              <div style={{
+                marginTop:10, background:'rgba(202,138,4,0.10)',
+                border:'1px solid rgba(202,138,4,0.35)', borderRadius:10, padding:'12px 14px',
+              }}>
+                <div style={{fontSize:13, fontWeight:700, marginBottom:6, color:'#92400e'}}>
+                  📍 {nearbyPins.length} existing pin{nearbyPins.length > 1 ? 's' : ''} within 100&nbsp;ft
+                </div>
+                <div style={{fontSize:12, color:'#78716c', marginBottom:10}}>
+                  Add this photo as another attempt to an existing pin instead of creating a duplicate?
+                </div>
+                <div style={{display:'flex', flexDirection:'column', gap:6}}>
+                  {nearbyPins.slice(0, 4).map(p => {
+                    const sel = reuseGroupId === p.location_group_id
+                    return (
+                      <button key={p.location_group_id} type="button"
+                        onClick={() => setReuseGroupId(sel ? null : p.location_group_id)}
+                        style={{
+                          textAlign:'left', display:'flex', alignItems:'center', gap:8,
+                          padding:'8px 10px', borderRadius:8, cursor:'pointer', fontSize:12,
+                          border:'1px solid ' + (sel ? '#16a34a' : 'rgba(0,0,0,0.12)'),
+                          background: sel ? 'rgba(22,163,74,0.12)' : '#fff',
+                        }}>
+                        <span style={{fontWeight:800, color: sel ? '#16a34a' : '#94a3b8'}}>{sel ? '✓' : '+'}</span>
+                        <span style={{flex:1}}>
+                          <span style={{fontWeight:600}}>{p.address || `${p.latitude.toFixed(5)}, ${p.longitude.toFixed(5)}`}</span>
+                          <span style={{color:'#94a3b8'}}> · {p.attempt_count} attempt{p.attempt_count !== 1 ? 's' : ''} · {p.distance_ft} ft</span>
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+                <div style={{display:'flex', gap:8, marginTop:10}}>
+                  {reuseGroupId
+                    ? <span style={{fontSize:11.5, color:'#16a34a', fontWeight:700, alignSelf:'center'}}>
+                        ✓ This photo will be added to the selected pin
+                      </span>
+                    : <button className="btn btn-outline" style={{fontSize:12, padding:'5px 12px'}}
+                        onClick={() => setNearbyDismissed(true)}>Create a new pin instead</button>}
+                </div>
               </div>
             )}
 

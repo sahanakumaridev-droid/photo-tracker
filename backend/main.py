@@ -106,6 +106,7 @@ class Photo(Base):
     taken_at           = Column(DateTime, nullable=True)  # device capture time
     original_timestamp = Column(DateTime, nullable=True)  # immutable copy of taken_at
     edited_timestamp   = Column(DateTime, nullable=True)  # last manual edit
+    created_at         = Column(DateTime, default=datetime.utcnow)  # pin-creation time (anchors 10-min edit window)
 
     # ── F7: pay rate (whole dollars) ──
     pay_rate = Column(Integer, nullable=True)
@@ -193,6 +194,7 @@ def _ensure_columns():
         "status":             "VARCHAR NOT NULL DEFAULT 'open'",
         "completed_at":       "DATETIME",
         "user_id":            "INTEGER",
+        "created_at":         "DATETIME",
     }
     with engine.connect() as conn:
         for col, ddl in new_cols.items():
@@ -208,6 +210,11 @@ def _ensure_columns():
             "UPDATE photos SET location_group_id = id WHERE location_group_id IS NULL"))
         conn.execute(text(
             "UPDATE photos SET status = 'open' WHERE status IS NULL"))
+        # Legacy rows: anchor the edit window to their capture time so old pins
+        # stay locked (new rows get created_at = insertion time).
+        conn.execute(text(
+            "UPDATE photos SET created_at = COALESCE(original_timestamp, timestamp) "
+            "WHERE created_at IS NULL"))
         conn.commit()
 
 
@@ -242,6 +249,7 @@ def _photo_dict(ph):
         "taken_at":           _to_pst_iso(ph.taken_at),
         "original_timestamp": _to_pst_iso(ph.original_timestamp),
         "edited_timestamp":   _to_pst_iso(ph.edited_timestamp),
+        "created_at":         _to_pst_iso(ph.created_at),
         "latitude":           ph.latitude,
         "longitude":          ph.longitude,
         "zip_code":           ph.zip_code,
@@ -971,8 +979,9 @@ async def edit_timestamp(photo_id: int, data: dict = Body(...)):
     if not photo:
         db.close()
         raise HTTPException(status_code=404, detail="Photo not found")
-    # Window is measured from original capture/creation time
-    anchor = photo.original_timestamp or photo.timestamp or datetime.utcnow()
+    # Window is measured from PIN-CREATION time (not capture time): the user
+    # has 10 min after creating the pin to correct the timestamp.
+    anchor = photo.created_at or photo.original_timestamp or photo.timestamp or datetime.utcnow()
     age_min = (datetime.utcnow() - anchor).total_seconds() / 60
     if age_min > _EDIT_WINDOW_MIN:
         db.close()

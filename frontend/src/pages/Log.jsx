@@ -1,5 +1,14 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react'
-import { getLog, exportLogEmail, exportExcel, getRecipients, addRecipient, deleteRecipient, updatePayRate, updateStatus } from '../api'
+import { getLog, exportLogEmail, exportExcel, getRecipients, addRecipient, deleteRecipient, updatePayRate, updateStatus, editTimestamp } from '../api'
+
+// Build a <input type="datetime-local"> value (YYYY-MM-DDTHH:MM) from an ISO string
+function toLocalInput(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (isNaN(d)) return ''
+  const pad = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
 
 const SERVICE_META = {
   asap:     { label: 'ASAP',     color: '#DC2626' },
@@ -89,6 +98,10 @@ export default function Log() {
   const [payInput,     setPayInput]     = useState('')
   const [savingPay,    setSavingPay]    = useState(false)
   const [savingStatus, setSavingStatus] = useState(false)
+  // F6 — timestamp edit (within 10-min window of original capture)
+  const [editingTs,    setEditingTs]    = useState(false)
+  const [tsInput,      setTsInput]      = useState('')
+  const [savingTs,     setSavingTs]     = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -181,6 +194,8 @@ export default function Log() {
   const showDetail = (r) => {
     setDetailItem(r)
     setPayInput(r.pay_rate != null ? String(r.pay_rate) : '')
+    setEditingTs(false)
+    setTsInput(toLocalInput(r.timestamp))
   }
 
   // Reflect an edit in both the open modal and the table row, without a full reload
@@ -224,6 +239,32 @@ export default function Log() {
     } catch (err) {
       showToast(`❌ ${err.response?.data?.detail || 'Could not update status'}`)
     } finally { setSavingStatus(false) }
+  }
+
+  // F6 — is the photo still inside the 10-minute timestamp-edit window?
+  const tsWithinWindow = (item) => {
+    if (!item) return false
+    // Window is anchored to pin-CREATION time (created_at), not capture time
+    const anchor = new Date(item.created_at || item.original_timestamp || item.timestamp)
+    if (isNaN(anchor)) return false
+    return (Date.now() - anchor.getTime()) <= 10 * 60 * 1000
+  }
+
+  const handleSaveTimestamp = async () => {
+    if (!detailItem || !tsInput) return
+    setSavingTs(true)
+    try {
+      const iso = new Date(tsInput).toISOString()
+      const res = await editTimestamp(detailItem.id, iso)
+      applyItemUpdate(detailItem.id, { timestamp: res.timestamp, edited_timestamp: res.timestamp })
+      setEditingTs(false)
+      showToast('✅ Timestamp updated')
+    } catch (err) {
+      const msg = err.response?.status === 423
+        ? '🔒 Edit window (10 min) has passed — timestamp locked'
+        : (err.response?.data?.detail || 'Could not update timestamp')
+      showToast(`❌ ${msg}`)
+    } finally { setSavingTs(false) }
   }
 
   const resetFilters = () => {
@@ -498,7 +539,42 @@ export default function Log() {
                   <span key={i} style={{ marginRight: 8 }}>{p.name}{i < (detailItem.profiles?.length || 1) - 1 ? ',' : ''}</span>
                 ))}
               </div>
-              <div style={{ fontSize: 13, color: '#64748b', marginBottom: 12 }}>🕐 {toPST(detailItem.timestamp)}</div>
+              {/* F6 — capture timestamp + 10-min edit window */}
+              <div style={{ marginBottom: 12 }}>
+                {!editingTs ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 13, color: '#64748b' }}>🕐 {toPST(detailItem.timestamp)}</span>
+                    {detailItem.edited_timestamp && (
+                      <span style={{ fontSize: 10, fontWeight: 700, color: '#7C3AED', background: '#ede9fe', borderRadius: 6, padding: '2px 6px' }}>edited</span>
+                    )}
+                    {tsWithinWindow(detailItem) ? (
+                      <button onClick={() => { setTsInput(toLocalInput(detailItem.timestamp)); setEditingTs(true) }}
+                        className="btn btn-outline" style={{ fontSize: 11, padding: '4px 10px' }}>
+                        ✏️ Edit time
+                      </button>
+                    ) : (
+                      <span style={{ fontSize: 11, color: '#94a3b8' }}>🔒 locked</span>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <input type="datetime-local" value={tsInput}
+                      onChange={e => setTsInput(e.target.value)}
+                      style={{ marginBottom: 0, fontSize: 13, padding: '6px 8px' }} />
+                    <button onClick={handleSaveTimestamp} disabled={savingTs}
+                      className="btn btn-dark" style={{ fontSize: 12, padding: '6px 12px' }}>
+                      {savingTs ? 'Saving…' : 'Save'}
+                    </button>
+                    <button onClick={() => setEditingTs(false)}
+                      className="btn btn-outline" style={{ fontSize: 12, padding: '6px 12px' }}>
+                      Cancel
+                    </button>
+                  </div>
+                )}
+                <div style={{ fontSize: 10.5, color: '#94a3b8', marginTop: 4 }}>
+                  Capture time (from photo) · editable within 10 min of creation
+                </div>
+              </div>
               {/* F2/F4 service level */}
               <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
                 {(() => { const m = SERVICE_META[detailItem.category || 'standard'] || SERVICE_META.standard

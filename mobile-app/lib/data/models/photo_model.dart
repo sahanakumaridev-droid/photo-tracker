@@ -27,6 +27,7 @@ class PhotoModel {
     this.locationGroupId,
     this.userId,
     this.completedAt,
+    this.createdAt,
   });
 
   factory PhotoModel.fromJson(Map<String, dynamic> json) {
@@ -70,6 +71,9 @@ class PhotoModel {
   final int? userId;                  // F8/F9
   @JsonKey(name: 'completed_at')
   final String? completedAt;          // F8/F9
+  // F6: pin-creation time (anchors 10-min edit window)
+  @JsonKey(name: 'created_at')
+  final String? createdAt;
 
   Map<String, dynamic> toJson() => _$PhotoModelToJson(this);
 
@@ -94,6 +98,7 @@ class PhotoModel {
     int? locationGroupId,
     int? userId,
     String? completedAt,
+    String? createdAt,
   }) =>
       PhotoModel(
         id: id ?? this.id,
@@ -116,5 +121,6 @@ class PhotoModel {
         locationGroupId: locationGroupId ?? this.locationGroupId,
         userId: userId ?? this.userId,
         completedAt: completedAt ?? this.completedAt,
+        createdAt: createdAt ?? this.createdAt,
       );
 }

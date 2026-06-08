@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:exif/exif.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -373,6 +374,29 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     }
   }
 
+  // F6 — read the photo's real capture time from EXIF (DateTimeOriginal) so the
+  // timestamp reflects when the picture was TAKEN, not when it was uploaded.
+  Future<String> _captureTimeIso(File f) async {
+    try {
+      final tags = await readExifFromBytes(await f.readAsBytes());
+      final tag = tags['EXIF DateTimeOriginal'] ??
+          tags['EXIF DateTimeDigitized'] ??
+          tags['Image DateTime'];
+      if (tag != null) {
+        final m = RegExp(r'^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})')
+            .firstMatch(tag.printable);
+        if (m != null) {
+          final local = DateTime(
+            int.parse(m[1]!), int.parse(m[2]!), int.parse(m[3]!),
+            int.parse(m[4]!), int.parse(m[5]!), int.parse(m[6]!),
+          );
+          return local.toUtc().toIso8601String();
+        }
+      }
+    } catch (_) {/* fall through to now */}
+    return DateTime.now().toUtc().toIso8601String();
+  }
+
   Future<void> _openPicker(ImageSource source) async {
     try {
       final picked = await _imagePicker.pickImage(
@@ -384,10 +408,12 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
         HapticFeedback.mediumImpact();
         setState(() {
           _selectedImage = File(picked.path);
-          // F6: lock the timestamp to the moment the photo was taken/picked,
-          // NOT upload time.
+          // F6: provisional capture time; refined from EXIF below.
           _takenAt = DateTime.now().toUtc().toIso8601String();
         });
+        // F6: prefer the photo's real EXIF capture time over upload time
+        final captured = await _captureTimeIso(File(picked.path));
+        if (mounted) setState(() => _takenAt = captured);
       }
     } on PlatformException catch (e) {
       debugPrint('[Picker] PlatformException: ${e.code} – ${e.message}');

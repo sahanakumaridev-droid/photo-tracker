@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -212,26 +211,6 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     }
   }
 
-  String _locationLabel(LogEntryModel log) {
-    // Prefer full human-readable address (with ZIP inline)
-    if (log.address != null && log.address!.isNotEmpty) {
-      final addr = log.address!;
-      // Append ZIP inline if not already present
-      if (log.zipCode != null &&
-          log.zipCode!.isNotEmpty &&
-          !addr.contains(log.zipCode!)) {
-        return '$addr, ${log.zipCode}';
-      }
-      return addr;
-    }
-    // Fall back to ZIP
-    if (log.zipCode != null && log.zipCode!.isNotEmpty) {
-      return 'ZIP ${log.zipCode}';
-    }
-    // Last resort: coordinates
-    return '${log.latitude.toStringAsFixed(4)}, ${log.longitude.toStringAsFixed(4)}';
-  }
-
   /// Always returns the raw lat/lng string for display alongside the address.
   String _coordsLabel(LogEntryModel log) =>
       '${log.latitude.toStringAsFixed(6)}, ${log.longitude.toStringAsFixed(6)}';
@@ -406,51 +385,6 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     }
   }
 
-  /// Share as plain text (profile names, times, locations)
-  Future<void> _shareLog(List<LogEntryModel> logs) async {
-    if (logs.isEmpty) {
-      _showSnack('No records to share — adjust your filters first.');
-      return;
-    }
-    HapticFeedback.mediumImpact();
-    try {
-      final dateStr = DateFormat('MMM d, yyyy').format(DateTime.now());
-      final lines   = logs.take(50).map((log) {
-        final profiles = (log.profiles != null && log.profiles!.isNotEmpty)
-            ? log.profiles!.map((p) => p.name).join(', ')
-            : (log.profileName ?? 'Unknown');
-        final time = log.timestamp != null
-            ? DateFormat('MMM d · h:mm a')
-                .format(DateTime.parse(log.timestamp!).toLocal())
-            : '';
-        final loc = _locationLabel(log);
-        final svc = _svcLabel(log.serviceType);
-        return '• $profiles  [$svc]\n  $time  ·  $loc'
-            '${log.note != null && log.note!.isNotEmpty ? '\n  Note: ${log.note}' : ''}';
-      }).join('\n\n');
-
-      final text = 'GeoTagging Log — $dateStr\n'
-          '${logs.length} record${logs.length == 1 ? '' : 's'}\n'
-          '─────────────────────\n\n$lines'
-          '${logs.length > 50 ? '\n\n…and ${logs.length - 50} more records. Download CSV for full list.' : ''}';
-
-      final result = await Share.share(
-        text,
-        subject: 'GeoTag Log — $dateStr',
-        sharePositionOrigin: _shareOrigin(),
-      );
-      if (result.status == ShareResultStatus.success) {
-        _showSnack('✓ Shared successfully');
-      }
-    } on PlatformException catch (e) {
-      if (e.code != 'cancel') {
-        _showSnack('Share failed: ${e.message ?? 'Please try again.'}');
-      }
-    } catch (_) {
-      // dismissed or cancelled — no error shown
-    }
-  }
-
   void _showSnack(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -462,177 +396,6 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
         duration: const Duration(seconds: 3),
       ),
     );
-  }
-
-  // ── Email CSV ─────────────────────────────────────────────────────────────
-
-  /// Sends the CSV export via the backend SMTP endpoint.
-  /// Shows a dialog to enter recipient email, then POSTs to /api/export/email.
-  /// Falls back to share sheet if backend SMTP is not configured.
-  Future<void> _emailCsv(List<LogEntryModel> logs) async {
-    if (logs.isEmpty) {
-      _showSnack('No records to export — adjust your filters first.');
-      return;
-    }
-
-    // ── Ask for recipient email ───────────────────────────────────────
-    final emailCtrl = TextEditingController();
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        backgroundColor: _surface,
-        title: const Row(
-          children: [
-            Icon(Icons.email_rounded, color: _accent, size: 22),
-            SizedBox(width: 10),
-            Text(
-              'Send CSV by Email',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
-                color: _ink,
-                letterSpacing: -0.3,
-              ),
-            ),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '${logs.length} record${logs.length == 1 ? '' : 's'} will be sent as a CSV.',
-              style: const TextStyle(fontSize: 13, color: _inkMuted),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: emailCtrl,
-              keyboardType: TextInputType.emailAddress,
-              autofocus: true,
-              textInputAction: TextInputAction.done,
-              onSubmitted: (_) => Navigator.pop(ctx, true),
-              decoration: InputDecoration(
-                labelText: 'Recipient email',
-                hintText: 'e.g. don@example.com',
-                prefixIcon: const Icon(Icons.alternate_email_rounded,
-                    size: 18, color: _inkSubtle),
-                filled: true,
-                fillColor: _canvas,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(color: _accent, width: 1.5),
-                ),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel', style: TextStyle(color: _inkSubtle)),
-          ),
-          ElevatedButton.icon(
-            onPressed: () => Navigator.pop(ctx, true),
-            icon: const Icon(Icons.send_rounded, size: 16),
-            label: const Text('Send'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: _accent,
-              foregroundColor: Colors.white,
-              elevation: 0,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12)),
-            ),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed != true) return;
-
-    final toEmail = emailCtrl.text.trim();
-    if (toEmail.isEmpty || !toEmail.contains('@')) {
-      _showSnack('Please enter a valid email address.');
-      return;
-    }
-
-    HapticFeedback.mediumImpact();
-
-    // Show sending indicator
-    _showSnack('Sending email…');
-
-    try {
-      // ── Build records payload ─────────────────────────────────────
-      final records = logs.map((log) => {
-        'id': log.id,
-        'timestamp': log.timestamp,
-        'profile_name': log.profileName,
-        'profiles': (log.profiles ?? [])
-            .map((p) => {'id': p.id, 'name': p.name})
-            .toList(),
-        'service_type': log.serviceType,
-        'address': log.address,
-        'zip_code': log.zipCode,
-        'latitude': log.latitude,
-        'longitude': log.longitude,
-        'note': log.note,
-      }).toList();
-
-      // ── POST to backend /api/export/email ─────────────────────────
-      final dio = Dio(BaseOptions(
-        baseUrl: AppConfig.apiBaseUrl,
-        connectTimeout: const Duration(seconds: 15),
-        receiveTimeout: const Duration(seconds: 15),
-      ));
-
-      final response = await dio.post(
-        '/api/export/email',
-        data: {'to': toEmail, 'records': records},
-        options: Options(contentType: 'application/json'),
-      );
-
-      if (!mounted) return;
-
-      final data = response.data as Map<String, dynamic>;
-      final smtpConfigured = !(data['message']
-              ?.toString()
-              .contains('SMTP not configured') ??
-          false);
-
-      if (smtpConfigured) {
-        // ── SMTP sent successfully ────────────────────────────────
-        _showSnack('✓ Email sent to $toEmail — ${logs.length} records');
-      } else {
-        // ── SMTP not configured — fall back to share sheet ────────
-        if (!mounted) return;
-        final dateStr = DateFormat('MMM d, yyyy').format(DateTime.now());
-        final csvPath = await _writeCsvFile(logs);
-        await Share.shareXFiles(
-          [XFile(csvPath,
-              mimeType: 'text/csv',
-              name: 'geotag-log-${DateFormat('yyyy-MM-dd').format(DateTime.now())}.csv')],
-          subject: 'GeoTagging Log Export — $dateStr',
-          sharePositionOrigin: _shareOrigin(),
-        );
-        _showSnack('SMTP not set up — use share sheet to send via Mail');
-      }
-    } on DioException catch (e) {
-      if (!mounted) return;
-      final msg = e.response?.data?['detail']?.toString() ??
-          e.message ??
-          'Network error';
-      _showSnack('Export failed: $msg');
-    } on PlatformException catch (e) {
-      if (e.code != 'cancel' && mounted) {
-        _showSnack('Export failed: ${e.message ?? 'Please try again.'}');
-      }
-    } catch (e) {
-      if (mounted) _showSnack('Export failed: $e');
-    }
   }
 
   // ── Export sheet — multi-select profiles ─────────────────────────────────
@@ -789,81 +552,9 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                 const SizedBox(height: 16),
                 const Divider(color: _separator),
                 const SizedBox(height: 12),
-                // ── Export buttons — always pinned at bottom ─────────
-                // Row 1: Share + Download CSV
-                Row(children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: exportLogs.isEmpty
-                          ? null
-                          : () {
-                              setState(() => _selectedExportProfileIds =
-                                  tempSelected);
-                              Navigator.pop(ctx);
-                              _shareLog(exportLogs);
-                            },
-                      icon: const Icon(Icons.ios_share_rounded, size: 16),
-                      label: const Text('Share'),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: _accent,
-                        side: const BorderSide(color: _accent),
-                        padding: const EdgeInsets.symmetric(vertical: 13),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: exportLogs.isEmpty
-                          ? null
-                          : () {
-                              setState(() => _selectedExportProfileIds =
-                                  tempSelected);
-                              Navigator.pop(ctx);
-                              _downloadCsv(exportLogs);
-                            },
-                      icon: const Icon(Icons.download_rounded, size: 16),
-                      label: const Text('Download CSV'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: _accent,
-                        foregroundColor: Colors.white,
-                        elevation: 0,
-                        padding: const EdgeInsets.symmetric(vertical: 13),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
-                      ),
-                    ),
-                  ),
-                ]),
-                const SizedBox(height: 10),
-                // Row 2: Email CSV (full width)
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: exportLogs.isEmpty
-                        ? null
-                        : () {
-                            setState(() => _selectedExportProfileIds =
-                                tempSelected);
-                            Navigator.pop(ctx);
-                            _emailCsv(exportLogs);
-                          },
-                    icon: const Icon(Icons.email_rounded, size: 16),
-                    label: const Text('Email CSV'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF6B7280),
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 10),
-                // Row 3: F11 — Excel → saved recipients (full width)
+                // ── Export — single option: Excel spreadsheet → email ──
+                // (F11) Per spec, the only export path is an Excel sheet sent to
+                // a saved/chosen recipient.
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
@@ -886,6 +577,12 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                           borderRadius: BorderRadius.circular(12)),
                     ),
                   ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Records are exported as an Excel spreadsheet to your chosen email.',
+                  style: TextStyle(fontSize: 11, color: _inkSubtle),
+                  textAlign: TextAlign.center,
                 ),
               ],
             ),
@@ -936,12 +633,23 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                 children: recipients.map((r) {
                   final email = r['email'].toString();
                   final sel = selected.contains(email);
-                  return FilterChip(
+                  return InputChip(
                     label: Text(r['label']?.toString() ?? email),
                     selected: sel,
                     onSelected: (_) => ss(() {
                       sel ? selected.remove(email) : selected.add(email);
                     }),
+                    onDeleted: () async {
+                      final id = r['id'];
+                      if (id is int) {
+                        try { await api.deleteRecipient(id); } catch (_) {}
+                      }
+                      ss(() {
+                        recipients.remove(r);
+                        selected.remove(email);
+                      });
+                    },
+                    deleteIcon: const Icon(Icons.close, size: 16),
                   );
                 }).toList(),
               ),

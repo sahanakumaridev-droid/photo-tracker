@@ -128,3 +128,11 @@ final toggleFavoriteProvider =
   ref.invalidate(photosProvider);
   return result;
 });
+
+/// F6 — edit capture timestamp (server enforces 10-min window)
+final editTimestampProvider =
+    FutureProvider.family<void, (int, String)>((ref, args) async {
+  final repository = ref.watch(photoRepositoryProvider);
+  await repository.editTimestamp(args.$1, args.$2);
+  ref.invalidate(photosProvider);
+});

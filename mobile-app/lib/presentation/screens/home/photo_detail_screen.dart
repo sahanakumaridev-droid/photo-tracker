@@ -116,6 +116,60 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
   String _fullUrl(String url) =>
       url.startsWith('http') ? url : '${AppConfig.apiBaseUrl}$url';
 
+  // F6 — is the photo still inside the 10-min edit window (anchored to creation)?
+  bool _withinTsWindow(PhotoModel photo) {
+    final anchor = photo.createdAt ?? photo.takenAt ?? photo.timestamp;
+    if (anchor == null) return false;
+    try {
+      final created = DateTime.parse(anchor).toUtc();
+      return DateTime.now().toUtc().difference(created) <=
+          const Duration(minutes: 10);
+    } on FormatException {
+      return false;
+    }
+  }
+
+  // F6 — pick a new date + time and save it (server re-checks the 10-min window)
+  Future<void> _editTimestamp(PhotoModel photo) async {
+    HapticFeedback.lightImpact();
+    final current =
+        DateTime.tryParse(photo.timestamp ?? '')?.toLocal() ?? DateTime.now();
+    final date = await showDatePicker(
+      context: context,
+      initialDate: current,
+      firstDate: DateTime(current.year - 1),
+      lastDate: DateTime.now().add(const Duration(days: 1)),
+    );
+    if (date == null || !mounted) return;
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(current),
+    );
+    if (time == null || !mounted) return;
+    final picked = DateTime(
+        date.year, date.month, date.day, time.hour, time.minute);
+    try {
+      await ref.read(
+        editTimestampProvider((photo.id, picked.toUtc().toIso8601String()))
+            .future,
+      );
+      ref.invalidate(photosProvider);
+      if (mounted) {
+        HapticFeedback.heavyImpact();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Timestamp updated')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(e.toString().replaceAll('Exception: ', '')),
+          backgroundColor: const Color(0xFFDC2626),
+        ));
+      }
+    }
+  }
+
   PhotoModel? _findPhoto(List<PhotoModel> photos) {
     final matches = photos.where((p) => p.id == widget.photoId);
     return matches.isEmpty ? null : matches.first;
@@ -493,6 +547,24 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                     label: 'Captured',
                     value: _formatTs(photo.timestamp),
                     iconColor: _accent,
+                    trailing: _withinTsWindow(photo)
+                        ? TextButton.icon(
+                            onPressed: () => _editTimestamp(photo),
+                            icon: const Icon(Icons.edit_rounded, size: 15),
+                            label: const Text('Edit'),
+                            style: TextButton.styleFrom(
+                              foregroundColor: _accent,
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                              minimumSize: const Size(0, 0),
+                              tapTargetSize:
+                                  MaterialTapTargetSize.shrinkWrap,
+                            ),
+                          )
+                        : const Padding(
+                            padding: EdgeInsets.only(top: 2),
+                            child: Icon(Icons.lock_outline_rounded,
+                                size: 15, color: _inkSubtle),
+                          ),
                   ),
                   const SizedBox(height: 10),
 
@@ -609,6 +681,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
     required String label,
     required String value,
     required Color iconColor,
+    Widget? trailing,
   }) =>
       Container(
         padding: const EdgeInsets.all(16),
@@ -661,6 +734,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                 ],
               ),
             ),
+            if (trailing != null) trailing,
           ],
         ),
       );

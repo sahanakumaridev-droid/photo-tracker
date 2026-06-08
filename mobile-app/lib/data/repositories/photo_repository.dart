@@ -198,6 +198,16 @@ class PhotoRepository {
     }
   }
 
+  /// F6 — edit the capture timestamp (server enforces the 10-min window with 423)
+  Future<void> editTimestamp(int photoId, String isoTimestamp) async {
+    try {
+      await _dio.patch('/api/photos/$photoId/timestamp',
+          data: {'timestamp': isoTimestamp});
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
   Exception _handleError(DioException e) {
     // Never expose raw DioException or technical strings to the user.
     if (e.response != null) {
@@ -222,6 +232,9 @@ class PhotoRepository {
           return Exception('Photo is too large. Please choose a smaller image.');
         case 422:
           return Exception(detail ?? 'Upload failed — missing required information.');
+        case 423:
+          return Exception(
+              detail ?? 'Timestamp locked — the 10-minute edit window has passed.');
         case 429:
           return Exception('Too many requests. Please wait a moment and try again.');
         case 500:

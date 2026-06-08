@@ -87,6 +87,7 @@ export default function Dashboard() {
   const [filterProfile, setFilterProfile] = useState('all')
   const [mapUpload,     setMapUpload]     = useState(null)
   const [search,        setSearch]        = useState('')
+  const [svcLevels,     setSvcLevels]     = useState(() => new Set())  // F2/F3 service-level filter (empty = all)
 
   const { accentPreset, setSettings } = useTheme()
   const geo = useContext(GeoContext)
@@ -135,12 +136,21 @@ export default function Dashboard() {
     ? [geo.location.lat, geo.location.lng]
     : [32.7157, -117.1611]
 
-  const mapPhotos = filterProfile === 'all'
+  // F2/F3 — service-level filter (empty set = show all)
+  const matchLevel = (p) => svcLevels.size === 0 || svcLevels.has(p.category || 'standard')
+  const toggleLevel = (k) => setSvcLevels(prev => {
+    const next = new Set(prev)
+    next.has(k) ? next.delete(k) : next.add(k)
+    return next
+  })
+
+  const mapPhotos = (filterProfile === 'all'
     ? photos
     : photos.filter(p => String(p.profile_id) === String(filterProfile))
+  ).filter(matchLevel)
 
   const filteredPhotos = photos.filter(p =>
-    !search || p.profile_name?.toLowerCase().includes(search.toLowerCase())
+    (!search || p.profile_name?.toLowerCase().includes(search.toLowerCase())) && matchLevel(p)
   )
 
   const STATS = [
@@ -251,9 +261,44 @@ export default function Dashboard() {
           setFilterProfile={setFilterProfile}
         />
 
-        <div className="dk-legend">
-          <span className="dk-legend-item"><span className="dk-legend-dot" style={{background:'#f43f5e', boxShadow:'0 0 6px #f43f5e'}}/>Rush</span>
-          <span className="dk-legend-item"><span className="dk-legend-dot" style={{background:'#10b981', boxShadow:'0 0 6px #10b981'}}/>Standard</span>
+        {/* F2/F3 — service-level filter (map + grid/list) */}
+        <div className="dk-filter-pills" style={{display:'flex', gap:6, flexWrap:'wrap'}}>
+          {[
+            { k:'asap',     l:'ASAP',     c:'#DC2626' },
+            { k:'next_day', l:'Next Day', c:'#CA8A04' },
+            { k:'standard', l:'Standard', c:'#059669' },
+            { k:'special',  l:'Special',  c:'#EA580C' },
+          ].map(s => {
+            const active = svcLevels.has(s.k)
+            const count  = photos.filter(p => (p.category || 'standard') === s.k).length
+            return (
+              <button key={s.k} type="button" onClick={() => toggleLevel(s.k)}
+                title={`Filter ${s.l}`}
+                style={{
+                  display:'inline-flex', alignItems:'center', gap:6, cursor:'pointer',
+                  fontSize:12, fontWeight:700, padding:'5px 11px', borderRadius:99,
+                  border:'1px solid ' + (active ? s.c : 'rgba(0,0,0,0.14)'),
+                  background: active ? s.c : 'transparent',
+                  color: active ? '#fff' : '#64748b',
+                  transition:'all .15s ease',
+                }}>
+                <span style={{width:7, height:7, borderRadius:'50%',
+                  background: active ? '#fff' : s.c}}/>
+                {s.l}
+                <span style={{
+                  fontSize:10, fontWeight:800, padding:'0 6px', borderRadius:99,
+                  background: active ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.06)',
+                }}>{count}</span>
+              </button>
+            )
+          })}
+          {svcLevels.size > 0 && (
+            <button type="button" onClick={() => setSvcLevels(new Set())}
+              style={{ fontSize:12, fontWeight:600, padding:'5px 10px', borderRadius:99,
+                border:'none', background:'transparent', color:'#94a3b8', cursor:'pointer' }}>
+              ✕ Clear
+            </button>
+          )}
         </div>
       </div>
 
