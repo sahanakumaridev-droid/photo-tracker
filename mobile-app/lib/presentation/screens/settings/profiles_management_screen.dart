@@ -215,7 +215,7 @@ class _ProfilesManagementScreenState
                             ),
                           ),
                           const SizedBox(width: 8),
-                          const Text('Rush'),
+                          const Text('ASAP'),
                         ],
                       ),
                     ),

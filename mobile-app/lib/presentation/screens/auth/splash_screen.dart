@@ -63,14 +63,15 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
 
   @override
   Widget build(BuildContext context) => Scaffold(
-      // Match the home screen header gradient background
-      backgroundColor: const Color(0xFF4F46E5),
+      // Center color (#5445E6) matches the logo's own background square so
+      // it blends in instead of showing as a mismatched box.
+      backgroundColor: const Color(0xFF5445E6),
       body: Container(
         decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF4F46E5), Color(0xFF7C3AED)],
+          gradient: RadialGradient(
+            center: Alignment(0, -0.25),
+            radius: 1.4,
+            colors: [Color(0xFF5445E6), Color(0xFF7C3AED)],
           ),
         ),
         child: Center(

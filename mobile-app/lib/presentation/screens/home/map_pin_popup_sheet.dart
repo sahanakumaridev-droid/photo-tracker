@@ -157,7 +157,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
 
   String _svcLabel(String t) {
     switch (t.toLowerCase()) {
-      case 'rush': return 'Rush';
+      case 'rush': return 'ASAP';
       case 'airport': return 'Airport';
       default: return 'Standard';
     }

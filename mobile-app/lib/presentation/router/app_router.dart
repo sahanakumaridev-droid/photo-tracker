@@ -14,6 +14,7 @@ import '../screens/home/home_screen_v2.dart';
 import '../screens/home/map_view_screen.dart';
 import '../screens/home/photo_detail_screen.dart';
 import '../screens/log/log_screen_v2.dart';
+import '../screens/more/more_screen.dart';
 import '../screens/schedule/schedule_screen.dart';
 import '../screens/settings/profiles_list_screen.dart';
 import '../screens/settings/profiles_management_screen.dart';
@@ -80,7 +81,9 @@ final routerProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/log',
-            builder: (context, state) => const LogScreenV2(),
+            builder: (context, state) => LogScreenV2(
+              initialCategory: state.uri.queryParameters['category'],
+            ),
           ),
           GoRoute(
             path: '/settings',
@@ -97,6 +100,10 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: '/schedule',
             builder: (context, state) => const ScheduleScreen(),
+          ),
+          GoRoute(
+            path: '/more',
+            builder: (context, state) => const MoreScreen(),
           ),
         ],
       ),
@@ -162,13 +169,16 @@ class _ShellScaffoldState extends State<_ShellScaffold> {
         context.go('/map');
         break;
       case 2:
-        context.go('/upload');
+        context.go('/earnings');
         break;
       case 3:
         context.go('/log');
         break;
       case 4:
         context.go('/settings');
+        break;
+      case 5:
+        context.go('/upload');
         break;
     }
   }

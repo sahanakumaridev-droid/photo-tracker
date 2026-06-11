@@ -4,10 +4,11 @@ import 'package:flutter_svg/flutter_svg.dart';
 /// The GeoTag brand logo, rendered from a single shared SVG so it stays
 /// consistent everywhere (splash, login, home header, etc.).
 ///
-/// The asset already includes the indigo rounded-icon background + the white
-/// pin mark + the green accent dot, so callers only choose a [size]. Use
-/// [withShadow] for floating placements (splash / login) and [borderColor]
-/// when the logo sits on a similarly-coloured surface (the indigo header).
+/// The asset is icon-only (brand-purple rounded background + white pin mark +
+/// green accent dot) — the "GeoTag" wordmark is rendered separately by each
+/// screen, so callers only choose a [size]. Use [withShadow] for floating
+/// placements (splash / login) and [borderColor] when the logo sits on a
+/// similarly-coloured surface (the purple header).
 class AppLogo extends StatelessWidget {
   const AppLogo({
     super.key,
@@ -45,7 +46,7 @@ class AppLogo extends StatelessWidget {
         boxShadow: withShadow
             ? [
                 BoxShadow(
-                  color: const Color(0xFF5445E6).withValues(alpha: 0.35),
+                  color: const Color(0xFF7C3AED).withValues(alpha: 0.35),
                   blurRadius: 28,
                   offset: const Offset(0, 12),
                 ),

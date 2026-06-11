@@ -4444,3 +4444,33 @@ select option { background: #ffffff; color: #0f172a; }
 }
 .upload-page .loc-head { font-weight: 800; color: #059669; font-size: 13px; margin-bottom: 6px; }
 .upload-page .loc-row { font-size: 12.5px; color: #475569; margin-top: 2px; }
+
+/* ─── DARK MODE: Activity Log table (UX polish overrides) ─── */
+[data-theme="dark"] .log-table-wrap { background: var(--bg-surface); border-color: var(--border-c); }
+[data-theme="dark"] .log-table thead th { background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.35); border-color: rgba(255,255,255,0.08); }
+[data-theme="dark"] .log-table tbody td { color: rgba(255,255,255,0.75); border-color: rgba(255,255,255,0.04); }
+[data-theme="dark"] .log-table tbody tr:last-child td { border-color: transparent; }
+[data-theme="dark"] .log-row-clickable:hover { background: rgba(124,58,237,0.12) !important; }
+[data-theme="dark"] .log-mono { color: rgba(255,255,255,0.4); }
+[data-theme="dark"] .log-note { color: rgba(255,255,255,0.6); }
+[data-theme="dark"] .log-stat-pill { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.1); color: rgba(255,255,255,0.6); }
+[data-theme="dark"] .log-stat-rush { background: rgba(244,63,94,0.15); border-color: rgba(244,63,94,0.3); color: #fda4af; }
+[data-theme="dark"] .log-stat-std  { background: rgba(16,185,129,0.15); border-color: rgba(16,185,129,0.3); color: #6ee7b7; }
+
+/* ─── DARK MODE: Upload page (dashboard polish overrides) ─── */
+[data-theme="dark"] .upload-page .card { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.08); box-shadow: 0 4px 18px rgba(0,0,0,0.4); }
+[data-theme="dark"] .upload-page .step-title { color: #f1f5f9; }
+[data-theme="dark"] .upload-progress-label { color: rgba(255,255,255,0.6); }
+[data-theme="dark"] .upload-progress-track { background: rgba(255,255,255,0.08); }
+[data-theme="dark"] .upload-progress-count { color: #a78bfa; background: rgba(124,58,237,0.2); border-color: rgba(124,58,237,0.3); }
+[data-theme="dark"] .upload-progress-count.done { color: #6ee7b7; background: rgba(16,185,129,0.2); border-color: rgba(16,185,129,0.3); }
+[data-theme="dark"] .upload-page .drop-zone { background: rgba(255,255,255,0.03); border-color: rgba(255,255,255,0.15); }
+[data-theme="dark"] .upload-page .drop-zone:hover { border-color: #7C3AED; background: rgba(124,58,237,0.08); }
+[data-theme="dark"] .upload-page .drop-title { color: rgba(255,255,255,0.7); }
+[data-theme="dark"] .upload-page .drop-sub { color: rgba(255,255,255,0.35); }
+[data-theme="dark"] .upload-page .profile-row:hover { background: rgba(124,58,237,0.08); }
+[data-theme="dark"] .upload-page .profile-row.selected { background: rgba(124,58,237,0.15); border-color: #7C3AED; }
+[data-theme="dark"] .upload-page .loc-box { background: rgba(16,185,129,0.1); border-color: rgba(16,185,129,0.3); }
+[data-theme="dark"] .upload-page .loc-head { color: #6ee7b7; }
+[data-theme="dark"] .upload-page .loc-row { color: rgba(255,255,255,0.6); }
+[data-theme="dark"] .upload-page .pr-new-btn-cancel { background: rgba(255,255,255,0.06) !important; border-color: rgba(255,255,255,0.1) !important; color: rgba(255,255,255,0.5) !important; }

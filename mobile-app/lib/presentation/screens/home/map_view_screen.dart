@@ -14,8 +14,7 @@ import '../../providers/profile_provider.dart';
 import 'map_pin_popup_sheet.dart';
 import 'map_upload_sheet.dart';
 
-// ── Design tokens ────────────────────────────────────────────────────────────
-const _kCanvas   = Color(0xFFFAFAFA);
+// ── Design tokens ─────────────────────────────────────────────────────────────
 const _kSurface  = Color(0xFFFFFFFF);
 const _kInk      = Color(0xFF0F0F0F);
 const _kInkMuted = Color(0xFF6B7280);
@@ -23,7 +22,21 @@ const _kSubtle   = Color(0xFF9CA3AF);
 const _kSep      = Color(0xFFE5E7EB);
 const _kAccent   = Color(0xFF7C3AED);
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// Category palette
+const _kAsap     = Color(0xFFEF4444);
+const _kNextDay  = Color(0xFFF59E0B);
+const _kStd      = Color(0xFF10B981);
+const _kSpecial  = Color(0xFF8B5CF6);
+
+// ── Static category definitions ───────────────────────────────────────────────
+const List<List<String>> _kCats = [
+  ['asap',     'ASAP'],
+  ['next_day', 'Next Day'],
+  ['standard', 'Standard'],
+  ['special',  'Special'],
+];
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 Color _svcColor(String? t) {
   switch ((t ?? '').toLowerCase()) {
     case 'rush':    return const Color(0xFFEF4444);
@@ -32,18 +45,44 @@ Color _svcColor(String? t) {
   }
 }
 
-/// Group photos that share the same lat/lng (rounded to 5 dp).
+Color _catColor(String c) {
+  switch (c) {
+    case 'asap':     return _kAsap;
+    case 'next_day': return _kNextDay;
+    case 'special':  return _kSpecial;
+    default:         return _kStd;
+  }
+}
+
+IconData _catIcon(String c) {
+  switch (c) {
+    case 'asap':     return Icons.bolt_rounded;
+    case 'next_day': return Icons.schedule_rounded;
+    case 'special':  return Icons.star_rounded;
+    default:         return Icons.check_circle_rounded;
+  }
+}
+
 Map<String, List<PhotoModel>> _groupByLocation(List<PhotoModel> photos) {
   final map = <String, List<PhotoModel>>{};
-  for (final ph in photos) {
+  for (final p in photos) {
     final key =
-        '${ph.latitude.toStringAsFixed(5)}_${ph.longitude.toStringAsFixed(5)}';
-    map.putIfAbsent(key, () => []).add(ph);
+        '${p.latitude.toStringAsFixed(5)}_${p.longitude.toStringAsFixed(5)}';
+    map.putIfAbsent(key, () => []).add(p);
   }
   return map;
 }
 
-// ── Screen ───────────────────────────────────────────────────────────────────
+Map<String, int> _countByService(List<PhotoModel> photos) {
+  final counts = <String, int>{};
+  for (final p in photos) {
+    final s = (p.serviceType ?? 'standard').toLowerCase();
+    counts[s] = (counts[s] ?? 0) + 1;
+  }
+  return counts;
+}
+
+// ── Screen ────────────────────────────────────────────────────────────────────
 class MapViewScreen extends ConsumerStatefulWidget {
   const MapViewScreen({super.key});
 
@@ -53,10 +92,10 @@ class MapViewScreen extends ConsumerStatefulWidget {
 
 class _MapViewScreenState extends ConsumerState<MapViewScreen> {
   late final MapController _mapController;
-  String _selectedProfile = 'all';
-  final _searchCtrl = TextEditingController();
+  String   _selectedProfile   = 'all';
+  bool     _fetchingLocation  = false;
   Position? _userPosition;
-  bool _fetchingLocation = false;
+  final _searchCtrl = TextEditingController();
 
   @override
   void initState() {
@@ -72,10 +111,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
       final pos = await LocationService.getCurrentLocation();
       if (pos != null && mounted) {
         setState(() => _userPosition = pos);
-        // Centre map on user when first loaded
-        _mapController.move(
-          LatLng(pos.latitude, pos.longitude), 14,
-        );
+        _mapController.move(LatLng(pos.latitude, pos.longitude), 14);
       }
     } finally {
       if (mounted) setState(() => _fetchingLocation = false);
@@ -102,17 +138,14 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
     var minLng = photos.first.longitude;
     var maxLng = photos.first.longitude;
     for (final p in photos) {
-      if (p.latitude < minLat) minLat = p.latitude;
-      if (p.latitude > maxLat) maxLat = p.latitude;
+      if (p.latitude  < minLat) minLat = p.latitude;
+      if (p.latitude  > maxLat) maxLat = p.latitude;
       if (p.longitude < minLng) minLng = p.longitude;
       if (p.longitude > maxLng) maxLng = p.longitude;
     }
     _mapController.fitCamera(
       CameraFit.bounds(
-        bounds: LatLngBounds(
-          LatLng(minLat, minLng),
-          LatLng(maxLat, maxLng),
-        ),
+        bounds: LatLngBounds(LatLng(minLat, minLng), LatLng(maxLat, maxLng)),
         padding: const EdgeInsets.all(80),
       ),
     );
@@ -124,23 +157,9 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
     final profilesAsync = ref.watch(profilesProvider);
 
     return Scaffold(
-      backgroundColor: _kCanvas,
-      appBar: AppBar(
-        backgroundColor: _kSurface,
-        elevation: 0,
-        surfaceTintColor: Colors.transparent,
-        shape: const Border(bottom: BorderSide(color: _kSep)),
-        title: const Text(
-          'Explore Map',
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.w800,
-            color: _kInk,
-            letterSpacing: -0.3,
-          ),
-        ),
-        actions: const [],
-      ),
+      // Full-screen map — no AppBar, body extends to top
+      extendBodyBehindAppBar: true,
+      backgroundColor: const Color(0xFFF0F0F0),
       body: photosAsync.when(
         loading: () => const Center(
           child: CircularProgressIndicator(strokeWidth: 2, color: _kAccent),
@@ -158,6 +177,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
             searchCtrl: _searchCtrl,
             mapController: _mapController,
             userPosition: _userPosition,
+            fetchingLocation: _fetchingLocation,
             onProfileChanged: (v) => setState(() => _selectedProfile = v),
             onFitAll: _fitAll,
             onRefresh: _refresh,
@@ -169,7 +189,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
   }
 }
 
-// ── Map body (stateful so it can handle map taps) ────────────────────────────
+// ── Map body ──────────────────────────────────────────────────────────────────
 class _MapBody extends ConsumerStatefulWidget {
   const _MapBody({
     required this.photos,
@@ -182,30 +202,33 @@ class _MapBody extends ConsumerStatefulWidget {
     required this.onRefresh,
     required this.onMyLocation,
     this.userPosition,
+    this.fetchingLocation = false,
   });
 
-  final List<PhotoModel>    photos;
-  final List<ProfileModel>  profiles;
-  final String              selectedProfile;
-  final TextEditingController searchCtrl;
-  final MapController       mapController;
-  final ValueChanged<String> onProfileChanged;
+  final List<PhotoModel>               photos;
+  final List<ProfileModel>             profiles;
+  final String                         selectedProfile;
+  final TextEditingController          searchCtrl;
+  final MapController                  mapController;
+  final ValueChanged<String>           onProfileChanged;
   final ValueChanged<List<PhotoModel>> onFitAll;
-  final VoidCallback        onRefresh;
-  final VoidCallback        onMyLocation;
-  final Position?           userPosition;
+  final VoidCallback                   onRefresh;
+  final VoidCallback                   onMyLocation;
+  final Position?                      userPosition;
+  final bool                           fetchingLocation;
 
   @override
   ConsumerState<_MapBody> createState() => _MapBodyState();
 }
 
 class _MapBodyState extends ConsumerState<_MapBody> {
-  // F2 — selected service levels (empty = show all).
   final Set<String> _levels = {};
 
   @override
   Widget build(BuildContext context) {
-    // Filter by selected profile
+    final topPad = MediaQuery.of(context).padding.top;
+
+    // Apply profile filter
     var filtered = widget.selectedProfile == 'all'
         ? widget.photos
         : widget.photos.where((p) {
@@ -214,24 +237,25 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                 (p.profiles?.any((pr) => pr.id.toString() == pid) ?? false);
           }).toList();
 
-    // F2 — filter by selected service levels (category)
+    // Apply category filter (F2)
     if (_levels.isNotEmpty) {
       filtered = filtered
           .where((p) => _levels.contains(p.category ?? 'standard'))
           .toList();
     }
 
-    // Only geotagged
-    final geotagged = filtered.where((p) => p.latitude != 0 || p.longitude != 0).toList();
-
-    // Group by location
-    final groups = _groupByLocation(geotagged);
+    final geotagged = filtered
+        .where((p) => p.latitude != 0 || p.longitude != 0)
+        .toList();
+    final groups    = _groupByLocation(geotagged);
+    final svcCounts = _countByService(geotagged);
+    final hasData   = geotagged.isNotEmpty;
 
     const mapCenter = LatLng(32.7157, -117.1611);
 
     return Stack(
       children: [
-        // ── Map ──────────────────────────────────────────────────────────
+        // ── Full-screen map ────────────────────────────────────────────
         FlutterMap(
           mapController: widget.mapController,
           options: MapOptions(
@@ -239,8 +263,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
             initialZoom: 13,
             minZoom: 2,
             maxZoom: 18,
-            // Tap on empty map → upload sheet
-            onTap: (tapPos, latLng) {
+            onTap: (_, latLng) {
               HapticFeedback.lightImpact();
               showMapUploadSheet(
                 context,
@@ -257,22 +280,21 @@ class _MapBodyState extends ConsumerState<_MapBody> {
               subdomains: const ['a', 'b', 'c', 'd'],
               userAgentPackageName: 'com.example.photo_tracker',
             ),
+            // Photo pin markers
             MarkerLayer(
               markers: groups.entries.map((entry) {
-                final groupPhotos = entry.value;
-                // Sort newest first
-                final sorted = [...groupPhotos]
+                final sorted = [...entry.value]
                   ..sort((a, b) =>
                       (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
-                final latest   = sorted.first;
-                final hasRush  = sorted.any((p) => p.serviceType == 'rush');
-                final color    = _svcColor(hasRush ? 'rush' : latest.serviceType);
-                final count    = sorted.length;
+                final latest  = sorted.first;
+                final hasRush = sorted.any((p) => p.serviceType == 'rush');
+                final color   = _svcColor(hasRush ? 'rush' : latest.serviceType);
+                final count   = sorted.length;
 
                 return Marker(
                   point: LatLng(latest.latitude, latest.longitude),
-                  width: count > 1 ? 58 : 50,
-                  height: count > 1 ? 68 : 60,
+                  width:  count > 1 ? 62 : 56,
+                  height: 74,
                   child: GestureDetector(
                     onTap: () {
                       HapticFeedback.mediumImpact();
@@ -293,7 +315,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                 );
               }).toList(),
             ),
-            // ── Live user location marker ─────────────────────────────
+            // Live user-location marker
             if (widget.userPosition != null)
               MarkerLayer(
                 markers: [
@@ -313,137 +335,86 @@ class _MapBodyState extends ConsumerState<_MapBody> {
           ],
         ),
 
-        // ── Search + filter bar ───────────────────────────────────────────
+        // ── Top floating control panel ─────────────────────────────────
         Positioned(
-          top: 12,
-          left: 12,
-          right: 12,
-          child: _SearchBar(
-            controller: widget.searchCtrl,
-            profiles: widget.profiles,
-            selectedProfile: widget.selectedProfile,
-            onProfileChanged: widget.onProfileChanged,
-          ),
-        ),
-
-        // ── F2: service-level filter chips ────────────────────────────────
-        Positioned(
-          top: 62,
-          left: 8,
-          right: 8,
-          child: SizedBox(
-            height: 38,
-            child: ListView(
-              scrollDirection: Axis.horizontal,
-              children: const [
-                ['asap', 'ASAP'],
-                ['next_day', 'Next Day'],
-                ['standard', 'Standard'],
-                ['special', 'Special'],
-              ].map((lvl) {
-                final sel = _levels.contains(lvl[0]);
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: FilterChip(
-                    label: Text(lvl[1], style: const TextStyle(fontSize: 12)),
-                    selected: sel,
-                    backgroundColor: Colors.white,
-                    selectedColor: _kAccent,
-                    labelStyle: TextStyle(
-                        color: sel ? Colors.white : const Color(0xFF374151),
-                        fontWeight: FontWeight.w600),
-                    onSelected: (_) => setState(() {
-                      sel ? _levels.remove(lvl[0]) : _levels.add(lvl[0]);
-                    }),
-                  ),
-                );
-              }).toList(),
-            ),
-          ),
-        ),
-
-        // ── Tap-to-upload hint ────────────────────────────────────────────
-        Positioned(
-          top: 72,
-          left: 0,
-          right: 0,
-          child: Center(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.45),
-                borderRadius: BorderRadius.circular(20),
+          top: topPad + 10,
+          left: 14,
+          right: 14,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Title + subtitle + refresh
+              _FloatingHeader(
+                onRefresh: widget.onRefresh,
+                photoCount: geotagged.length,
+                pinCount: groups.length,
               ),
-              child: const Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.touch_app_rounded, size: 12, color: Colors.white70),
-                  SizedBox(width: 5),
-                  Text(
-                    'Tap map to upload · Tap pin to view',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: Colors.white70,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ],
+              const SizedBox(height: 10),
+              // Search bar
+              _SearchBar(
+                controller: widget.searchCtrl,
+                profiles: widget.profiles,
+                selectedProfile: widget.selectedProfile,
+                onProfileChanged: widget.onProfileChanged,
               ),
-            ),
+              const SizedBox(height: 8),
+              // Category chips (F2)
+              _CategoryChips(
+                selected: _levels,
+                onToggle: (cat) => setState(() {
+                  _levels.contains(cat)
+                      ? _levels.remove(cat)
+                      : _levels.add(cat);
+                }),
+              ),
+              const SizedBox(height: 8),
+              // Contextual hint
+              const _HintPill(),
+            ],
           ),
         ),
 
-        // ── Bottom info card ──────────────────────────────────────────────
-        if (geotagged.isNotEmpty)
+        // ── Bottom stats card ──────────────────────────────────────────
+        if (hasData)
           Positioned(
             bottom: 16,
-            left: 16,
-            right: 16,
+            left: 14,
+            right: 14,
             child: _BottomCard(
               count: geotagged.length,
               groupCount: groups.length,
+              svcCounts: svcCounts,
               onFitAll: () => widget.onFitAll(geotagged),
-              onViewList: () => context.push('/log'),
+              onViewList: () => context.push(
+                _levels.length == 1
+                    ? '/log?category=${_levels.first}'
+                    : '/log',
+              ),
             ),
           ),
 
-        // ── My Location FAB ───────────────────────────────────────────────
+        // ── My-location FAB (must be LAST in Stack for highest z-index) ─
         Positioned(
-          bottom: geotagged.isNotEmpty ? 140 : 24,
-          right: 16,
-          child: GestureDetector(
-            onTap: () {
-              HapticFeedback.lightImpact();
-              widget.onMyLocation();
-              if (widget.userPosition != null) {
-                widget.mapController.move(
-                  LatLng(widget.userPosition!.latitude,
-                      widget.userPosition!.longitude),
-                  15,
-                );
-              }
-            },
-            child: Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: _kSurface,
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.15),
-                    blurRadius: 8,
-                    offset: const Offset(0, 3),
-                  ),
-                ],
-              ),
-              child: Icon(
-                widget.userPosition != null
-                    ? Icons.my_location_rounded
-                    : Icons.location_searching_rounded,
-                size: 22,
-                color: widget.userPosition != null ? _kAccent : _kSubtle,
-              ),
+          right: 14,
+          bottom: hasData ? 204 : 28,
+          child: Material(
+            color: Colors.transparent,
+            child: _LocationFab(
+              userPosition: widget.userPosition,
+              loading: widget.fetchingLocation,
+              onTap: () {
+                HapticFeedback.lightImpact();
+                widget.onMyLocation();
+                if (widget.userPosition != null) {
+                  widget.mapController.move(
+                    LatLng(
+                      widget.userPosition!.latitude,
+                      widget.userPosition!.longitude,
+                    ),
+                    15,
+                  );
+                }
+              },
             ),
           ),
         ),
@@ -452,107 +423,77 @@ class _MapBodyState extends ConsumerState<_MapBody> {
   }
 }
 
-// ── Pin marker widget ─────────────────────────────────────────────────────────
-class _PinMarker extends StatelessWidget {
-  const _PinMarker({
-    required this.imageUrl,
-    required this.color,
-    required this.count,
+// ── Floating header ───────────────────────────────────────────────────────────
+class _FloatingHeader extends StatelessWidget {
+  const _FloatingHeader({
+    required this.onRefresh,
+    required this.photoCount,
+    required this.pinCount,
   });
-  final String imageUrl;
-  final Color  color;
-  final int    count;
+  final VoidCallback onRefresh;
+  final int photoCount;
+  final int pinCount;
 
   @override
-  Widget build(BuildContext context) => Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Stack(
-          clipBehavior: Clip.none,
+  Widget build(BuildContext context) => Row(
+    crossAxisAlignment: CrossAxisAlignment.center,
+    children: [
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Photo circle
-            Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(color: color, width: 2.5),
-                boxShadow: [
-                  BoxShadow(
-                    color: color.withOpacity(0.35),
-                    blurRadius: 8,
-                    spreadRadius: 2,
-                  ),
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.2),
-                    blurRadius: 6,
-                    offset: const Offset(0, 3),
-                  ),
-                ],
-              ),
-              child: ClipOval(
-                child: Image.network(
-                  imageUrl,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => Container(
-                    color: color.withOpacity(0.15),
-                    child: Icon(
-                      Icons.person_rounded,
-                      color: color,
-                      size: 24,
-                    ),
-                  ),
-                ),
+            const Text(
+              'Explore Map',
+              style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.w800,
+                color: _kInk,
+                letterSpacing: -0.6,
               ),
             ),
-            // Count badge (top-right) — only when multiple photos
-            if (count > 1)
-              Positioned(
-                top: -4,
-                right: -4,
-                child: Container(
-                  width: 20,
-                  height: 20,
-                  decoration: BoxDecoration(
-                    color: color,
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 1.5),
-                    boxShadow: [
-                      BoxShadow(
-                        color: color.withOpacity(0.4),
-                        blurRadius: 4,
-                      ),
-                    ],
-                  ),
-                  child: Center(
-                    child: Text(
-                      count > 9 ? '9+' : '$count',
-                      style: const TextStyle(
-                        fontSize: 9,
-                        fontWeight: FontWeight.w800,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ),
+            if (photoCount > 0) ...[
+              const SizedBox(height: 1),
+              Text(
+                '$photoCount photo${photoCount != 1 ? 's' : ''}'
+                ' · $pinCount pin${pinCount != 1 ? 's' : ''}',
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: _kInkMuted,
+                  fontWeight: FontWeight.w500,
                 ),
               ),
+            ],
           ],
         ),
-        // Pin stem
-        Container(width: 2, height: 6, color: color),
-        Container(
-          width: 6,
-          height: 6,
+      ),
+      GestureDetector(
+        onTap: () {
+          HapticFeedback.lightImpact();
+          onRefresh();
+        },
+        child: Container(
+          width: 38,
+          height: 38,
           decoration: BoxDecoration(
-            color: color,
+            color: _kSurface,
             shape: BoxShape.circle,
             boxShadow: [
-              BoxShadow(color: color.withOpacity(0.5), blurRadius: 4),
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.1),
+                blurRadius: 8,
+                offset: const Offset(0, 2),
+              ),
             ],
           ),
+          child: const Icon(
+            Icons.refresh_rounded,
+            size: 18,
+            color: _kInkMuted,
+          ),
         ),
-      ],
-    );
+      ),
+    ],
+  );
 }
 
 // ── Search bar ────────────────────────────────────────────────────────────────
@@ -569,45 +510,46 @@ class _SearchBar extends StatelessWidget {
   final ValueChanged<String>  onProfileChanged;
 
   @override
-  Widget build(BuildContext context) => Container(
+  Widget build(BuildContext context) {
+    final filtered = selectedProfile != 'all';
+    return Container(
+      height: 50,
       decoration: BoxDecoration(
         color: _kSurface,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(color: _kSep, width: 1.5),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.07),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
+            color: Colors.black.withValues(alpha: 0.08),
+            blurRadius: 12,
+            offset: const Offset(0, 3),
           ),
         ],
       ),
       child: Row(
         children: [
           const Padding(
-            padding: EdgeInsets.only(left: 12),
-            child: Icon(Icons.search_rounded, color: _kSubtle, size: 18),
+            padding: EdgeInsets.only(left: 14),
+            child: Icon(Icons.search_rounded, color: _kSubtle, size: 20),
           ),
           Expanded(
             child: TextField(
               controller: controller,
+              style: const TextStyle(fontSize: 14, color: _kInk),
               decoration: const InputDecoration(
                 hintText: 'Search profiles…',
                 hintStyle: TextStyle(color: _kSubtle, fontSize: 14),
                 border: InputBorder.none,
-                contentPadding: EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 12,
-                ),
+                contentPadding: EdgeInsets.symmetric(horizontal: 10),
+                isDense: true,
               ),
             ),
           ),
-          // Filter popup
           PopupMenuButton<String>(
             onSelected: onProfileChanged,
             color: _kSurface,
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(14),
             ),
             itemBuilder: (_) => [
               const PopupMenuItem(
@@ -616,7 +558,13 @@ class _SearchBar extends StatelessWidget {
                   children: [
                     Icon(Icons.apps_rounded, size: 16, color: _kInkMuted),
                     SizedBox(width: 8),
-                    Text('All Profiles'),
+                    Text(
+                      'All Profiles',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -634,169 +582,589 @@ class _SearchBar extends StatelessWidget {
                           ),
                         ),
                         const SizedBox(width: 8),
-                        Text(p.name),
+                        Text(
+                          p.name,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
                       ],
                     ),
                   )),
             ],
             child: Container(
               margin: const EdgeInsets.only(right: 8),
-              padding: const EdgeInsets.all(8),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
               decoration: BoxDecoration(
-                color: selectedProfile != 'all'
-                    ? _kAccent.withOpacity(0.1)
+                color: filtered
+                    ? _kAccent.withValues(alpha: 0.1)
                     : Colors.transparent,
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(10),
               ),
-              child: Icon(
-                Icons.tune_rounded,
-                size: 20,
-                color: selectedProfile != 'all' ? _kAccent : _kInkMuted,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.tune_rounded,
+                    size: 19,
+                    color: filtered ? _kAccent : _kInkMuted,
+                  ),
+                  if (filtered) ...[
+                    const SizedBox(width: 4),
+                    Container(
+                      width: 16,
+                      height: 16,
+                      decoration: const BoxDecoration(
+                        color: _kAccent,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Center(
+                        child: Text(
+                          '1',
+                          style: TextStyle(
+                            fontSize: 9,
+                            color: Colors.white,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
           ),
         ],
       ),
     );
+  }
 }
 
-// ── Bottom info card ──────────────────────────────────────────────────────────
-class _BottomCard extends StatelessWidget {
-  const _BottomCard({
-    required this.count,
-    required this.groupCount,
-    required this.onFitAll,
-    required this.onViewList,
+// ── Category chips (F2) ───────────────────────────────────────────────────────
+class _CategoryChips extends StatelessWidget {
+  const _CategoryChips({
+    required this.selected,
+    required this.onToggle,
   });
-  final int          count;
-  final int          groupCount;
-  final VoidCallback onFitAll;
-  final VoidCallback onViewList;
+  final Set<String>          selected;
+  final ValueChanged<String> onToggle;
 
   @override
-  Widget build(BuildContext context) => Container(
+  Widget build(BuildContext context) => SizedBox(
+    height: 34,
+    child: ListView.separated(
+      scrollDirection: Axis.horizontal,
+      padding: EdgeInsets.zero,
+      itemCount: _kCats.length,
+      separatorBuilder: (_, __) => const SizedBox(width: 8),
+      itemBuilder: (_, i) {
+        final cat   = _kCats[i][0];
+        final label = _kCats[i][1];
+        final sel   = selected.contains(cat);
+        final color = _catColor(cat);
+        return GestureDetector(
+          onTap: () {
+            HapticFeedback.lightImpact();
+            onToggle(cat);
+          },
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: BoxDecoration(
+              color: sel ? color : _kSurface,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: sel ? color : _kSep,
+                width: 1.5,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: sel
+                      ? color.withValues(alpha: 0.25)
+                      : Colors.black.withValues(alpha: 0.06),
+                  blurRadius: sel ? 8 : 4,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  _catIcon(cat),
+                  size: 12,
+                  color: sel ? Colors.white : color,
+                ),
+                const SizedBox(width: 5),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: sel ? Colors.white : _kInk,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    ),
+  );
+}
+
+// ── Hint pill ─────────────────────────────────────────────────────────────────
+class _HintPill extends StatelessWidget {
+  const _HintPill();
+
+  @override
+  Widget build(BuildContext context) => Align(
+    alignment: Alignment.center,
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
       decoration: BoxDecoration(
-        color: _kSurface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: _kSep, width: 1.5),
+        color: Colors.black.withValues(alpha: 0.44),
+        borderRadius: BorderRadius.circular(20),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.07),
+            color: Colors.black.withValues(alpha: 0.08),
+            blurRadius: 6,
+          ),
+        ],
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.touch_app_rounded, size: 11, color: Colors.white70),
+          SizedBox(width: 5),
+          Text(
+            'Tap map to upload  ·  Tap pin to view',
+            style: TextStyle(
+              fontSize: 10.5,
+              color: Colors.white70,
+              fontWeight: FontWeight.w500,
+              letterSpacing: 0.1,
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+// ── My-location FAB ───────────────────────────────────────────────────────────
+class _LocationFab extends StatelessWidget {
+  const _LocationFab({
+    required this.onTap,
+    this.userPosition,
+    this.loading = false,
+  });
+  final VoidCallback onTap;
+  final Position?    userPosition;
+  final bool         loading;
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    onTap: onTap,
+    child: Container(
+      width: 46,
+      height: 46,
+      decoration: BoxDecoration(
+        color: _kSurface,
+        shape: BoxShape.circle,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.16),
             blurRadius: 12,
             offset: const Offset(0, 4),
           ),
         ],
       ),
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(
-                  color: _kAccent.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Icon(
-                  Icons.location_on_rounded,
-                  size: 16,
+      child: loading
+          ? const Center(
+              child: SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
                   color: _kAccent,
                 ),
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+            )
+          : Icon(
+              userPosition != null
+                  ? Icons.my_location_rounded
+                  : Icons.location_searching_rounded,
+              size: 22,
+              color: userPosition != null ? _kAccent : _kSubtle,
+            ),
+    ),
+  );
+}
+
+// ── Bottom stats card ─────────────────────────────────────────────────────────
+class _BottomCard extends StatelessWidget {
+  const _BottomCard({
+    required this.count,
+    required this.groupCount,
+    required this.svcCounts,
+    required this.onFitAll,
+    required this.onViewList,
+  });
+  final int              count;
+  final int              groupCount;
+  final Map<String, int> svcCounts;
+  final VoidCallback     onFitAll;
+  final VoidCallback     onViewList;
+
+  @override
+  Widget build(BuildContext context) {
+    final svcEntries = svcCounts.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+
+    return Container(
+      decoration: BoxDecoration(
+        color: _kSurface,
+        borderRadius: BorderRadius.circular(22),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.11),
+            blurRadius: 22,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Drag handle
+          const SizedBox(height: 10),
+          Center(
+            child: Container(
+              width: 32,
+              height: 3,
+              decoration: BoxDecoration(
+                color: _kSep,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Header row
+                Row(
                   children: [
-                    const Text(
-                      'Geotagged Photos',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        color: _kInk,
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: _kAccent.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(
+                        Icons.location_on_rounded,
+                        size: 18,
+                        color: _kAccent,
                       ),
                     ),
-                    Text(
-                      '$count photo${count != 1 ? 's' : ''} · $groupCount pin${groupCount != 1 ? 's' : ''}',
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: _kSubtle,
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Geotagged Photos',
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                              color: _kInk,
+                              letterSpacing: -0.2,
+                            ),
+                          ),
+                          Text(
+                            '$count photo${count != 1 ? 's' : ''}'
+                            ' · $groupCount pin${groupCount != 1 ? 's' : ''}',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: _kSubtle,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: _cardBtn(
-                  icon: Icons.zoom_out_map_rounded,
-                  label: 'Fit All',
-                  onTap: onFitAll,
-                  filled: true,
+
+                // Service type breakdown
+                if (svcEntries.isNotEmpty) ...[
+                  const SizedBox(height: 14),
+                  Row(
+                    children: svcEntries.map((e) {
+                      final color = _svcColor(e.key);
+                      final label = e.key == 'rush'
+                          ? 'ASAP'
+                          : e.key == 'airport'
+                              ? 'Airport'
+                              : 'Standard';
+                      return Padding(
+                        padding: const EdgeInsets.only(right: 14),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: color,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 5),
+                            Text(
+                              '$label ${e.value}',
+                              style: const TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                                color: _kInkMuted,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 8),
+                  // Proportional color bar
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: SizedBox(
+                      height: 4,
+                      child: Row(
+                        children: svcEntries
+                            .map((e) => Expanded(
+                                  flex: e.value,
+                                  child: Container(
+                                      color: _svcColor(e.key)),
+                                ))
+                            .toList(),
+                      ),
+                    ),
+                  ),
+                ],
+
+                const SizedBox(height: 14),
+                // Action buttons
+                Row(
+                  children: [
+                    Expanded(
+                      child: _CardBtn(
+                        icon: Icons.zoom_out_map_rounded,
+                        label: 'Fit All',
+                        onTap: onFitAll,
+                        filled: true,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _CardBtn(
+                        icon: Icons.list_alt_rounded,
+                        label: 'View List',
+                        onTap: onViewList,
+                        filled: false,
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _cardBtn(
-                  icon: Icons.list_rounded,
-                  label: 'View List',
-                  onTap: onViewList,
-                  filled: false,
-                ),
-              ),
-            ],
+                const SizedBox(height: 4),
+              ],
+            ),
           ),
+          const SizedBox(height: 8),
         ],
       ),
     );
-
-  Widget _cardBtn({
-    required IconData icon,
-    required String label,
-    required VoidCallback onTap,
-    required bool filled,
-  }) =>
-      GestureDetector(
-        onTap: () {
-          HapticFeedback.lightImpact();
-          onTap();
-        },
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 10),
-          decoration: BoxDecoration(
-            color: filled ? _kAccent : _kAccent.withOpacity(0.08),
-            borderRadius: BorderRadius.circular(10),
-            border: filled
-                ? null
-                : Border.all(color: _kAccent.withOpacity(0.2)),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, size: 15, color: filled ? Colors.white : _kAccent),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: filled ? Colors.white : _kAccent,
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
+  }
 }
 
-// ── User location marker ──────────────────────────────────────────────────────
+// ── Card action button ────────────────────────────────────────────────────────
+class _CardBtn extends StatelessWidget {
+  const _CardBtn({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    required this.filled,
+  });
+  final IconData     icon;
+  final String       label;
+  final VoidCallback onTap;
+  final bool         filled;
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    onTap: () {
+      HapticFeedback.lightImpact();
+      onTap();
+    },
+    child: Container(
+      padding: const EdgeInsets.symmetric(vertical: 13),
+      decoration: BoxDecoration(
+        gradient: filled
+            ? const LinearGradient(
+                colors: [Color(0xFF7C3AED), Color(0xFF6D28D9)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              )
+            : null,
+        color: filled ? null : _kAccent.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: filled
+            ? null
+            : Border.all(color: _kAccent.withValues(alpha: 0.22)),
+        boxShadow: filled
+            ? [
+                BoxShadow(
+                  color: _kAccent.withValues(alpha: 0.28),
+                  blurRadius: 8,
+                  offset: const Offset(0, 3),
+                ),
+              ]
+            : null,
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 15, color: filled ? Colors.white : _kAccent),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: filled ? Colors.white : _kAccent,
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+// ── Pin marker ────────────────────────────────────────────────────────────────
+class _PinMarker extends StatelessWidget {
+  const _PinMarker({
+    required this.imageUrl,
+    required this.color,
+    required this.count,
+  });
+  final String imageUrl;
+  final Color  color;
+  final int    count;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Stack(
+        clipBehavior: Clip.none,
+        alignment: Alignment.center,
+        children: [
+          // Ambient glow ring
+          Container(
+            width: 54,
+            height: 54,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: color.withValues(alpha: 0.14),
+            ),
+          ),
+          // Photo circle
+          Container(
+            width: 46,
+            height: 46,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(color: color, width: 2.5),
+              boxShadow: [
+                BoxShadow(
+                  color: color.withValues(alpha: 0.35),
+                  blurRadius: 10,
+                  spreadRadius: 1,
+                ),
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.18),
+                  blurRadius: 6,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+            ),
+            child: ClipOval(
+              child: Image.network(
+                imageUrl,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Container(
+                  color: color.withValues(alpha: 0.15),
+                  child: Icon(Icons.person_rounded, color: color, size: 22),
+                ),
+              ),
+            ),
+          ),
+          // Count badge
+          if (count > 1)
+            Positioned(
+              top: 0,
+              right: 0,
+              child: Container(
+                width: 20,
+                height: 20,
+                decoration: BoxDecoration(
+                  color: color,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 1.5),
+                  boxShadow: [
+                    BoxShadow(
+                      color: color.withValues(alpha: 0.4),
+                      blurRadius: 4,
+                    ),
+                  ],
+                ),
+                child: Center(
+                  child: Text(
+                    count > 9 ? '9+' : '$count',
+                    style: const TextStyle(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+      // Pin stem + dot
+      Container(width: 2, height: 7, color: color),
+      Container(
+        width: 6,
+        height: 6,
+        decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
+          boxShadow: [
+            BoxShadow(color: color.withValues(alpha: 0.5), blurRadius: 4),
+          ],
+        ),
+      ),
+    ],
+  );
+}
+
+// ── User-location marker (pulsing) ────────────────────────────────────────────
 class _UserLocationMarker extends StatefulWidget {
   const _UserLocationMarker({required this.accuracy});
   final double accuracy;
@@ -826,102 +1194,101 @@ class _UserLocationMarkerState extends State<_UserLocationMarker>
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
-        animation: _pulse,
-        builder: (_, __) => Stack(
-          alignment: Alignment.center,
-          children: [
-            // Accuracy ring
-            Container(
-              width: 48 + _pulse.value * 8,
-              height: 48 + _pulse.value * 8,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: _kAccent.withValues(alpha: 0.12 - _pulse.value * 0.08),
-                border: Border.all(
-                  color: _kAccent.withValues(alpha: 0.3),
-                  width: 1,
-                ),
-              ),
+    animation: _pulse,
+    builder: (_, __) => Stack(
+      alignment: Alignment.center,
+      children: [
+        Container(
+          width: 48 + _pulse.value * 8,
+          height: 48 + _pulse.value * 8,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: _kAccent.withValues(
+                alpha: 0.12 - _pulse.value * 0.08),
+            border: Border.all(
+              color: _kAccent.withValues(alpha: 0.3),
+              width: 1,
             ),
-            // Blue dot
-            Container(
-              width: 18,
-              height: 18,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: _kAccent,
-                border: Border.all(color: Colors.white, width: 2.5),
-                boxShadow: [
-                  BoxShadow(
-                    color: _kAccent.withValues(alpha: 0.4),
-                    blurRadius: 6,
-                    spreadRadius: 1,
-                  ),
-                ],
-              ),
-            ),
-          ],
+          ),
         ),
-      );
+        Container(
+          width: 18,
+          height: 18,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: _kAccent,
+            border: Border.all(color: Colors.white, width: 2.5),
+            boxShadow: [
+              BoxShadow(
+                color: _kAccent.withValues(alpha: 0.4),
+                blurRadius: 6,
+                spreadRadius: 1,
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
 }
 
 // ── Error view ────────────────────────────────────────────────────────────────
 class _ErrorView extends StatelessWidget {
   const _ErrorView({required this.error, required this.onRetry});
-  final Object    error;
+  final Object       error;
   final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) => Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              width: 64,
-              height: 64,
-              decoration: BoxDecoration(
-                color: const Color(0xFFDC2626).withOpacity(0.1),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.wifi_off_rounded,
-                size: 32,
-                color: Color(0xFFDC2626),
+    child: Padding(
+      padding: const EdgeInsets.all(32),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            width: 64,
+            height: 64,
+            decoration: BoxDecoration(
+              color: const Color(0xFFDC2626).withValues(alpha: 0.1),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.wifi_off_rounded,
+              size: 32,
+              color: Color(0xFFDC2626),
+            ),
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            'Failed to load map data',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: _kInk,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            error.toString().replaceAll('Exception: ', ''),
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 13, color: _kSubtle),
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            onPressed: onRetry,
+            icon: const Icon(Icons.refresh_rounded, size: 18),
+            label: const Text('Try Again'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _kAccent,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
               ),
             ),
-            const SizedBox(height: 16),
-            const Text(
-              'Failed to load map data',
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-                color: _kInk,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              error.toString().replaceAll('Exception: ', ''),
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 13, color: _kSubtle),
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
-              onPressed: onRetry,
-              icon: const Icon(Icons.refresh_rounded, size: 18),
-              label: const Text('Try Again'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _kAccent,
-                foregroundColor: Colors.white,
-                elevation: 0,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
-    );
+    ),
+  );
 }

@@ -2,9 +2,7 @@
 /// Centralized configuration for API, timeouts, and feature flags
 class AppConfig {
   // API Configuration
-  // Local dev: iOS simulator reaches the Mac's backend via localhost.
-  // (Production remote was 'http://24.199.85.230'.)
-  static const String apiBaseUrl = 'http://localhost:5001';
+  static const String apiBaseUrl = 'http://24.199.85.230';
   static const int apiTimeout = 30; // seconds
   static const int apiRetryCount = 3;
 

@@ -123,10 +123,16 @@ class ApiService {
 
   // ─── Photo Endpoints ─────────────────────────────────────────────────────
 
-  /// Get all photos
-  Future<List<PhotoResponse>> getPhotos() async {
+  /// Get all photos, optionally sorted by distance from [userLat]/[userLng]
+  Future<List<PhotoResponse>> getPhotos({
+    double? userLat,
+    double? userLng,
+  }) async {
     try {
-      final response = await _dio.get('/api/photos');
+      final response = await _dio.get('/api/photos', queryParameters: {
+        if (userLat != null) 'user_lat': userLat,
+        if (userLng != null) 'user_lng': userLng,
+      });
       if (response.data is List) {
         return (response.data as List)
             .map((p) => PhotoResponse.fromJson(p as Map<String, dynamic>))
@@ -367,9 +373,16 @@ class ApiService {
 
   // ─── F4: scheduling queues ────────────────────────────────────────────────
 
-  Future<Map<String, dynamic>> getSchedule({String? queue}) async {
-    final response = await _dio.get('/api/schedule',
-        queryParameters: {if (queue != null) 'queue': queue});
+  Future<Map<String, dynamic>> getSchedule({
+    String? queue,
+    double? userLat,
+    double? userLng,
+  }) async {
+    final response = await _dio.get('/api/schedule', queryParameters: {
+      if (queue != null) 'queue': queue,
+      if (userLat != null) 'user_lat': userLat,
+      if (userLng != null) 'user_lng': userLng,
+    });
     return response.data as Map<String, dynamic>;
   }
 
@@ -401,20 +414,33 @@ class ApiService {
     await _dio.patch('/api/photos/$photoId/status', data: {'status': status});
   }
 
+  /// Job list for the Archive screen.
+  /// [status] ∈ active (open + in_progress) | open | in_progress | completed | archived
   Future<List<Map<String, dynamic>>> getArchive(
-      {String? search, String? serviceLevel}) async {
+      {String? search, String? serviceLevel, String status = 'archived'}) async {
     final response = await _dio.get('/api/archive', queryParameters: {
       if (search != null) 'search': search,
       if (serviceLevel != null) 'service_level': serviceLevel,
+      'status': status,
     });
     return (response.data as List).cast<Map<String, dynamic>>();
   }
 
   // ─── F8 / F9: earnings + payouts ──────────────────────────────────────────
 
-  Future<Map<String, dynamic>> getEarnings({String period = 'today', int? userId}) async {
+  /// F9 — earnings summary. Pass [startDate]/[endDate] (YYYY-MM-DD) for a
+  /// custom range; this overrides [period] on the server.
+  Future<Map<String, dynamic>> getEarnings({
+    String period = 'today',
+    int? userId,
+    String? startDate,
+    String? endDate,
+  }) async {
     final response = await _dio.get('/api/earnings/summary', queryParameters: {
-      'period': period, if (userId != null) 'user_id': userId,
+      'period': period,
+      if (userId != null) 'user_id': userId,
+      if (startDate != null) 'start_date': startDate,
+      if (endDate != null) 'end_date': endDate,
     });
     return response.data as Map<String, dynamic>;
   }
@@ -458,6 +484,15 @@ class ApiService {
   Future<Map<String, dynamic>> addRecipient({required String email, String? label, int? userId}) async {
     final response = await _dio.post('/api/recipients', data: {
       'email': email, if (label != null) 'label': label, if (userId != null) 'user_id': userId,
+    });
+    return response.data as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> editRecipient(int id,
+      {String? email, String? label}) async {
+    final response = await _dio.patch('/api/recipients/$id', data: {
+      if (email != null) 'email': email,
+      if (label != null) 'label': label,
     });
     return response.data as Map<String, dynamic>;
   }

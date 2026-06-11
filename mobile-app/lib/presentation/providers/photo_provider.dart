@@ -136,3 +136,11 @@ final editTimestampProvider =
   await repository.editTimestamp(args.$1, args.$2);
   ref.invalidate(photosProvider);
 });
+
+/// F10 — move a job through open -> in_progress -> completed -> archived
+final updateStatusProvider =
+    FutureProvider.family<void, (int, String)>((ref, args) async {
+  final repository = ref.watch(photoRepositoryProvider);
+  await repository.updateStatus(args.$1, args.$2);
+  ref.invalidate(photosProvider);
+});

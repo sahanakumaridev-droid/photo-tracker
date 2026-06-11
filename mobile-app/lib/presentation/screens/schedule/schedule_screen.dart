@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../config/theme.dart';
 import '../../../core/network/api_client.dart';
+import '../../../core/utils/location_service.dart';
 
 /// F4 — Service-level scheduling queues.
 /// Gradient summary hero + tabbed queues with premium job cards.
@@ -51,8 +52,13 @@ class _ScheduleScreenState extends ConsumerState<ScheduleScreen>
 
   Future<void> _load() async {
     setState(() => _loading = true);
+    // Fetch user location so the backend can sort pins by distance.
+    final pos = await LocationService.getCurrentLocation();
     try {
-      final data = await ref.read(apiServiceProvider).getSchedule();
+      final data = await ref.read(apiServiceProvider).getSchedule(
+        userLat: pos?.latitude,
+        userLng: pos?.longitude,
+      );
       if (!mounted) return;
       setState(() {
         _queueData = (data['queues'] as Map?)?.cast<String, dynamic>() ?? {};
@@ -250,12 +256,28 @@ class _ScheduleScreenState extends ConsumerState<ScheduleScreen>
         ? (attempts.first['profile_name'] ?? 'Pin')
         : 'Pin #${m['location_group_id']}';
     final count = m['attempt_count'] ?? attempts.length;
+    final distMi = (m['distance_mi'] as num?)?.toDouble();
+    String? distLabel;
+    if (distMi != null) {
+      if (distMi < 0.1) {
+        distLabel = 'Nearby';
+      } else if (distMi < 10) {
+        distLabel = '${distMi.toStringAsFixed(1)} miles away';
+      } else {
+        distLabel = '${distMi.round()} miles away';
+      }
+    }
+
     return Container(
       decoration: BoxDecoration(
         color: AppTheme.white,
         borderRadius: BorderRadius.circular(16),
         boxShadow: const [
-          BoxShadow(color: Color(0x0F0F172A), blurRadius: 14, offset: Offset(0, 4)),
+          BoxShadow(
+            color: Color(0x0F0F172A),
+            blurRadius: 14,
+            offset: Offset(0, 4),
+          ),
         ],
       ),
       child: IntrinsicHeight(
@@ -271,15 +293,19 @@ class _ScheduleScreenState extends ConsumerState<ScheduleScreen>
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
                 ),
-                borderRadius:
-                    const BorderRadius.horizontal(left: Radius.circular(16)),
+                borderRadius: const BorderRadius.horizontal(
+                  left: Radius.circular(16),
+                ),
               ),
               child: Center(
-                child: Text('${index + 1}',
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w800,
-                        fontSize: 17)),
+                child: Text(
+                  '${index + 1}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 17,
+                  ),
+                ),
               ),
             ),
             Expanded(
@@ -291,33 +317,46 @@ class _ScheduleScreenState extends ConsumerState<ScheduleScreen>
                     Row(
                       children: [
                         Expanded(
-                          child: Text('$name',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.w800, fontSize: 15)),
+                          child: Text(
+                            '$name',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w800,
+                              fontSize: 15,
+                            ),
+                          ),
                         ),
                         if (m['pay_rate'] != null)
                           Container(
                             padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 4),
+                              horizontal: 10,
+                              vertical: 4,
+                            ),
                             decoration: BoxDecoration(
-                                color: const Color(0xFF10B981)
-                                    .withValues(alpha: 0.12),
-                                borderRadius: BorderRadius.circular(20)),
-                            child: Text('\$${m['pay_rate']}',
-                                style: const TextStyle(
-                                    color: Color(0xFF10B981),
-                                    fontWeight: FontWeight.w800,
-                                    fontSize: 13)),
+                              color: const Color(0xFF10B981)
+                                  .withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Text(
+                              '\$${m['pay_rate']}',
+                              style: const TextStyle(
+                                color: Color(0xFF10B981),
+                                fontWeight: FontWeight.w800,
+                                fontSize: 13,
+                              ),
+                            ),
                           ),
                       ],
                     ),
                     const SizedBox(height: 5),
                     Row(
                       children: [
-                        const Icon(Icons.place_outlined,
-                            size: 13, color: Color(0xFF9CA3AF)),
+                        const Icon(
+                          Icons.place_outlined,
+                          size: 13,
+                          color: Color(0xFF9CA3AF),
+                        ),
                         const SizedBox(width: 3),
                         Expanded(
                           child: Text(
@@ -326,7 +365,9 @@ class _ScheduleScreenState extends ConsumerState<ScheduleScreen>
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                                fontSize: 12, color: Color(0xFF6B7280)),
+                              fontSize: 12,
+                              color: Color(0xFF6B7280),
+                            ),
                           ),
                         ),
                       ],
@@ -336,8 +377,18 @@ class _ScheduleScreenState extends ConsumerState<ScheduleScreen>
                       children: [
                         _chip(q.label, q.color),
                         const SizedBox(width: 6),
-                        _chip('$count attempt${count == 1 ? '' : 's'}',
-                            const Color(0xFF6B7280)),
+                        _chip(
+                          '$count attempt${count == 1 ? '' : 's'}',
+                          const Color(0xFF6B7280),
+                        ),
+                        if (distLabel != null) ...[
+                          const SizedBox(width: 6),
+                          _chip(
+                            distLabel,
+                            const Color(0xFF0284C7),
+                            icon: Icons.near_me_rounded,
+                          ),
+                        ],
                       ],
                     ),
                   ],
@@ -350,13 +401,28 @@ class _ScheduleScreenState extends ConsumerState<ScheduleScreen>
     );
   }
 
-  Widget _chip(String text, Color color) => Container(
+  Widget _chip(String text, Color color, {IconData? icon}) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
         decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.10),
-            borderRadius: BorderRadius.circular(8)),
-        child: Text(text,
-            style: TextStyle(
-                color: color, fontWeight: FontWeight.w700, fontSize: 11)),
+          color: color.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (icon != null) ...[
+              Icon(icon, size: 10, color: color),
+              const SizedBox(width: 3),
+            ],
+            Text(
+              text,
+              style: TextStyle(
+                color: color,
+                fontWeight: FontWeight.w700,
+                fontSize: 11,
+              ),
+            ),
+          ],
+        ),
       );
 }

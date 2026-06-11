@@ -82,7 +82,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
   String _svcLabel(String? t) {
     switch ((t ?? '').toLowerCase()) {
       case 'rush':
-        return 'Rush';
+        return 'ASAP';
       case 'airport':
         return 'Airport';
       default:
@@ -98,6 +98,80 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
         return Icons.flight_rounded;
       default:
         return Icons.check_circle_rounded;
+    }
+  }
+
+  // ── F10: job lifecycle status ─────────────────────────────────────────────
+  static const _statusSteps = ['open', 'in_progress', 'completed', 'archived'];
+
+  Color _statusColor(String status) {
+    switch (status) {
+      case 'in_progress':
+        return const Color(0xFFF59E0B);
+      case 'completed':
+        return _standardGreen;
+      case 'archived':
+        return const Color(0xFF6B7280);
+      default:
+        return _airportBlue;
+    }
+  }
+
+  IconData _statusIcon(String status) {
+    switch (status) {
+      case 'in_progress':
+        return Icons.autorenew_rounded;
+      case 'completed':
+        return Icons.check_circle_rounded;
+      case 'archived':
+        return Icons.inventory_2_rounded;
+      default:
+        return Icons.radio_button_unchecked_rounded;
+    }
+  }
+
+  String _statusLabel(String status) {
+    switch (status) {
+      case 'in_progress':
+        return 'In Progress';
+      case 'completed':
+        return 'Completed';
+      case 'archived':
+        return 'Archived';
+      default:
+        return 'Open';
+    }
+  }
+
+  Future<void> _setStatus(PhotoModel photo, String status) async {
+    if (status == (photo.status ?? 'open')) return;
+    HapticFeedback.mediumImpact();
+    try {
+      await ref.read(updateStatusProvider((photo.id, status)).future);
+      if (mounted) {
+        HapticFeedback.heavyImpact();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Status updated to ${_statusLabel(status)}'),
+            backgroundColor: _statusColor(status),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(e.toString().replaceAll('Exception: ', '')),
+          backgroundColor: _rushRed,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+        ));
+      }
     }
   }
 
@@ -539,7 +613,22 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                 children: [
                   // Profile name + service type row
                   _buildProfileHeader(photo, svcColor),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 10),
+
+                  // F10 — job lifecycle status
+                  _buildStatusCard(photo),
+                  const SizedBox(height: 10),
+
+                  // Payout
+                  if (photo.payRate != null) ...[
+                    _buildInfoCard(
+                      icon: Icons.attach_money_rounded,
+                      label: 'Payout',
+                      value: '\$${photo.payRate}',
+                      iconColor: const Color(0xFF16A34A),
+                    ),
+                    const SizedBox(height: 10),
+                  ],
 
                   // Info cards
                   _buildInfoCard(
@@ -674,6 +763,226 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
           ],
         ),
       );
+
+  // ── F10: job lifecycle status card ────────────────────────────────────────
+  Widget _buildStatusCard(PhotoModel photo) {
+    final current = photo.status ?? 'open';
+    final currentIndex = _statusSteps.indexOf(current);
+    final color = _statusColor(current);
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+      decoration: BoxDecoration(
+        color: _surface,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header row
+          Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(_statusIcon(current), size: 18, color: color),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'JOB STATUS',
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                        color: _inkSubtle,
+                        letterSpacing: 0.8,
+                      ),
+                    ),
+                    const SizedBox(height: 1),
+                    Text(
+                      _statusLabel(current),
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        color: color,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // Step counter badge
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  '${currentIndex + 1} / ${_statusSteps.length}',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: color,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 22),
+          // Stepper
+          _buildJobStepper(currentIndex, photo),
+          const SizedBox(height: 14),
+          // Hint row
+          Container(
+            width: double.infinity,
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF9FAFB),
+              borderRadius: BorderRadius.circular(9),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.touch_app_rounded,
+                    size: 13, color: _inkSubtle),
+                SizedBox(width: 6),
+                Text(
+                  'Tap any step to change the status',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: _inkSubtle,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Horizontal stepper track
+  Widget _buildJobStepper(int currentIndex, PhotoModel photo) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (int i = 0; i < _statusSteps.length; i++) ...[
+          if (i > 0)
+            Expanded(
+              child: Padding(
+                // top: 19 centres the 2px line on the 40px circle (40/2 − 1)
+                padding: const EdgeInsets.only(top: 19),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 350),
+                  height: 2,
+                  decoration: BoxDecoration(
+                    color: i <= currentIndex
+                        ? _statusColor(_statusSteps[i - 1])
+                        : const Color(0xFFE8ECF0),
+                    borderRadius: BorderRadius.circular(1),
+                  ),
+                ),
+              ),
+            ),
+          _buildStepNode(i, currentIndex, photo),
+        ],
+      ],
+    );
+  }
+
+  // Individual step node (circle + label)
+  Widget _buildStepNode(int index, int currentIndex, PhotoModel photo) {
+    final step = _statusSteps[index];
+    final isCompleted = index < currentIndex;
+    final isActive = index == currentIndex;
+    final isFuture = index > currentIndex;
+    final stepColor = _statusColor(step);
+
+    return GestureDetector(
+      onTap: () => _setStatus(photo, step),
+      behavior: HitTestBehavior.opaque,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: isActive
+                  ? stepColor
+                  : isCompleted
+                      ? stepColor.withValues(alpha: 0.12)
+                      : const Color(0xFFF2F4F7),
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: isActive
+                    ? stepColor
+                    : isCompleted
+                        ? stepColor.withValues(alpha: 0.5)
+                        : const Color(0xFFDDE2E8),
+                width: isActive ? 0 : 1.5,
+              ),
+              boxShadow: isActive
+                  ? [
+                      BoxShadow(
+                        color: stepColor.withValues(alpha: 0.28),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Icon(
+              isCompleted ? Icons.check_rounded : _statusIcon(step),
+              size: 18,
+              color: isActive
+                  ? Colors.white
+                  : isCompleted
+                      ? stepColor
+                      : const Color(0xFFB0B8C4),
+            ),
+          ),
+          const SizedBox(height: 7),
+          SizedBox(
+            width: 58,
+            child: Text(
+              _statusLabel(step),
+              style: TextStyle(
+                fontSize: 9.5,
+                fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
+                color: isActive
+                    ? stepColor
+                    : isFuture
+                        ? const Color(0xFFB0B8C4)
+                        : _inkMuted,
+                height: 1.25,
+              ),
+              textAlign: TextAlign.center,
+              maxLines: 2,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   // ── Generic info card ─────────────────────────────────────────────────────
   Widget _buildInfoCard({

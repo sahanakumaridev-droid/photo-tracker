@@ -208,6 +208,17 @@ class PhotoRepository {
     }
   }
 
+  /// F10 — move a job through the lifecycle:
+  /// open -> in_progress -> completed -> archived
+  Future<void> updateStatus(int photoId, String status) async {
+    try {
+      await _dio.patch('/api/photos/$photoId/status',
+          data: {'status': status});
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
   Exception _handleError(DioException e) {
     // Never expose raw DioException or technical strings to the user.
     if (e.response != null) {

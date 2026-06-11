@@ -157,16 +157,16 @@ class SettingsScreenV2 extends ConsumerWidget {
                 subtitle: 'Change your password', onTap: () {}),
           ]),
 
-          _section('Preferences', [
-            _switchRow(
-              Icons.dark_mode_outlined,
-              'Dark Mode',
-              value: themeState.mode == ThemeMode.dark,
-              onChanged: (_) {
+          _section('Appearance', [
+            _themeModeRow(
+              isDark: themeState.mode == ThemeMode.dark,
+              accentColor: themeState.accentColor,
+              onToggle: () {
                 HapticFeedback.selectionClick();
                 ref.read(themeProvider.notifier).toggleTheme();
               },
             ),
+            const Divider(height: 1, color: _hair, indent: 60, endIndent: 16),
             _colorRow(
               currentColor: themeState.accentColor,
               onSelected: (c) =>
@@ -312,85 +312,198 @@ class SettingsScreenV2 extends ConsumerWidget {
         ),
       );
 
-  Widget _switchRow(IconData icon, String title,
-          {required bool value, required ValueChanged<bool> onChanged}) =>
+  Widget _themeModeRow({
+    required bool isDark,
+    required Color accentColor,
+    required VoidCallback onToggle,
+  }) =>
       Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        child: Row(children: [
-          Container(
-            width: 34,
-            height: 34,
-            decoration:
-                BoxDecoration(color: _bg, borderRadius: BorderRadius.circular(10)),
-            child: Icon(icon, size: 19, color: _ink),
+        padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                    color: _bg, borderRadius: BorderRadius.circular(10)),
+                child: Icon(
+                  isDark ? Icons.dark_mode_rounded : Icons.light_mode_rounded,
+                  size: 19,
+                  color: _ink,
+                ),
+              ),
+              const SizedBox(width: 12),
+              const Text('Theme',
+                  style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: _ink)),
+            ]),
+            const SizedBox(height: 12),
+            Container(
+              height: 46,
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                color: _bg,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Row(children: [
+                _themeSegment(
+                  icon: Icons.light_mode_rounded,
+                  label: 'Light',
+                  selected: !isDark,
+                  accentColor: accentColor,
+                  onTap: isDark ? onToggle : null,
+                ),
+                _themeSegment(
+                  icon: Icons.dark_mode_rounded,
+                  label: 'Dark',
+                  selected: isDark,
+                  accentColor: accentColor,
+                  onTap: !isDark ? onToggle : null,
+                ),
+              ]),
+            ),
+          ],
+        ),
+      );
+
+  Widget _themeSegment({
+    required IconData icon,
+    required String label,
+    required bool selected,
+    required Color accentColor,
+    VoidCallback? onTap,
+  }) =>
+      Expanded(
+        child: GestureDetector(
+          onTap: onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeInOut,
+            decoration: BoxDecoration(
+              color: selected ? accentColor : Colors.transparent,
+              borderRadius: BorderRadius.circular(10),
+              boxShadow: selected
+                  ? [
+                      BoxShadow(
+                        color: accentColor.withValues(alpha: 0.35),
+                        blurRadius: 10,
+                        offset: const Offset(0, 3),
+                      )
+                    ]
+                  : [],
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(icon,
+                    size: 15,
+                    color: selected ? Colors.white : _muted),
+                const SizedBox(width: 6),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: selected ? Colors.white : _muted,
+                  ),
+                ),
+              ],
+            ),
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(title,
-                style: const TextStyle(
-                    fontSize: 15, fontWeight: FontWeight.w600, color: _ink)),
-          ),
-          Switch.adaptive(
-            value: value,
-            onChanged: onChanged,
-            activeTrackColor: _purple,
-          ),
-        ]),
+        ),
       );
 
   Widget _colorRow(
       {required Color currentColor,
       required ValueChanged<String> onSelected}) {
     const colors = [
-      ('purple', Color(0xFF7C3AED)),
-      ('violet', Color(0xFF8B5CF6)),
-      ('indigo', Color(0xFF6366F1)),
-      ('black', Color(0xFF1F1F1F)),
+      ('purple', Color(0xFF7C3AED), 'Purple'),
+      ('violet', Color(0xFF8B5CF6), 'Violet'),
+      ('indigo', Color(0xFF6366F1), 'Indigo'),
+      ('plum', Color(0xFFA21CAF), 'Plum'),
+      ('slate', Color(0xFF475569), 'Slate'),
+      ('black', Color(0xFF1F1F1F), 'Dark'),
     ];
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
-      child: Row(children: [
-        Container(
-          width: 34,
-          height: 34,
-          decoration:
-              BoxDecoration(color: _bg, borderRadius: BorderRadius.circular(10)),
-          child: const Icon(Icons.palette_outlined, size: 19, color: _ink),
-        ),
-        const SizedBox(width: 12),
-        const Expanded(
-          child: Text('Accent Color',
-              style: TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.w600, color: _ink)),
-        ),
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: colors.map((c) {
-            final selected = c.$2.toARGB32() == currentColor.toARGB32();
-            return GestureDetector(
-              onTap: () {
-                HapticFeedback.selectionClick();
-                onSelected(c.$1);
-              },
-              child: Container(
-                margin: const EdgeInsets.only(left: 8),
-                width: 26,
-                height: 26,
-                decoration: BoxDecoration(
-                  color: c.$2,
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                      color: selected ? _ink : Colors.transparent, width: 2),
-                ),
-                child: selected
-                    ? const Icon(Icons.check_rounded,
-                        size: 14, color: Colors.white)
-                    : null,
-              ),
-            );
-          }).toList(),
-        ),
-      ]),
+      padding: const EdgeInsets.fromLTRB(14, 4, 14, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                  color: _bg, borderRadius: BorderRadius.circular(10)),
+              child: const Icon(Icons.palette_outlined, size: 19, color: _ink),
+            ),
+            const SizedBox(width: 12),
+            const Text('Accent Color',
+                style: TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.w600, color: _ink)),
+          ]),
+          const SizedBox(height: 14),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: colors.map((c) {
+              final selected = c.$2.toARGB32() == currentColor.toARGB32();
+              return GestureDetector(
+                onTap: () {
+                  HapticFeedback.selectionClick();
+                  onSelected(c.$1);
+                },
+                child: Column(children: [
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 220),
+                    curve: Curves.easeInOut,
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: c.$2,
+                      shape: BoxShape.circle,
+                      boxShadow: selected
+                          ? [
+                              BoxShadow(
+                                color: c.$2.withValues(alpha: 0.55),
+                                blurRadius: 12,
+                                offset: const Offset(0, 4),
+                              )
+                            ]
+                          : [],
+                      border: selected
+                          ? Border.all(
+                              color: Colors.white,
+                              width: 2.5,
+                              strokeAlign: BorderSide.strokeAlignOutside,
+                            )
+                          : null,
+                    ),
+                    alignment: Alignment.center,
+                    child: selected
+                        ? const Icon(Icons.check_rounded,
+                            size: 17, color: Colors.white)
+                        : null,
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    c.$3,
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight:
+                          selected ? FontWeight.w700 : FontWeight.w400,
+                      color: selected ? c.$2 : _muted,
+                    ),
+                  ),
+                ]),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
     );
   }
 

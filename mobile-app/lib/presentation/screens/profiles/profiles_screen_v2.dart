@@ -221,7 +221,7 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
                 value: selectedServiceType,
                 items: const [
                   DropdownMenuItem(value: 'standard', child: Text('Standard')),
-                  DropdownMenuItem(value: 'rush', child: Text('Rush')),
+                  DropdownMenuItem(value: 'rush', child: Text('ASAP')),
                   DropdownMenuItem(value: 'airport', child: Text('Airport')),
                 ]
                     .map((item) => DropdownMenuItem(
@@ -301,7 +301,7 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
                 value: selectedServiceType,
                 items: const [
                   DropdownMenuItem(value: 'standard', child: Text('Standard')),
-                  DropdownMenuItem(value: 'rush', child: Text('Rush')),
+                  DropdownMenuItem(value: 'rush', child: Text('ASAP')),
                   DropdownMenuItem(value: 'airport', child: Text('Airport')),
                 ]
                     .map((item) => DropdownMenuItem(
@@ -380,6 +380,7 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
             onPressed: () async {
               try {
                 await ref.read(deleteProfileProvider(profile.id).future);
+                ref.invalidate(profilesProvider);
 
                 if (context.mounted) {
                   Navigator.pop(context);

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../../config/app_config.dart';
 import '../../../config/theme.dart';
@@ -30,8 +31,16 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
     ['special', 'Special'],
   ];
 
+  // F10 — job lifecycle filter shown above the service-level chips.
+  static const _statuses = [
+    ['active', 'Active'],
+    ['completed', 'Completed'],
+    ['archived', 'Archived'],
+  ];
+
   String _search = '';
   String _level = '';
+  String _status = 'active';
   List<Map<String, dynamic>> _rows = [];
   bool _loading = true;
 
@@ -47,6 +56,7 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
       final rows = await ref.read(apiServiceProvider).getArchive(
             search: _search.isEmpty ? null : _search,
             serviceLevel: _level.isEmpty ? null : _level,
+            status: _status,
           );
       if (!mounted) return;
       setState(() {
@@ -57,6 +67,9 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
       if (mounted) setState(() => _loading = false);
     }
   }
+
+  String get _statusLabel => _statuses
+      .firstWhere((s) => s[0] == _status, orElse: () => _statuses[0])[1];
 
   Color _color(String? cat) =>
       _catColors[(cat ?? 'standard').toLowerCase()] ?? _catColors['standard']!;
@@ -76,10 +89,42 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
       ),
       body: Column(
         children: [
+          // F10 — job lifecycle filter (Active / Completed / Archived)
+          SizedBox(
+            height: 44,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+              children: _statuses.map((s) {
+                final sel = _status == s[0];
+                return Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: ChoiceChip(
+                    label: Text(s[1]),
+                    selected: sel,
+                    selectedColor: AppTheme.primary,
+                    backgroundColor: AppTheme.white,
+                    labelStyle: TextStyle(
+                        color: sel ? Colors.white : const Color(0xFF6B7280),
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13),
+                    side: BorderSide(
+                        color: sel
+                            ? AppTheme.primary
+                            : const Color(0xFFE5E7EB)),
+                    onSelected: (_) {
+                      setState(() => _status = s[0]);
+                      _load();
+                    },
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
           // Premium stat header
           if (!_loading)
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
               child: Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -90,12 +135,16 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
                   ),
                   borderRadius: BorderRadius.circular(18),
                   boxShadow: const [
-                    BoxShadow(color: Color(0x220F172A), blurRadius: 18, offset: Offset(0, 8)),
+                    BoxShadow(
+                        color: Color(0x220F172A),
+                        blurRadius: 18,
+                        offset: Offset(0, 8)),
                   ],
                 ),
                 child: Row(
                   children: [
-                    _stat('${_rows.length}', 'Archived jobs', Icons.inventory_2_rounded),
+                    _stat('${_rows.length}', '$_statusLabel jobs',
+                        Icons.inventory_2_rounded),
                     Container(width: 1, height: 38, color: Colors.white24),
                     _stat('\$$_totalPay', 'Total pay', Icons.payments_rounded),
                   ],
@@ -107,7 +156,7 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
             child: TextField(
               decoration: InputDecoration(
-                hintText: 'Search archived jobs…',
+                hintText: 'Search ${_statusLabel.toLowerCase()} jobs…',
                 prefixIcon: const Icon(Icons.search, size: 20),
                 isDense: true,
                 filled: true,
@@ -162,7 +211,9 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
               padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
               child: Row(
                 children: [
-                  Text('${_rows.length} archived job${_rows.length == 1 ? '' : 's'}',
+                  Text(
+                      '${_rows.length} ${_statusLabel.toLowerCase()} '
+                      'job${_rows.length == 1 ? '' : 's'}',
                       style: const TextStyle(
                           fontSize: 12.5,
                           fontWeight: FontWeight.w700,
@@ -181,9 +232,10 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
             child: _loading
                 ? const Center(child: CircularProgressIndicator())
                 : _rows.isEmpty
-                    ? const Center(
-                        child: Text('No archived jobs found.',
-                            style: TextStyle(color: Colors.grey)))
+                    ? Center(
+                        child: Text(
+                            'No ${_statusLabel.toLowerCase()} jobs found.',
+                            style: const TextStyle(color: Colors.grey)))
                     : RefreshIndicator(
                         onRefresh: _load,
                         child: ListView.separated(
@@ -228,9 +280,14 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
     final cat = (r['category'] ?? 'standard').toString();
     final c = _color(cat);
     final img = r['image_url'] as String?;
-    return Container(
+    return Material(
+      color: AppTheme.white,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: () => context.push('/photo/${r['id']}').then((_) => _load()),
+        child: Container(
       decoration: BoxDecoration(
-        color: AppTheme.white,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: const Color(0xFFEEEDF4)),
       ),
@@ -315,6 +372,8 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
                 ),
               ),
           ],
+        ),
+      ),
         ),
       ),
     );

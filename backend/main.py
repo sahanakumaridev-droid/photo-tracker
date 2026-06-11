@@ -209,7 +209,13 @@ def _ensure_columns():
         conn.execute(text(
             "UPDATE photos SET location_group_id = id WHERE location_group_id IS NULL"))
         conn.execute(text(
-            "UPDATE photos SET status = 'open' WHERE status IS NULL"))
+            "UPDATE photos SET status = 'in_progress' WHERE status IS NULL"))
+        # Backfill completed_at for archived jobs that were archived directly
+        # (before the fix that stamps completed_at on archive transitions).
+        conn.execute(text(
+            "UPDATE photos SET completed_at = COALESCE(edited_timestamp, taken_at, timestamp) "
+            "WHERE status IN ('archived', 'completed') AND completed_at IS NULL"))
+        conn.commit()
         # Legacy rows: anchor the edit window to their capture time so old pins
         # stay locked (new rows get created_at = insertion time).
         conn.execute(text(
@@ -384,11 +390,26 @@ def get_profile_photos(profile_id: int):
 # ─── PHOTO ROUTES ─────────────────────────────────────────────────────────────
 
 @app.get("/photos")
-def get_photos():
+def get_photos(
+    user_lat: Optional[float] = None,
+    user_lng: Optional[float] = None,
+):
+    """Return all photos. When user_lat/user_lng are provided each photo gets
+    a distance_mi field and results are sorted nearest-first."""
     db = SessionLocal()
-    photos = db.query(Photo).all()
-    result = [_photo_dict(ph) for ph in photos]
+    photos = db.query(Photo).order_by(Photo.id.desc()).all()
+    result = []
+    for ph in photos:
+        d = _photo_dict(ph)
+        if user_lat is not None and user_lng is not None and ph.latitude and ph.longitude:
+            dist_ft = _haversine_ft(user_lat, user_lng, ph.latitude, ph.longitude)
+            d["distance_mi"] = round(dist_ft / 5280, 2)
+        else:
+            d["distance_mi"] = None
+        result.append(d)
     db.close()
+    if user_lat is not None and user_lng is not None:
+        result.sort(key=lambda d: d["distance_mi"] if d["distance_mi"] is not None else float("inf"))
     return result
 
 
@@ -398,7 +419,7 @@ def _parse_device_ts(s):
         return None
     s = s.strip()
     for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M",
-                "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+                "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
         try:
             return datetime.strptime(s.replace("Z", "").split("+")[0], fmt)
         except ValueError:
@@ -453,6 +474,11 @@ async def upload_photo(
     uid = int(user_id) if user_id.strip().isdigit() else None
     grp = int(location_group_id) if location_group_id.strip().isdigit() else None
 
+    # New pins always start as in_progress — status only changes to completed
+    # or archived when the user explicitly closes them out.
+    initial_status = "in_progress"
+    initial_completed_at = None
+
     photo = Photo(
         image_url          = f"/uploads/{filename}",
         timestamp          = device_ts,
@@ -469,7 +495,8 @@ async def upload_photo(
                               else "standard"),
         pay_rate           = pay_val,
         user_id            = uid,
-        status             = "open",
+        status             = initial_status,
+        completed_at       = initial_completed_at,
         profile_id         = profile_id,
     )
     photo.profiles = [profile]
@@ -865,21 +892,28 @@ def _master_pin_dict(group_photos):
     """Collapse a list of attempt-Photos sharing a group into one master pin."""
     attempts = sorted(group_photos, key=lambda p: p.id)
     root = attempts[0]
-    statuses = {p.status or "open" for p in attempts}
+    statuses = {p.status or "in_progress" for p in attempts}
     if statuses == {"archived"}:
         status = "archived"
-    elif "open" in statuses:
-        status = "open"
+    elif "in_progress" in statuses or "open" in statuses:
+        status = "in_progress"
     else:
         status = "completed"
     pay = next((p.pay_rate for p in attempts if p.pay_rate is not None), None)
+
+    # Service level: use the category of the most recent *active* attempt so
+    # that adding a new attempt (e.g. "standard") to an existing ASAP group
+    # reflects the latest intent rather than the original first attempt.
+    active = [p for p in attempts if (p.status or "in_progress") not in ("archived", "completed")]
+    service_level = (active[-1] if active else attempts[-1]).category or "standard"
+
     return {
         "location_group_id": _group_key(root),
         "latitude":          root.latitude,
         "longitude":         root.longitude,
         "address":           root.address,
         "zip_code":          root.zip_code,
-        "service_level":     root.category or "standard",
+        "service_level":     service_level,
         "pay_rate":          pay,
         "status":            status,
         "attempt_count":     len(attempts),
@@ -949,8 +983,14 @@ def location_attempts(group_id: int):
 # ─── F4: SERVICE-LEVEL SCHEDULING QUEUES ────────────────────────────────────
 
 @app.get("/schedule")
-def get_schedule(queue: Optional[str] = None):
-    """Scheduling queues derived from service level. queue ∈ service levels."""
+def get_schedule(
+    queue: Optional[str] = None,
+    user_lat: Optional[float] = None,
+    user_lng: Optional[float] = None,
+):
+    """Scheduling queues derived from service level.
+    When user_lat/user_lng are provided each pin gets a distance_mi field and
+    results are sorted nearest-first within each priority tier."""
     db = SessionLocal()
     pins = [p for p in _all_master_pins(db) if p["status"] != "archived"]
     db.close()
@@ -959,8 +999,17 @@ def get_schedule(queue: Optional[str] = None):
         pins = [p for p in pins if p["service_level"] == q]
     for p in pins:
         p["priority"] = _PRIORITY.get(p["service_level"], 3)
-    pins.sort(key=lambda p: (p["priority"], p["first_attempt_at"] or ""))
-    # Group into named queues for convenience
+        if user_lat is not None and user_lng is not None and p["latitude"] and p["longitude"]:
+            dist_ft = _haversine_ft(user_lat, user_lng, p["latitude"], p["longitude"])
+            p["distance_mi"] = round(dist_ft / 5280, 2)
+        else:
+            p["distance_mi"] = None
+    # Sort: priority tier first, then nearest first (None distances go last)
+    pins.sort(key=lambda p: (
+        p["priority"],
+        p["distance_mi"] if p["distance_mi"] is not None else float("inf"),
+    ))
+    # Group into named queues preserving the sorted order
     queues = {lvl: [] for lvl in _SERVICE_LEVELS}
     for p in pins:
         queues.setdefault(p["service_level"], []).append(p)
@@ -1036,10 +1085,12 @@ async def update_pay_rate(photo_id: int, data: dict = Body(...)):
     except (TypeError, ValueError):
         db.close()
         raise HTTPException(status_code=422, detail="pay_rate must be a whole dollar number")
+    # Pay rate is recorded but does NOT auto-complete the job.
+    # Status is only changed by an explicit PATCH /photos/{id}/status call.
     db.commit()
     pay_val = photo.pay_rate
     db.close()
-    return {"ok": True, "pay_rate": pay_val}
+    return {"ok": True, "pay_rate": pay_val, "status": photo.status}
 
 
 # ─── F10: ARCHIVE / JOB STATUS WORKFLOW ─────────────────────────────────────
@@ -1052,11 +1103,11 @@ async def update_status(photo_id: int, data: dict = Body(...)):
         db.close()
         raise HTTPException(status_code=404, detail="Photo not found")
     st = (data.get("status") or "").strip().lower()
-    if st not in ("open", "completed", "archived"):
+    if st not in ("open", "in_progress", "completed", "archived"):
         db.close()
-        raise HTTPException(status_code=422, detail="status must be open|completed|archived")
+        raise HTTPException(status_code=422, detail="status must be open|in_progress|completed|archived")
     photo.status = st
-    if st == "completed" and not photo.completed_at:
+    if st in ("completed", "archived") and not photo.completed_at:
         photo.completed_at = datetime.utcnow()
     db.commit()
     db.close()
@@ -1064,10 +1115,21 @@ async def update_status(photo_id: int, data: dict = Body(...)):
 
 
 @app.get("/archive")
-def get_archive(search: Optional[str] = None, service_level: Optional[str] = None):
-    """Archived jobs with search + service-level filter."""
+def get_archive(search: Optional[str] = None, service_level: Optional[str] = None,
+                status: str = "archived"):
+    """Job list for the Archive screen, filtered by lifecycle status.
+
+    `status` ∈ active (open + in_progress) | open | in_progress | completed | archived
+    (defaults to "archived" for backward compatibility)."""
     db = SessionLocal()
-    photos = db.query(Photo).filter(Photo.status == "archived").order_by(
+    st = (status or "archived").strip().lower()
+    if st == "active":
+        status_filter = Photo.status.in_(("open", "in_progress"))
+    elif st in ("open", "in_progress", "completed", "archived"):
+        status_filter = Photo.status == st
+    else:
+        status_filter = Photo.status == "archived"
+    photos = db.query(Photo).filter(status_filter).order_by(
         Photo.timestamp.desc()).all()
     result = []
     for ph in photos:
@@ -1106,16 +1168,31 @@ def _period_bounds(period):
 
 
 @app.get("/earnings/summary")
-def earnings_summary(period: str = "today", user_id: Optional[int] = None):
-    """Aggregate completed-job earnings for the period (Uber-style)."""
-    start = _period_bounds(period)
+def earnings_summary(period: str = "today", user_id: Optional[int] = None,
+                      start_date: Optional[str] = None, end_date: Optional[str] = None):
+    """Aggregate completed-job earnings for the period (Uber-style).
+
+    Counts jobs with status completed OR archived (an archived job that was
+    completed must keep counting toward earnings/payouts). Pass `start_date`
+    / `end_date` (YYYY-MM-DD) for a custom range — overrides `period`."""
     db = SessionLocal()
-    q = db.query(Photo).filter(Photo.status == "completed",
-                               Photo.completed_at >= start)
+    q = db.query(Photo).filter(Photo.status.in_(("completed", "archived")),
+                               Photo.completed_at.isnot(None))
+    if start_date or end_date:
+        period = "custom"
+        start = _parse_device_ts(start_date)
+        if start:
+            q = q.filter(Photo.completed_at >= start)
+        end = _parse_device_ts(end_date)
+        if end:
+            end = end.replace(hour=23, minute=59, second=59, microsecond=999999)
+            q = q.filter(Photo.completed_at <= end)
+    else:
+        start = _period_bounds(period)
+        q = q.filter(Photo.completed_at >= start)
     if user_id is not None:
         q = q.filter(Photo.user_id == user_id)
     jobs = q.all()
-    db.close()
     total = sum((j.pay_rate or 0) for j in jobs)
     count = len(jobs)
     # daily breakdown for trend chart
@@ -1123,12 +1200,30 @@ def earnings_summary(period: str = "today", user_id: Optional[int] = None):
     for j in jobs:
         day = (_to_pst_iso(j.completed_at) or "")[:10]
         daily[day] = daily.get(day, 0) + (j.pay_rate or 0)
+
+    def _job_summary(j):
+        if j is None:
+            return None
+        return {
+            "id":           j.id,
+            "pay_rate":     j.pay_rate or 0,
+            "profile_name": (j.profiles[0].name if j.profiles else "Unknown"),
+            "category":     j.category or "standard",
+            "address":      j.address,
+            "completed_at": _to_pst_iso(j.completed_at),
+        }
+
+    highest = _job_summary(max(jobs, key=lambda j: (j.pay_rate or 0), default=None))
+    lowest  = _job_summary(min(jobs, key=lambda j: (j.pay_rate or 0), default=None))
+    db.close()
     return {
-        "period":          period,
-        "jobs_completed":  count,
-        "total_earnings":  total,
-        "average_per_job": round(total / count, 2) if count else 0,
-        "daily_totals":    [{"date": d, "amount": a} for d, a in sorted(daily.items())],
+        "period":             period,
+        "jobs_completed":     count,
+        "total_earnings":     total,
+        "average_per_job":    round(total / count, 2) if count else 0,
+        "highest_paying_job": highest,
+        "lowest_paying_job":  lowest,
+        "daily_totals":       [{"date": d, "amount": a} for d, a in sorted(daily.items())],
     }
 
 
@@ -1136,9 +1231,13 @@ def earnings_summary(period: str = "today", user_id: Optional[int] = None):
 def get_payouts(user_id: Optional[int] = None):
     """Closed-out pins grouped by completion day — works like the daily log but
     for completed jobs (Don #8). Each day lists its individual closed pins,
-    its daily total, and a cumulative running total across all days."""
+    its daily total, and a cumulative running total across all days.
+
+    Includes archived jobs that were completed (archiving must not remove a
+    job from its payout history)."""
     db = SessionLocal()
-    q = db.query(Photo).filter(Photo.status == "completed")
+    q = db.query(Photo).filter(Photo.status.in_(("completed", "archived")),
+                               Photo.completed_at.isnot(None))
     if user_id is not None:
         q = q.filter(Photo.user_id == user_id)
     jobs = q.order_by(Photo.completed_at.desc()).all()
@@ -1179,7 +1278,8 @@ async def finalize_payout(data: dict = Body(...)):
     start = _parse_device_ts(data.get("period_start"))
     end = _parse_device_ts(data.get("period_end"))
     uid = data.get("user_id")
-    q = db.query(Photo).filter(Photo.status == "completed")
+    q = db.query(Photo).filter(Photo.status.in_(("completed", "archived")),
+                               Photo.completed_at.isnot(None))
     if uid is not None:
         q = q.filter(Photo.user_id == uid)
     if start:

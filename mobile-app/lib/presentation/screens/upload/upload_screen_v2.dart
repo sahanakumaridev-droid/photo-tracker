@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -32,7 +33,7 @@ class UploadScreenV2 extends ConsumerStatefulWidget {
 
 class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   // ── Design tokens ─────────────────────────────────────────────────────────
-  static const Color _canvas = Color(0xFFFAFAFA);
+  static const Color _canvas = Color(0xFFF7F5FF);
   static const Color _surface = Color(0xFFFFFFFF);
   static const Color _ink = Color(0xFF0F0F0F);
   static const Color _inkMuted = Color(0xFF6B7280);
@@ -40,12 +41,20 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   static const Color _separator = Color(0xFFE5E7EB);
   static const Color _accent = Color(0xFF7C3AED);
   static const Color _accentSoft = Color(0xFFEDE9FE);
+  static const Color _accentMid = Color(0xFF8B5CF6);
   static const Color _successGreen = Color(0xFF10B981);
   static const Color _errorRed = Color(0xFFEF4444);
+  static const Color _stepInactive = Color(0xFFE5E7EB);
+  static const LinearGradient _btnGradient = LinearGradient(
+    begin: Alignment.centerLeft,
+    end: Alignment.centerRight,
+    colors: [Color(0xFF8B5CF6), Color(0xFF6D28D9)],
+  );
 
   // ── Upload state enum ─────────────────────────────────────────────────────
   // idle → uploading → processing → success | failed
   _UploadState _uploadState = _UploadState.idle;
+  int? _lastUploadedPhotoId;
 
   // ── State ─────────────────────────────────────────────────────────────────
   File? _selectedImage;
@@ -62,6 +71,8 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   String? _takenAt;
   // F1: when the user chooses to append to an existing pin.
   int? _locationGroupId;
+  // Prevent the nearby-pin prompt from firing more than once per location.
+  bool _nearbyCheckDone = false;
 
   final _noteController = TextEditingController();
   final _addressController = TextEditingController();
@@ -71,10 +82,12 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   @override
   void initState() {
     super.initState();
-    // Small delay so the screen renders first, then fetch location
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _fetchLocation();
-      _maybeRestoreDraft();
+    // Draft restore runs first so its dialog never overlaps the nearby-pin
+    // dialog that _fetchLocation fires. Both use useRootNavigator:true, and
+    // two concurrent root dialogs make buttons appear broken to the user.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _maybeRestoreDraft(); // fully resolved before GPS starts
+      unawaited(_fetchLocation());
     });
     // F5: auto-save the draft whenever the text fields change.
     _noteController.addListener(_saveDraft);
@@ -92,10 +105,11 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
 
   // ── F5: Draft auto-save & recovery ────────────────────────────────────────
   void _saveDraft() {
-    // Only persist once there's something worth resuming.
-    if (_noteController.text.isEmpty &&
-        _addressController.text.isEmpty &&
-        _payRateController.text.isEmpty) {
+    // Only persist when the user has selected a photo or profile.
+    // Auto-fetched GPS + reverse-geocoded address are NOT intentional actions
+    // and must not trigger a draft — they fire this via the text-controller
+    // listener and would cause the "Resume?" dialog on every fresh open.
+    if (_selectedImage == null && _selectedProfile == null) {
       return;
     }
     LocalStorage.savePinDraft(jsonEncode({
@@ -104,6 +118,14 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       'category': _selectedCategory,
       'payRate': _payRateController.text,
       'profileId': _selectedProfile?.id,
+      // F5: also persist the in-progress photo + location, so a resumed
+      // draft doesn't need the photo retaken or the GPS fix redone.
+      'photoPath': _selectedImage?.path,
+      'latitude': _latitude,
+      'longitude': _longitude,
+      'gpsAccuracy': _gpsAccuracy,
+      'takenAt': _takenAt,
+      'locationGroupId': _locationGroupId,
     }));
   }
 
@@ -118,33 +140,65 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     }
     final resume = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      useRootNavigator: true,
+      builder: (dialogCtx) => AlertDialog(
         title: const Text('Resume Draft?'),
         content: const Text(
             'You have an unsaved pin in progress. Resume where you left off?'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => Navigator.pop(dialogCtx, false),
             child: const Text('Discard'),
           ),
           ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
+            onPressed: () => Navigator.pop(dialogCtx, true),
             child: const Text('Resume'),
           ),
         ],
       ),
     );
-    if (resume ?? false) {
-      setState(() {
-        _noteController.text = (draft['note'] ?? '') as String;
-        _addressController.text = (draft['address'] ?? '') as String;
-        _payRateController.text = (draft['payRate'] ?? '') as String;
-        _selectedCategory =
-            (draft['category'] ?? kDefaultCategory) as String;
-      });
-    } else {
+    if (!(resume ?? false)) {
       await LocalStorage.clearPinDraft();
+      return;
     }
+
+    // F5: restore the in-progress photo (if it's still on disk).
+    final photoPath = draft['photoPath'] as String?;
+    final restoredImage =
+        photoPath != null && File(photoPath).existsSync()
+            ? File(photoPath)
+            : null;
+
+    // F5: restore the previously-selected profile, if any.
+    ProfileModel? restoredProfile;
+    final profileId = draft['profileId'] as int?;
+    if (profileId != null) {
+      try {
+        final profiles = await ref.read(profilesProvider.future);
+        for (final p in profiles) {
+          if (p.id == profileId) {
+            restoredProfile = p;
+            break;
+          }
+        }
+      } catch (_) {/* keep going without a pre-selected profile */}
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _noteController.text = (draft['note'] ?? '') as String;
+      _addressController.text = (draft['address'] ?? '') as String;
+      _payRateController.text = (draft['payRate'] ?? '') as String;
+      _selectedCategory =
+          (draft['category'] ?? kDefaultCategory) as String;
+      _selectedImage = restoredImage;
+      _latitude = (draft['latitude'] as num?)?.toDouble();
+      _longitude = (draft['longitude'] as num?)?.toDouble();
+      _gpsAccuracy = (draft['gpsAccuracy'] as num?)?.toDouble();
+      _takenAt = draft['takenAt'] as String?;
+      _locationGroupId = draft['locationGroupId'] as int?;
+      if (restoredProfile != null) _selectedProfile = restoredProfile;
+    });
   }
 
   // ── Location ──────────────────────────────────────────────────────────────
@@ -216,7 +270,13 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
           _gpsAccuracy = freshPos.accuracy;
           _locationError = false;
           _locationErrorMsg = null;
+          _nearbyCheckDone = false; // fresh location — re-arm the check
         });
+        // F5: persist the location into the draft right away.
+        _saveDraft();
+        // F1: proactively check for nearby pins as soon as GPS is ready,
+        // so the user is prompted before filling out the form.
+        unawaited(_checkNearbyAndMaybeReuse());
 
         // Reverse geocode for address (ZIP is inline in the address string)
         final address = await LocationService.reverseGeocode(
@@ -263,7 +323,12 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       _latitude = picked.latLng.latitude;
       _longitude = picked.latLng.longitude;
       _locationError = false;
+      _nearbyCheckDone = false; // new location — re-arm the nearby check
     });
+    // F5: persist the picked location into the draft right away.
+    _saveDraft();
+    // F1: re-run proactive nearby check for the newly picked location.
+    unawaited(_checkNearbyAndMaybeReuse());
 
     // Prefer the address the picker already resolved (matches the pin exactly);
     // only reverse-geocode as a fallback if it didn't have one.
@@ -414,6 +479,8 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
         // F6: prefer the photo's real EXIF capture time over upload time
         final captured = await _captureTimeIso(File(picked.path));
         if (mounted) setState(() => _takenAt = captured);
+        // F5: persist the photo into the draft right away.
+        _saveDraft();
       }
     } on PlatformException catch (e) {
       debugPrint('[Picker] PlatformException: ${e.code} – ${e.message}');
@@ -512,8 +579,9 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       return;
     }
 
-    // F1: detect existing pins within ~100ft and offer to reuse one.
-    if (_locationGroupId == null) {
+    // F1: fallback nearby check — only runs if the proactive GPS check
+    // didn't fire yet (e.g. user tapped Submit before GPS fixed).
+    if (_locationGroupId == null && !_nearbyCheckDone) {
       await _checkNearbyAndMaybeReuse();
       if (!mounted) return;
     }
@@ -524,7 +592,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     final payRate = int.tryParse(_payRateController.text.trim());
 
     try {
-      await ref.read(uploadPhotoProvider({
+      final uploaded = await ref.read(uploadPhotoProvider({
         'filePath': _selectedImage!.path,
         'profileId': _selectedProfile!.id,
         'latitude': _latitude,
@@ -545,12 +613,13 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       // F5: pin committed — clear the saved draft.
       await LocalStorage.clearPinDraft();
       HapticFeedback.heavyImpact();
-      setState(() => _uploadState = _UploadState.success);
+      setState(() {
+        _uploadState = _UploadState.success;
+        _lastUploadedPhotoId = uploaded.id;
+      });
       _showSnack(_locationGroupId != null
           ? 'Attempt added to existing pin'
           : 'Photo uploaded successfully');
-      await Future<void>.delayed(const Duration(milliseconds: 1000));
-      if (mounted) context.go('/home');
     } catch (e) {
       debugPrint('[UPLOAD ERROR] $e');
       if (!mounted) return;
@@ -566,6 +635,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
 
   // ── F1: nearby duplicate detection + existing-pin reuse ───────────────────
   Future<void> _checkNearbyAndMaybeReuse() async {
+    if (_nearbyCheckDone || _latitude == null || _longitude == null) return;
     try {
       final nearby = await ref.read(apiServiceProvider).getNearby(
             latitude: _latitude!,
@@ -574,22 +644,25 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       if (nearby.isEmpty || !mounted) return;
       final nearest = nearby.first;
       final dist = (nearest['distance_ft'] as num?)?.toStringAsFixed(0) ?? '?';
+      final count = nearest['attempt_count'] ?? 0;
       final useExisting = await showDialog<bool>(
         context: context,
-        builder: (_) => AlertDialog(
-          title: const Text('Existing location detected'),
+        useRootNavigator: true,
+        builder: (dialogCtx) => AlertDialog(
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20)),
+          title: const Text('Nearby pin found'),
           content: Text(
-              'A pin already exists ~$dist ft away with '
-              '${nearest['attempt_count']} attempt(s). Add this attempt to the '
-              'existing pin, or create a new pin?'),
+              'A pin exists ~$dist ft away with $count logged attempt(s).\n\n'
+              'Add your photo, timestamp and note to that pin, or start a new one?'),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Create New Pin'),
+              onPressed: () => Navigator.pop(dialogCtx, false),
+              child: const Text('New Pin'),
             ),
             ElevatedButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Use Existing Pin'),
+              onPressed: () => Navigator.pop(dialogCtx, true),
+              child: const Text('Add to Existing'),
             ),
           ],
         ),
@@ -597,9 +670,12 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       if ((useExisting ?? false) && mounted) {
         setState(() =>
             _locationGroupId = nearest['location_group_id'] as int?);
+        _saveDraft();
       }
     } catch (_) {
-      // Nearby detection is best-effort — never block an upload on it.
+      // Best-effort — never block an upload on this.
+    } finally {
+      if (mounted) setState(() => _nearbyCheckDone = true);
     }
   }
 
@@ -632,10 +708,203 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                   _buildCategorySection(),
                   const SizedBox(height: 14),
                   _buildDetailsSection(),
-                  const SizedBox(height: 20),
-                  _buildUploadBar(canUpload),
                   const SizedBox(height: 8),
                 ],
+              ),
+            ),
+          ),
+          _buildStickyFooter(canUpload),
+        ],
+      ),
+    );
+  }
+
+  // ── Sticky footer CTA ────────────────────────────────────────────────────
+  Widget _buildStickyFooter(bool canUpload) {
+    final isActive = _uploadState != _UploadState.idle;
+    final isInProgress = _uploadState == _UploadState.uploading ||
+        _uploadState == _UploadState.processing;
+
+    String label;
+    IconData btnIcon;
+    Color? overrideColor;
+
+    switch (_uploadState) {
+      case _UploadState.uploading:
+        label = 'Uploading photo…';
+        btnIcon = Icons.cloud_upload_rounded;
+        break;
+      case _UploadState.processing:
+        label = 'Processing…';
+        btnIcon = Icons.cloud_upload_rounded;
+        break;
+      case _UploadState.success:
+        label = 'Upload Complete';
+        btnIcon = Icons.check_circle_rounded;
+        overrideColor = _successGreen;
+        break;
+      case _UploadState.failed:
+        label = 'Failed — Tap to Retry';
+        btnIcon = Icons.refresh_rounded;
+        overrideColor = _errorRed;
+        break;
+      case _UploadState.idle:
+        label = canUpload ? 'Upload Photo' : _missingFieldsHint();
+        btnIcon = Icons.cloud_upload_rounded;
+    }
+
+    final bool tappable =
+        (canUpload && _uploadState == _UploadState.idle) ||
+            _uploadState == _UploadState.failed;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: _surface,
+        border: const Border(
+          top: BorderSide(color: _separator, width: 1),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.07),
+            blurRadius: 20,
+            offset: const Offset(0, -4),
+          ),
+        ],
+      ),
+      padding: EdgeInsets.fromLTRB(
+        16,
+        12,
+        16,
+        MediaQuery.of(context).padding.bottom + 12,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (isInProgress) ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: LinearProgressIndicator(
+                backgroundColor: _accent.withValues(alpha: 0.15),
+                valueColor: const AlwaysStoppedAnimation<Color>(_accentMid),
+                minHeight: 4,
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+          // ── Success: View Post + Done ───────────────────────────────────
+          if (_uploadState == _UploadState.success) ...[
+            Row(
+              children: [
+                if (_lastUploadedPhotoId != null)
+                  Expanded(
+                    child: SizedBox(
+                      height: 56,
+                      child: ElevatedButton.icon(
+                        onPressed: () =>
+                            context.push('/photo/$_lastUploadedPhotoId'),
+                        icon: const Icon(Icons.open_in_new_rounded, size: 18),
+                        label: const Text('View Post',
+                            style: TextStyle(
+                                fontSize: 15, fontWeight: FontWeight.w700)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _accent,
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(18)),
+                        ),
+                      ),
+                    ),
+                  ),
+                if (_lastUploadedPhotoId != null) const SizedBox(width: 12),
+                Expanded(
+                  child: SizedBox(
+                    height: 56,
+                    child: OutlinedButton.icon(
+                      onPressed: () => context.go('/home'),
+                      icon: const Icon(Icons.home_rounded, size: 18),
+                      label: const Text('Done',
+                          style: TextStyle(
+                              fontSize: 15, fontWeight: FontWeight.w700)),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: _successGreen,
+                        side: BorderSide(
+                            color: _successGreen.withValues(alpha: 0.4),
+                            width: 1.5),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(18)),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ] else
+          SizedBox(
+            width: double.infinity,
+            height: 56,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: overrideColor == null && (canUpload || isActive)
+                    ? _btnGradient
+                    : null,
+                color: overrideColor ??
+                    (!canUpload && !isActive
+                        ? const Color(0xFFE5E7EB)
+                        : null),
+                borderRadius: BorderRadius.circular(18),
+                boxShadow: tappable || isActive
+                    ? [
+                        BoxShadow(
+                          color: (overrideColor ?? _accent)
+                              .withValues(alpha: 0.38),
+                          blurRadius: 18,
+                          offset: const Offset(0, 6),
+                        ),
+                      ]
+                    : null,
+              ),
+              child: ElevatedButton(
+                onPressed: tappable ? _upload : null,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.transparent,
+                  foregroundColor: Colors.white,
+                  disabledBackgroundColor: Colors.transparent,
+                  disabledForegroundColor: _inkSubtle,
+                  shadowColor: Colors.transparent,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    if (isInProgress)
+                      const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.5,
+                          color: Colors.white,
+                        ),
+                      )
+                    else
+                      Icon(btnIcon, size: 20),
+                    const SizedBox(width: 10),
+                    Text(
+                      label,
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: -0.2,
+                        color: (!canUpload && !isActive)
+                            ? _inkSubtle
+                            : Colors.white,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -644,23 +913,31 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     );
   }
 
-  // ── Header (with required-step progress) ────────────────────────────────────
+  // ── Header (step-based progress) ──────────────────────────────────────────
   Widget _buildHeader() {
-    final done = [
-      _selectedImage != null,
-      _selectedProfile != null,
-      _latitude != null && !_isLoadingLocation,
-    ].where((x) => x).length;
-    final ready = done == 3;
+    final items = <(String, bool)>[
+      ('Photo', _selectedImage != null),
+      ('Profile', _selectedProfile != null),
+      ('Location', _latitude != null && !_isLoadingLocation),
+    ];
+    final done = items.where((t) => t.$2).length;
+    final allDone = done == 3;
+
     return Container(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: _surface,
-        border: Border(bottom: BorderSide(color: _separator)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 12,
+            offset: const Offset(0, 3),
+          ),
+        ],
       ),
       child: SafeArea(
         bottom: false,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(4, 6, 16, 14),
+          padding: const EdgeInsets.fromLTRB(4, 6, 16, 20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -673,7 +950,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                   ),
                   const Expanded(
                     child: Text(
-                      'New Capture',
+                      'New Upload',
                       style: TextStyle(
                         fontSize: 20,
                         fontWeight: FontWeight.w800,
@@ -682,48 +959,109 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                       ),
                     ),
                   ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: (ready ? _successGreen : _accent)
-                          .withValues(alpha: 0.10),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text('$done/3',
+                  if (allDone)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: _successGreen.withValues(alpha: 0.10),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Text(
+                        'Ready!',
                         style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w800,
-                            color: ready ? _successGreen : _accent)),
-                  ),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: _successGreen,
+                        ),
+                      ),
+                    ),
                 ],
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 22),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(4),
-                  child: LinearProgressIndicator(
-                    value: done / 3,
-                    minHeight: 6,
-                    backgroundColor: _separator,
-                    valueColor: AlwaysStoppedAnimation<Color>(
-                        ready ? _successGreen : _accent),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: Text(
-                  ready
-                      ? 'All set — ready to upload'
-                      : 'Add a photo, profile and location to continue',
-                  style: TextStyle(
-                      fontSize: 12.5,
-                      color: ready ? _successGreen : _inkSubtle,
-                      fontWeight:
-                          ready ? FontWeight.w600 : FontWeight.w400),
+                child: Row(
+                  children: [
+                    for (int i = 0; i < items.length; i++) ...[
+                      Column(
+                        children: [
+                          AnimatedContainer(
+                            duration: const Duration(milliseconds: 300),
+                            width: 36,
+                            height: 36,
+                            decoration: BoxDecoration(
+                              color: items[i].$2
+                                  ? _successGreen
+                                  : i == done
+                                      ? _accent
+                                      : _stepInactive,
+                              shape: BoxShape.circle,
+                              boxShadow: items[i].$2 || i == done
+                                  ? [
+                                      BoxShadow(
+                                        color: (items[i].$2
+                                                ? _successGreen
+                                                : _accent)
+                                            .withValues(alpha: 0.32),
+                                        blurRadius: 10,
+                                        offset: const Offset(0, 3),
+                                      ),
+                                    ]
+                                  : null,
+                            ),
+                            child: Center(
+                              child: items[i].$2
+                                  ? const Icon(Icons.check_rounded,
+                                      size: 18, color: Colors.white)
+                                  : Text(
+                                      '${i + 1}',
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w700,
+                                        color: i == done
+                                            ? Colors.white
+                                            : _inkSubtle,
+                                      ),
+                                    ),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            items[i].$1,
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 0.2,
+                              color: items[i].$2
+                                  ? _successGreen
+                                  : i == done
+                                      ? _accent
+                                      : _inkSubtle,
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (i < items.length - 1)
+                        Expanded(
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 300),
+                            height: 2,
+                            margin: const EdgeInsets.only(bottom: 22),
+                            decoration: BoxDecoration(
+                              gradient: items[i].$2
+                                  ? LinearGradient(colors: [
+                                      _successGreen,
+                                      _successGreen.withValues(alpha: 0.4),
+                                    ])
+                                  : null,
+                              color: items[i].$2 ? null : _stepInactive,
+                              borderRadius: BorderRadius.circular(2),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ],
                 ),
               ),
             ],
@@ -796,43 +1134,54 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                         ],
                       )
                     : Container(
-                        height: 200,
+                        height: 210,
                         width: double.infinity,
                         decoration: BoxDecoration(
-                          color: _canvas,
-                          borderRadius: BorderRadius.circular(12),
+                          color: const Color(0xFFF5F0FF),
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(
+                            color: _accent.withValues(alpha: 0.22),
+                            width: 1.5,
+                          ),
                         ),
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
-                          crossAxisAlignment: CrossAxisAlignment.center,
                           children: [
                             Container(
-                              width: 64,
-                              height: 64,
-                              decoration: const BoxDecoration(
-                                color: _accentSoft,
+                              width: 72,
+                              height: 72,
+                              decoration: BoxDecoration(
+                                gradient: RadialGradient(
+                                  colors: [
+                                    _accent.withValues(alpha: 0.18),
+                                    _accent.withValues(alpha: 0.06),
+                                  ],
+                                ),
                                 shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: _accent.withValues(alpha: 0.18),
+                                  width: 1,
+                                ),
                               ),
                               child: const Icon(
-                                Icons.camera_alt_rounded,
-                                size: 30,
+                                Icons.add_a_photo_rounded,
+                                size: 32,
                                 color: _accent,
                               ),
                             ),
-                            const SizedBox(height: 14),
+                            const SizedBox(height: 16),
                             const Text(
-                              'Tap to take a photo',
-                              textAlign: TextAlign.center,
+                              'Add a Photo',
                               style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w600,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
                                 color: _ink,
+                                letterSpacing: -0.3,
                               ),
                             ),
-                            const SizedBox(height: 4),
+                            const SizedBox(height: 5),
                             const Text(
-                              'Opens camera',
-                              textAlign: TextAlign.center,
+                              'Capture now or upload from gallery',
                               style: TextStyle(
                                 fontSize: 13,
                                 color: _inkSubtle,
@@ -877,23 +1226,41 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   }) =>
       GestureDetector(
         onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 12),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(vertical: 14),
           decoration: BoxDecoration(
-            color: primary ? _accent : _canvas,
-            borderRadius: BorderRadius.circular(12),
+            gradient: primary ? _btnGradient : null,
+            color: primary ? null : _surface,
+            borderRadius: BorderRadius.circular(14),
+            border: primary
+                ? null
+                : Border.all(
+                    color: _accent.withValues(alpha: 0.30),
+                    width: 1.5,
+                  ),
+            boxShadow: primary
+                ? [
+                    BoxShadow(
+                      color: _accent.withValues(alpha: 0.38),
+                      blurRadius: 14,
+                      offset: const Offset(0, 5),
+                    ),
+                  ]
+                : null,
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, size: 18, color: primary ? Colors.white : _accent),
+              Icon(icon,
+                  size: 18, color: primary ? Colors.white : _accentMid),
               const SizedBox(width: 7),
               Text(
                 label,
                 style: TextStyle(
                   fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: primary ? Colors.white : _accent,
+                  fontWeight: FontWeight.w700,
+                  color: primary ? Colors.white : _accentMid,
                 ),
               ),
             ],
@@ -1137,6 +1504,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                     onTap: () {
                       HapticFeedback.selectionClick();
                       setState(() => _selectedProfile = p);
+                      _saveDraft();
                       Navigator.pop(context);
                     },
                     child: Container(
@@ -1223,7 +1591,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   String _svcLabel(String? t) {
     switch ((t ?? '').toLowerCase()) {
       case 'rush':
-        return 'Rush service';
+        return 'ASAP service';
       case 'airport':
         return 'Airport service';
       default:
@@ -1546,132 +1914,6 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
         ),
       );
 
-  // ── Upload bar ────────────────────────────────────────────────────────────
-  Widget _buildUploadBar(bool canUpload) {
-    final isActive = _uploadState != _UploadState.idle;
-
-    String label;
-    Color btnColor;
-    IconData btnIcon;
-
-    switch (_uploadState) {
-      case _UploadState.uploading:
-        label = 'Uploading photo…';
-        btnColor = _accent;
-        btnIcon = Icons.cloud_upload_rounded;
-        break;
-      case _UploadState.processing:
-        label = 'Processing…';
-        btnColor = _accent;
-        btnIcon = Icons.cloud_upload_rounded;
-        break;
-      case _UploadState.success:
-        label = 'Upload Complete ✓';
-        btnColor = _successGreen;
-        btnIcon = Icons.check_circle_rounded;
-        break;
-      case _UploadState.failed:
-        label = 'Failed — Tap to Retry';
-        btnColor = _errorRed;
-        btnIcon = Icons.refresh_rounded;
-        break;
-      case _UploadState.idle:
-        label = 'Upload Photo';
-        btnColor = canUpload ? _accent : const Color(0xFFD1D5DB);
-        btnIcon = Icons.cloud_upload_rounded;
-    }
-
-    return Container(
-      color: Colors.transparent,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // (Step progress now lives in the header; the bar stays clean.)
-          // ── Progress bar during upload ────────────────────────────────
-          if (_uploadState == _UploadState.uploading ||
-              _uploadState == _UploadState.processing) ...[
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
-                backgroundColor: _accent.withValues(alpha: 0.15),
-                color: _accent,
-                minHeight: 4,
-              ),
-            ),
-            const SizedBox(height: 10),
-          ],
-
-          // ── Main button ───────────────────────────────────────────────
-          SizedBox(
-            width: double.infinity,
-            height: 54,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 250),
-              child: ElevatedButton(
-                onPressed: canUpload && _uploadState == _UploadState.idle
-                    ? _upload
-                    : _uploadState == _UploadState.failed
-                        ? _upload
-                        : null,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: btnColor,
-                  foregroundColor: Colors.white,
-                  disabledBackgroundColor: const Color(0xFFD1D5DB),
-                  disabledForegroundColor: const Color(0xFF9CA3AF),
-                  elevation: canUpload ? 2 : 0,
-                  shadowColor: _accent.withValues(alpha: 0.3),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    if (isActive &&
-                        _uploadState != _UploadState.success &&
-                        _uploadState != _UploadState.failed)
-                      const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2.5,
-                          color: Colors.white,
-                        ),
-                      )
-                    else
-                      Icon(btnIcon, size: 20),
-                    const SizedBox(width: 10),
-                    Text(
-                      label,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: -0.2,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-
-          // ── Helper text when button is disabled ───────────────────────
-          if (_uploadState == _UploadState.idle && !canUpload) ...[
-            const SizedBox(height: 8),
-            Text(
-              _missingFieldsHint(),
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                fontSize: 12,
-                color: Color(0xFF9CA3AF),
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
   /// Returns a hint about what's still needed.
   String _missingFieldsHint() {
     final missing = <String>[];
@@ -1685,15 +1927,20 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
 
   // ── Shared helpers ────────────────────────────────────────────────────────
   Widget _card({required Widget child}) => Container(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
           color: _surface,
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(22),
           boxShadow: [
             BoxShadow(
+              color: _accent.withValues(alpha: 0.05),
+              blurRadius: 16,
+              offset: const Offset(0, 4),
+            ),
+            BoxShadow(
               color: Colors.black.withValues(alpha: 0.04),
-              blurRadius: 12,
-              offset: const Offset(0, 2),
+              blurRadius: 6,
+              offset: const Offset(0, 1),
             ),
           ],
         ),
@@ -1708,15 +1955,38 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   }) =>
       Row(
         children: [
-          Container(
-            width: 28,
-            height: 28,
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 250),
+            width: 32,
+            height: 32,
             decoration: BoxDecoration(
-              color: done ? _successGreen : _accentSoft,
-              borderRadius: BorderRadius.circular(8),
+              gradient: done
+                  ? const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0xFF10B981), Color(0xFF059669)],
+                    )
+                  : const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0xFFEDE9FE), Color(0xFFDDD6FE)],
+                    ),
+              borderRadius: BorderRadius.circular(10),
+              boxShadow: done
+                  ? [
+                      BoxShadow(
+                        color: _successGreen.withValues(alpha: 0.25),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      )
+                    ]
+                  : null,
             ),
-            child: Icon(done ? Icons.check_rounded : icon,
-                size: 15, color: done ? Colors.white : _accent),
+            child: Icon(
+              done ? Icons.check_rounded : icon,
+              size: 16,
+              color: done ? Colors.white : _accent,
+            ),
           ),
           const SizedBox(width: 10),
           Text(
@@ -1741,11 +2011,22 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
           ],
           if (done) ...[
             const Spacer(),
-            const Text('Done',
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: _successGreen.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text(
+                'Done',
                 style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    color: _successGreen)),
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: _successGreen,
+                ),
+              ),
+            ),
           ],
         ],
       );
