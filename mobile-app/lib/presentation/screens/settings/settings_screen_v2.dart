@@ -6,10 +6,21 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../../../config/app_config.dart';
 import '../../providers/auth_provider.dart';
+import '../../providers/locale_provider.dart';
 import '../../providers/theme_provider.dart';
+import 'ai_assistant_sheet.dart';
 
-/// Settings — clean consumer profile + preferences. Grouped white cards,
-/// hairline borders, soft shadows, navy ink, royal-blue accent.
+// ── AI & automation preferences ──────────────────────────────────────────────
+// Lightweight in-session toggles. Riverpod keeps these alive across navigation;
+// swap the StateProviders for a persisted notifier once the AI endpoints ship.
+final aiSmartSuggestionsProvider = StateProvider<bool>((ref) => true);
+final aiAutoTagProvider = StateProvider<bool>((ref) => true);
+final aiDataUsageProvider = StateProvider<bool>((ref) => false);
+
+/// Settings — 2026 consumer redesign. AI-first: a featured GeoTag AI card and
+/// an Automation group sit above the classic preference cards, with a dedicated
+/// Privacy & Data section (data export + AI-training opt-in) reflecting current
+/// US privacy expectations. Grouped cards, hairline borders, soft shadows.
 class SettingsScreenV2 extends ConsumerWidget {
   const SettingsScreenV2({super.key});
 
@@ -38,153 +49,152 @@ class SettingsScreenV2 extends ConsumerWidget {
         .join(' ');
   }
 
+  // Per-row icon accent palette — gives each row a distinct, legible tint
+  // instead of a uniform gray block.
+  static const Color _cBlue = Color(0xFF2563EB);
+  static const Color _cAmber = Color(0xFFD97706);
+  static const Color _cSlate = Color(0xFF475569);
+  static const Color _cTeal = Color(0xFF0D9488);
+  static const Color _cRose = Color(0xFFE11D48);
+  static const Color _cIndigo = Color(0xFF6366F1);
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final authState = ref.watch(authProvider);
     final themeState = ref.watch(themeProvider);
+    final locale = ref.watch(localeProvider);
     final name = _displayName(authState.email);
     final initial = name.isEmpty ? 'A' : name[0].toUpperCase();
+    final accent = themeState.accentColor;
+    final smartSuggestions = ref.watch(aiSmartSuggestionsProvider);
+    final autoTag = ref.watch(aiAutoTagProvider);
+    final aiDataUsage = ref.watch(aiDataUsageProvider);
 
     return Scaffold(
       backgroundColor: _bg,
-      appBar: AppBar(
-        title: const Text('Settings',
-            style: TextStyle(
-                fontWeight: FontWeight.w800, color: _ink, letterSpacing: -0.4)),
-        elevation: 0,
-        backgroundColor: _card,
-        surfaceTintColor: Colors.transparent,
-        centerTitle: false,
-        shape: const Border(bottom: BorderSide(color: _hair)),
-      ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
-        children: [
-          // ── Profile header ──────────────────────────────────────────────
-          Container(
-            padding: const EdgeInsets.all(18),
-            decoration: BoxDecoration(
-              color: _card,
-              borderRadius: BorderRadius.circular(18),
-              boxShadow: _softShadow,
+      body: CustomScrollView(
+        slivers: [
+          // ── Collapsing gradient hero ─────────────────────────────────────
+          SliverAppBar(
+            pinned: true,
+            stretch: true,
+            expandedHeight: 232,
+            backgroundColor: accent,
+            surfaceTintColor: Colors.transparent,
+            elevation: 0,
+            automaticallyImplyLeading: false,
+            systemOverlayStyle: SystemUiOverlayStyle.light,
+            flexibleSpace: LayoutBuilder(
+              builder: (context, constraints) {
+                final statusBar = MediaQuery.of(context).padding.top;
+                final collapsed = kToolbarHeight + statusBar;
+                final t = ((constraints.maxHeight - collapsed) /
+                        (232 - collapsed))
+                    .clamp(0.0, 1.0);
+                return _hero(t, name, authState.email, initial, accent);
+              },
             ),
-            child: Row(children: [
-              Container(
-                width: 60,
-                height: 60,
-                decoration: BoxDecoration(
-                  color: _purple,
-                  borderRadius: BorderRadius.circular(18),
-                ),
-                alignment: Alignment.center,
-                child: Text(initial,
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 24,
-                        fontWeight: FontWeight.w700)),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w700,
-                            color: _ink,
-                            letterSpacing: -0.3)),
-                    const SizedBox(height: 4),
-                    Text(authState.email ?? 'Not signed in',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 13, color: _muted)),
-                    const SizedBox(height: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: _green.withValues(alpha: 0.10),
-                        borderRadius: BorderRadius.circular(7),
-                      ),
-                      child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                        Icon(Icons.check_circle_rounded,
-                            size: 12, color: _green),
-                        SizedBox(width: 4),
-                        Text('Active',
-                            style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w700,
-                                color: _green)),
-                      ]),
-                    ),
-                  ],
-                ),
-              ),
-            ]),
           ),
-          const SizedBox(height: 24),
+
+          // ── Content ──────────────────────────────────────────────────────
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(16, 20, 16, 40),
+            sliver: SliverList(
+              delegate: SliverChildListDelegate([
+          _section('AI & Automation', [
+            _aiToggleRow(
+              Icons.auto_awesome_rounded, 'Smart Suggestions', _purple,
+              subtitle: 'Surface the next best job & route as you work',
+              value: smartSuggestions,
+              onChanged: (v) =>
+                  ref.read(aiSmartSuggestionsProvider.notifier).state = v,
+            ),
+            _divider(),
+            _aiToggleRow(
+              Icons.sell_rounded, 'Auto-Tag Photos', _cTeal,
+              subtitle: 'Detect location, category & captions on upload',
+              value: autoTag,
+              onChanged: (v) => ref.read(aiAutoTagProvider.notifier).state = v,
+            ),
+            _divider(),
+            _row(Icons.chat_bubble_rounded, 'AI Assistant', _cIndigo,
+                subtitle: 'Ask about jobs, earnings & schedule',
+                onTap: () => showAiAssistantSheet(context)),
+          ]),
+          const SizedBox(height: 22),
 
           _section('Workspace', [
-            _row(Icons.folder_copy_outlined, 'Manage Profiles',
+            _row(Icons.folder_rounded, 'Manage Profiles', accent,
                 subtitle: 'View and organize your profiles',
                 onTap: () => context.push('/profiles-list')),
-            _row(Icons.camera_alt_outlined, 'Camera & Location',
+            _row(Icons.camera_alt_rounded, 'Camera & Location', _cBlue,
                 subtitle: 'Manage permissions in system Settings',
                 onTap: openAppSettings),
           ]),
-          const SizedBox(height: 24),
+          const SizedBox(height: 22),
 
           // Enhancement features (F4/F8/F9/F10)
           _section('Jobs & Earnings', [
-            _row(Icons.attach_money_rounded, 'Earnings',
+            _row(Icons.payments_rounded, 'Earnings', _green,
                 subtitle: 'Today, week, bi-weekly & monthly payouts',
                 onTap: () => context.push('/earnings')),
-            _row(Icons.event_note_rounded, 'Schedule',
+            _row(Icons.calendar_today_rounded, 'Schedule', _cAmber,
                 subtitle: 'ASAP, Next Day, Standard & Special queues',
                 onTap: () => context.push('/schedule')),
-            _row(Icons.inventory_2_outlined, 'Archive',
+            _row(Icons.archive_rounded, 'Archive', _cSlate,
                 subtitle: 'Search and review completed jobs',
                 onTap: () => context.push('/archive')),
           ]),
+          const SizedBox(height: 22),
 
-          _section('Account', [
-            _row(Icons.email_outlined, 'Email',
+          _section('Account & Security', [
+            _row(Icons.email_rounded, 'Email', _cBlue,
                 subtitle: authState.email ?? 'Not set', onTap: () {}),
-            _row(Icons.lock_outline_rounded, 'Password',
+            _row(Icons.lock_rounded, 'Password', _cRose,
                 subtitle: 'Change your password', onTap: () {}),
+            _row(Icons.fingerprint_rounded, 'Passkeys & 2FA', _cIndigo,
+                subtitle: 'Sign in with Face ID — no password needed',
+                trailing: _pill('SET UP', _cIndigo), onTap: () {}),
           ]),
+          const SizedBox(height: 22),
+
+          _section('Privacy & Data', [
+            _row(Icons.tune_rounded, 'Data & Permissions', _cSlate,
+                subtitle: 'Control what GeoTag can access',
+                onTap: openAppSettings),
+            _aiToggleRow(
+              Icons.model_training_rounded, 'Improve AI with my data', _purple,
+              subtitle: 'Share anonymized usage to train smarter models',
+              value: aiDataUsage,
+              onChanged: (v) =>
+                  ref.read(aiDataUsageProvider.notifier).state = v,
+            ),
+            _divider(),
+            _row(Icons.download_rounded, 'Export My Data', _cTeal,
+                subtitle: 'Download your photos & job history',
+                onTap: () {}),
+            _row(Icons.shield_rounded, 'Privacy Policy', _cIndigo,
+                subtitle: 'How we handle your data', onTap: () {}),
+          ]),
+          const SizedBox(height: 22),
 
           _section('Appearance', [
-            _themeModeRow(
-              isDark: themeState.mode == ThemeMode.dark,
-              accentColor: themeState.accentColor,
-              onToggle: () {
-                HapticFeedback.selectionClick();
-                ref.read(themeProvider.notifier).toggleTheme();
-              },
-            ),
-            const Divider(height: 1, color: _hair, indent: 60, endIndent: 16),
-            _colorRow(
-              currentColor: themeState.accentColor,
-              onSelected: (c) =>
-                  ref.read(themeProvider.notifier).setAccentColor(c),
-            ),
+            _row(Icons.language_rounded, 'Language', _cIndigo,
+                subtitle: _languageLabel(locale),
+                onTap: () => _showLanguagePicker(context, ref, locale)),
           ]),
+          const SizedBox(height: 22),
 
           _section('Support', [
-            _row(Icons.help_outline_rounded, 'Help & Support',
+            _row(Icons.help_rounded, 'Help & Support', _cTeal,
                 subtitle: 'Get help with the app', onTap: () {}),
-            _row(Icons.shield_outlined, 'Privacy Policy',
-                subtitle: 'How we handle your data', onTap: () {}),
-            _row(Icons.description_outlined, 'Terms of Service',
+            _row(Icons.description_rounded, 'Terms of Service', _cSlate,
                 subtitle: 'Read our terms', onTap: () {}),
           ]),
+          const SizedBox(height: 22),
 
           _section('About', [
-            _row(Icons.info_outline_rounded, 'Version',
+            _row(Icons.info_rounded, 'Version', _purple,
                 subtitle: 'GeoTag mobile',
                 trailing: Container(
                   padding:
@@ -202,26 +212,244 @@ class SettingsScreenV2 extends ConsumerWidget {
                 onTap: () {}),
           ]),
 
-          const SizedBox(height: 8),
+          const SizedBox(height: 12),
           // ── Logout ───────────────────────────────────────────────────────
           SizedBox(
             width: double.infinity,
-            height: 52,
+            height: 54,
             child: OutlinedButton.icon(
               onPressed: () => _showLogoutDialog(context, ref),
               icon: const Icon(Icons.logout_rounded, size: 18),
               label: const Text('Log Out',
-                  style: TextStyle(fontWeight: FontWeight.w700)),
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
               style: OutlinedButton.styleFrom(
                 foregroundColor: _red,
                 backgroundColor: _card,
                 side: BorderSide(color: _red.withValues(alpha: 0.3)),
                 shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14)),
+                    borderRadius: BorderRadius.circular(15)),
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
+          const Center(
+            child: Text('GeoTag • v${AppConfig.appVersion}',
+                style: TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF9CA3AF),
+                    fontWeight: FontWeight.w500)),
+          ),
+              ]),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Collapsing gradient hero ──────────────────────────────────────────────
+  // [t] = 1.0 fully expanded, 0.0 fully collapsed. The title scales and the
+  // profile block fades out as the user scrolls up.
+  Widget _hero(
+      double t, String name, String? email, String initial, Color accent) {
+    final dark = Color.lerp(accent, Colors.black, 0.34)!;
+    final fade = Curves.easeOut.transform(t);
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [accent, dark],
+        ),
+      ),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          // Decorative soft circles
+          Positioned(
+            top: -42,
+            right: -28,
+            child: Container(
+              width: 168,
+              height: 168,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white.withValues(alpha: 0.07),
+              ),
+            ),
+          ),
+          Positioned(
+            bottom: -56,
+            left: -34,
+            child: Container(
+              width: 150,
+              height: 150,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white.withValues(alpha: 0.05),
+              ),
+            ),
+          ),
+          SafeArea(
+            bottom: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    // Shrink with collapse so titleBox + padding never exceeds
+                    // the pinned toolbar height (prevents RenderFlex overflow).
+                    height: 34 + 16 * fade,
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Settings',
+                        style: TextStyle(
+                          fontSize: 20 + 8 * fade,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white,
+                          letterSpacing: -0.5,
+                        ),
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: ClipRect(
+                      child: Opacity(
+                        opacity: fade,
+                        // OverflowBox lets the profile lay out at its natural
+                        // height (no RenderFlex overflow) while the ClipRect
+                        // trims any excess as the bar collapses.
+                        child: OverflowBox(
+                          alignment: Alignment.bottomLeft,
+                          minHeight: 0,
+                          maxHeight: double.infinity,
+                          child: _heroProfile(name, email, initial),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _heroProfile(String name, String? email, String initial) {
+    return Row(children: [
+      Container(
+        width: 58,
+        height: 58,
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.20),
+          borderRadius: BorderRadius.circular(17),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.35)),
+        ),
+        alignment: Alignment.center,
+        child: Text(initial,
+            style: const TextStyle(
+                color: Colors.white,
+                fontSize: 25,
+                fontWeight: FontWeight.w800)),
+      ),
+      const SizedBox(width: 14),
+      Expanded(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    fontSize: 19,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white,
+                    letterSpacing: -0.3)),
+            const SizedBox(height: 3),
+            Text(email ?? 'Not signed in',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 13,
+                    color: Colors.white.withValues(alpha: 0.85))),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.22),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.check_circle_rounded, size: 13, color: Colors.white),
+                SizedBox(width: 5),
+                Text('Active',
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white)),
+              ]),
+            ),
+          ],
+        ),
+      ),
+    ]);
+  }
+
+  // ── Language ─────────────────────────────────────────────────────────────
+  String _languageLabel(Locale? locale) {
+    if (locale == null) return LocaleNotifier.languages['system']!;
+    return LocaleNotifier.languages[locale.languageCode] ?? locale.languageCode;
+  }
+
+  void _showLanguagePicker(
+      BuildContext context, WidgetRef ref, Locale? current) {
+    final currentCode = current?.languageCode ?? 'system';
+    HapticFeedback.selectionClick();
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: _card,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 18, 20, 6),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Language',
+                    style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w800,
+                        color: _ink)),
+              ),
+            ),
+            for (final entry in LocaleNotifier.languages.entries)
+              ListTile(
+                title: Text(entry.value,
+                    style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: _ink)),
+                trailing: entry.key == currentCode
+                    ? const Icon(Icons.check_rounded, color: _purple)
+                    : null,
+                onTap: () {
+                  HapticFeedback.selectionClick();
+                  ref.read(localeProvider.notifier).setLocale(entry.key);
+                  Navigator.of(ctx).pop();
+                },
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
       ),
     );
   }
@@ -244,16 +472,18 @@ class SettingsScreenV2 extends ConsumerWidget {
             Container(
               decoration: BoxDecoration(
                 color: _card,
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: const Color(0xFFF0F0F3)),
                 boxShadow: _softShadow,
               ),
+              clipBehavior: Clip.antiAlias,
               child: Column(
                 children: [
                   for (var i = 0; i < rows.length; i++) ...[
                     rows[i],
                     if (i < rows.length - 1)
                       const Divider(
-                          height: 1, color: _hair, indent: 60, endIndent: 16),
+                          height: 1, color: _hair, indent: 62, endIndent: 16),
                   ],
                 ],
               ),
@@ -262,7 +492,7 @@ class SettingsScreenV2 extends ConsumerWidget {
         ),
       );
 
-  Widget _row(IconData icon, String title,
+  Widget _row(IconData icon, String title, Color accent,
           {String? subtitle, Widget? trailing, required VoidCallback onTap}) =>
       Material(
         color: Colors.transparent,
@@ -276,13 +506,13 @@ class SettingsScreenV2 extends ConsumerWidget {
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
             child: Row(children: [
               Container(
-                width: 34,
-                height: 34,
+                width: 36,
+                height: 36,
                 decoration: BoxDecoration(
-                  color: _bg,
-                  borderRadius: BorderRadius.circular(10),
+                  color: accent.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(11),
                 ),
-                child: Icon(icon, size: 19, color: _ink),
+                child: Icon(icon, size: 19, color: accent),
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -312,200 +542,80 @@ class SettingsScreenV2 extends ConsumerWidget {
         ),
       );
 
-  Widget _themeModeRow({
-    required bool isDark,
-    required Color accentColor,
-    required VoidCallback onToggle,
-  }) =>
-      Padding(
-        padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(children: [
-              Container(
-                width: 34,
-                height: 34,
-                decoration: BoxDecoration(
-                    color: _bg, borderRadius: BorderRadius.circular(10)),
-                child: Icon(
-                  isDark ? Icons.dark_mode_rounded : Icons.light_mode_rounded,
-                  size: 19,
-                  color: _ink,
-                ),
-              ),
-              const SizedBox(width: 12),
-              const Text('Theme',
-                  style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                      color: _ink)),
-            ]),
-            const SizedBox(height: 12),
-            Container(
-              height: 46,
-              padding: const EdgeInsets.all(4),
-              decoration: BoxDecoration(
-                color: _bg,
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: Row(children: [
-                _themeSegment(
-                  icon: Icons.light_mode_rounded,
-                  label: 'Light',
-                  selected: !isDark,
-                  accentColor: accentColor,
-                  onTap: isDark ? onToggle : null,
-                ),
-                _themeSegment(
-                  icon: Icons.dark_mode_rounded,
-                  label: 'Dark',
-                  selected: isDark,
-                  accentColor: accentColor,
-                  onTap: !isDark ? onToggle : null,
-                ),
-              ]),
-            ),
-          ],
+  // ── AI bits ───────────────────────────────────────────────────────────────
+  Widget _divider() =>
+      const Divider(height: 1, color: _hair, indent: 62, endIndent: 16);
+
+  Widget _pill(String text, Color color) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(8),
         ),
+        child: Text(text,
+            style: TextStyle(
+                fontSize: 10.5,
+                fontWeight: FontWeight.w800,
+                color: color,
+                letterSpacing: 0.4)),
       );
 
-  Widget _themeSegment({
-    required IconData icon,
-    required String label,
-    required bool selected,
-    required Color accentColor,
-    VoidCallback? onTap,
-  }) =>
-      Expanded(
-        child: GestureDetector(
-          onTap: onTap,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 220),
-            curve: Curves.easeInOut,
+  Widget _aiToggleRow(IconData icon, String title, Color accent,
+          {String? subtitle,
+          String? badge,
+          required bool value,
+          required ValueChanged<bool> onChanged}) =>
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+        child: Row(children: [
+          Container(
+            width: 36,
+            height: 36,
             decoration: BoxDecoration(
-              color: selected ? accentColor : Colors.transparent,
-              borderRadius: BorderRadius.circular(10),
-              boxShadow: selected
-                  ? [
-                      BoxShadow(
-                        color: accentColor.withValues(alpha: 0.35),
-                        blurRadius: 10,
-                        offset: const Offset(0, 3),
-                      )
-                    ]
-                  : [],
+              color: accent.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(11),
             ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
+            child: Icon(icon, size: 19, color: accent),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(icon,
-                    size: 15,
-                    color: selected ? Colors.white : _muted),
-                const SizedBox(width: 6),
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: selected ? Colors.white : _muted,
+                Row(children: [
+                  Flexible(
+                    child: Text(title,
+                        style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                            color: _ink)),
                   ),
-                ),
+                  if (badge != null) ...[
+                    const SizedBox(width: 8),
+                    _pill(badge, accent),
+                  ],
+                ]),
+                if (subtitle != null) ...[
+                  const SizedBox(height: 2),
+                  Text(subtitle,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12.5, color: _muted)),
+                ],
               ],
             ),
           ),
-        ),
-      );
-
-  Widget _colorRow(
-      {required Color currentColor,
-      required ValueChanged<String> onSelected}) {
-    const colors = [
-      ('purple', Color(0xFF7C3AED), 'Purple'),
-      ('violet', Color(0xFF8B5CF6), 'Violet'),
-      ('indigo', Color(0xFF6366F1), 'Indigo'),
-      ('plum', Color(0xFFA21CAF), 'Plum'),
-      ('slate', Color(0xFF475569), 'Slate'),
-      ('black', Color(0xFF1F1F1F), 'Dark'),
-    ];
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 4, 14, 16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(children: [
-            Container(
-              width: 34,
-              height: 34,
-              decoration: BoxDecoration(
-                  color: _bg, borderRadius: BorderRadius.circular(10)),
-              child: const Icon(Icons.palette_outlined, size: 19, color: _ink),
-            ),
-            const SizedBox(width: 12),
-            const Text('Accent Color',
-                style: TextStyle(
-                    fontSize: 15, fontWeight: FontWeight.w600, color: _ink)),
-          ]),
-          const SizedBox(height: 14),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: colors.map((c) {
-              final selected = c.$2.toARGB32() == currentColor.toARGB32();
-              return GestureDetector(
-                onTap: () {
-                  HapticFeedback.selectionClick();
-                  onSelected(c.$1);
-                },
-                child: Column(children: [
-                  AnimatedContainer(
-                    duration: const Duration(milliseconds: 220),
-                    curve: Curves.easeInOut,
-                    width: 38,
-                    height: 38,
-                    decoration: BoxDecoration(
-                      color: c.$2,
-                      shape: BoxShape.circle,
-                      boxShadow: selected
-                          ? [
-                              BoxShadow(
-                                color: c.$2.withValues(alpha: 0.55),
-                                blurRadius: 12,
-                                offset: const Offset(0, 4),
-                              )
-                            ]
-                          : [],
-                      border: selected
-                          ? Border.all(
-                              color: Colors.white,
-                              width: 2.5,
-                              strokeAlign: BorderSide.strokeAlignOutside,
-                            )
-                          : null,
-                    ),
-                    alignment: Alignment.center,
-                    child: selected
-                        ? const Icon(Icons.check_rounded,
-                            size: 17, color: Colors.white)
-                        : null,
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    c.$3,
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight:
-                          selected ? FontWeight.w700 : FontWeight.w400,
-                      color: selected ? c.$2 : _muted,
-                    ),
-                  ),
-                ]),
-              );
-            }).toList(),
+          const SizedBox(width: 8),
+          Switch.adaptive(
+            value: value,
+            activeThumbColor: accent,
+            onChanged: (v) {
+              HapticFeedback.selectionClick();
+              onChanged(v);
+            },
           ),
-        ],
-      ),
-    );
-  }
+        ]),
+      );
 
   void _showLogoutDialog(BuildContext context, WidgetRef ref) {
     showDialog<void>(

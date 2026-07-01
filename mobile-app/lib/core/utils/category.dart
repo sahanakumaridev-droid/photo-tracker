@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 
 class PhotoCategory {
   const PhotoCategory({
@@ -22,28 +22,28 @@ const List<PhotoCategory> kPhotoCategories = <PhotoCategory>[
     label: 'ASAP',
     color: Color(0xFFEF4444),
     softColor: Color(0xFFFEE2E2),
-    icon: Icons.bolt_rounded,
+    icon: CupertinoIcons.bolt_fill,
   ),
   PhotoCategory(
     value: 'special',
     label: 'Special',
-    color: Color(0xFFF97316),
-    softColor: Color(0xFFFFEDD5),
-    icon: Icons.star_rounded,
+    color: Color(0xFFC2410C), // orange-700: dark enough to read on light bg
+    softColor: Color(0xFFFFEDD5), // orange-100: light so text pops
+    icon: CupertinoIcons.star_fill,
   ),
   PhotoCategory(
     value: 'standard',
     label: 'Standard',
     color: Color(0xFF10B981),
     softColor: Color(0xFFD1FAE5),
-    icon: Icons.check_circle_rounded,
+    icon: CupertinoIcons.checkmark_seal_fill,
   ),
   PhotoCategory(
     value: 'next_day',
     label: 'Next Day',
-    color: Color(0xFFEAB308),
-    softColor: Color(0xFFFEF9C3),
-    icon: Icons.event_rounded,
+    color: Color(0xFFB45309), // amber-700: dark brown-gold, clear on yellow bg
+    softColor: Color(0xFFFEF3C7), // amber-100: light yellow so text pops
+    icon: CupertinoIcons.calendar,
   ),
 ];
 

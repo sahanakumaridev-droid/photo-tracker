@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
@@ -150,7 +151,7 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
                           _statCard(
                             label: 'Jobs Done',
                             value: '$jobsDone',
-                            icon: Icons.check_circle_outline_rounded,
+                            icon: CupertinoIcons.checkmark_circle,
                             iconColor: AppTheme.primary,
                             iconBg: AppTheme.primarySoft,
                           ),
@@ -158,7 +159,7 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
                           _statCard(
                             label: 'Avg Per Job',
                             value: _money(avgPerJob),
-                            icon: Icons.show_chart_rounded,
+                            icon: CupertinoIcons.chart_bar,
                             iconColor: AppTheme.warning,
                             iconBg: const Color(0xFFFEF3C7),
                           ),
@@ -178,7 +179,7 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
                             if (_summary?['highest_paying_job'] != null)
                               _jobHighlight(
                                 title: 'Highest',
-                                icon: Icons.trending_up_rounded,
+                                icon: CupertinoIcons.arrow_up_right,
                                 color: AppTheme.success,
                                 job: _summary!['highest_paying_job']
                                     as Map<String, dynamic>,
@@ -189,7 +190,7 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
                             if (_summary?['lowest_paying_job'] != null)
                               _jobHighlight(
                                 title: 'Lowest',
-                                icon: Icons.trending_down_rounded,
+                                icon: CupertinoIcons.arrow_down_right,
                                 color: AppTheme.warning,
                                 job: _summary!['lowest_paying_job']
                                     as Map<String, dynamic>,
@@ -215,7 +216,7 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
                           : null,
                       child: daily.isEmpty
                           ? _emptyState(
-                              icon: Icons.bar_chart_rounded,
+                              icon: CupertinoIcons.chart_bar_alt_fill,
                               message:
                                   'No completed jobs in this period yet.')
                           : _trendChart(daily),
@@ -237,7 +238,7 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
                           : null,
                       child: payoutDays.isEmpty
                           ? _emptyState(
-                              icon: Icons.receipt_long_rounded,
+                              icon: CupertinoIcons.doc_text_fill,
                               message:
                                   'No closed jobs yet. Close out a pin to log a payout.')
                           : Column(
@@ -381,14 +382,14 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         if (isCustom) ...[
-                          Icon(Icons.calendar_today_rounded,
+                          Icon(CupertinoIcons.calendar,
                               size: 12,
                               color: sel
                                   ? Colors.white
                                   : AppTheme.lightTextSecondary),
                           const SizedBox(width: 5),
                         ] else if (sel) ...[
-                          const Icon(Icons.check_rounded,
+                          const Icon(CupertinoIcons.checkmark,
                               size: 13, color: Colors.white),
                           const SizedBox(width: 5),
                         ],

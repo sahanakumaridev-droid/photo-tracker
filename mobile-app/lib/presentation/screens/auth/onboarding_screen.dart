@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -222,8 +223,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                             const SizedBox(width: 8),
                             Icon(
                               _isLast
-                                  ? Icons.check_rounded
-                                  : Icons.arrow_forward_rounded,
+                                  ? CupertinoIcons.checkmark
+                                  : CupertinoIcons.arrow_right,
                               size: 20,
                             ),
                           ],
@@ -322,13 +323,13 @@ class _CaptureIllustration extends StatelessWidget {
       clipBehavior: Clip.none,
       children: [
         const _Backdrop(color: accent),
-        const _IconBadge(icon: Icons.photo_camera_rounded, color: accent),
+        const _IconBadge(icon: CupertinoIcons.camera_fill, color: accent),
         // Location pin floating top-right
         Positioned(
           top: 24,
           right: 18,
           child: _floatingChip(
-            const Icon(Icons.location_on_rounded,
+            const Icon(CupertinoIcons.location_fill,
                 color: Color(0xFFDC2626), size: 22),
           ).animate(onPlay: (c) => c.repeat(reverse: true)).moveY(
               begin: 6, end: -6, duration: 1800.ms, curve: Curves.easeInOut),
@@ -337,7 +338,7 @@ class _CaptureIllustration extends StatelessWidget {
         Positioned(
           bottom: 30,
           left: 6,
-          child: _pillTag('37.77, -122.41', Icons.my_location_rounded, accent)
+          child: _pillTag('37.77, -122.41', CupertinoIcons.location, accent)
               .animate(onPlay: (c) => c.repeat(reverse: true))
               .moveY(
                   begin: -5, end: 5, duration: 2000.ms, curve: Curves.easeInOut),
@@ -359,7 +360,7 @@ class _CategoryIllustration extends StatelessWidget {
       clipBehavior: Clip.none,
       children: [
         const _Backdrop(color: accent),
-        const _IconBadge(icon: Icons.label_rounded, color: accent),
+        const _IconBadge(icon: CupertinoIcons.tag_fill, color: accent),
         // The four real category chips, fanned around the badge.
         for (var i = 0; i < kPhotoCategories.length; i++)
           _categoryChipPositioned(kPhotoCategories[i], i),
@@ -430,12 +431,12 @@ class _ExportIllustration extends StatelessWidget {
       clipBehavior: Clip.none,
       children: [
         const _Backdrop(color: accent),
-        const _IconBadge(icon: Icons.insights_rounded, color: accent),
+        const _IconBadge(icon: CupertinoIcons.graph_square, color: accent),
         Positioned(
           top: 22,
           left: 8,
           child: _floatingChip(
-            const Icon(Icons.email_rounded,
+            const Icon(CupertinoIcons.envelope_fill,
                 color: Color(0xFF4F46E5), size: 20),
           ).animate(onPlay: (c) => c.repeat(reverse: true)).moveY(
               begin: -6, end: 6, duration: 1900.ms, curve: Curves.easeInOut),
@@ -443,7 +444,7 @@ class _ExportIllustration extends StatelessWidget {
         Positioned(
           bottom: 26,
           right: 0,
-          child: _pillTag('Export ready', Icons.download_rounded, accent)
+          child: _pillTag('Export ready', CupertinoIcons.arrow_down, accent)
               .animate(onPlay: (c) => c.repeat(reverse: true))
               .moveY(
                   begin: 6, end: -6, duration: 2100.ms, curve: Curves.easeInOut),
@@ -452,7 +453,7 @@ class _ExportIllustration extends StatelessWidget {
           top: 40,
           right: 14,
           child: _floatingChip(
-            const Icon(Icons.filter_alt_rounded,
+            const Icon(CupertinoIcons.slider_horizontal_3,
                 color: Color(0xFFCA8A04), size: 20),
           ).animate(onPlay: (c) => c.repeat(reverse: true)).moveY(
               begin: 5, end: -5, duration: 1700.ms, curve: Curves.easeInOut),

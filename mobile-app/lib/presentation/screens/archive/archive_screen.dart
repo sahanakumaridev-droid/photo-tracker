@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -144,9 +145,9 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
                 child: Row(
                   children: [
                     _stat('${_rows.length}', '$_statusLabel jobs',
-                        Icons.inventory_2_rounded),
+                        CupertinoIcons.archivebox_fill),
                     Container(width: 1, height: 38, color: Colors.white24),
-                    _stat('\$$_totalPay', 'Total pay', Icons.payments_rounded),
+                    _stat('\$$_totalPay', 'Total pay', CupertinoIcons.money_dollar_circle_fill),
                   ],
                 ),
               ),
@@ -157,7 +158,7 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
             child: TextField(
               decoration: InputDecoration(
                 hintText: 'Search ${_statusLabel.toLowerCase()} jobs…',
-                prefixIcon: const Icon(Icons.search, size: 20),
+                prefixIcon: const Icon(CupertinoIcons.search, size: 20),
                 isDense: true,
                 filled: true,
                 fillColor: AppTheme.white,
@@ -383,6 +384,6 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
         width: 52,
         height: 52,
         color: const Color(0xFFF1F5F9),
-        child: const Icon(Icons.photo, color: Color(0xFF94A3B8)),
+        child: const Icon(CupertinoIcons.photo_fill_on_rectangle_fill, color: Color(0xFF94A3B8)),
       );
 }

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
@@ -23,21 +24,21 @@ class MoreScreen extends StatelessWidget {
     (
       'Schedule',
       'ASAP, Next Day, Standard & Special queues',
-      Icons.event_note_rounded,
+      CupertinoIcons.calendar,
       Color(0xFF7C3AED),
       '/schedule',
     ),
     (
       'Archive',
       'Active, completed & archived jobs',
-      Icons.inventory_2_outlined,
+      CupertinoIcons.archivebox,
       Color(0xFFF59E0B),
       '/archive',
     ),
     (
       'Profiles',
       'Manage your saved profiles',
-      Icons.folder_copy_outlined,
+      CupertinoIcons.folder,
       Color(0xFF0EA5E9),
       '/profiles-list',
     ),
@@ -78,7 +79,7 @@ class MoreScreen extends StatelessWidget {
             ),
             child: _row(
               context,
-              icon: Icons.settings_outlined,
+              icon: CupertinoIcons.gear,
               title: 'Settings',
               subtitle: 'Account, preferences & support',
               route: '/settings',
@@ -183,7 +184,7 @@ class MoreScreen extends StatelessWidget {
                   ],
                 ),
               ),
-              const Icon(Icons.chevron_right_rounded,
+              const Icon(CupertinoIcons.chevron_right,
                   size: 22, color: _hair),
             ]),
           ),

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/utils/text_formatters.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/profile_provider.dart';
 
@@ -34,7 +35,12 @@ class _ProfilesManagementScreenState
     _noteController = TextEditingController(
       text: widget.profileToEdit?.note ?? '',
     );
-    _selectedServiceType = widget.profileToEdit?.serviceType ?? 'standard';
+    // Map legacy values (rush→asap, airport→standard) to the 4 categories
+    final raw = widget.profileToEdit?.serviceType ?? 'standard';
+    const valid = {'asap', 'standard', 'special', 'next_day'};
+    _selectedServiceType = valid.contains(raw)
+        ? raw
+        : (raw == 'rush' ? 'asap' : 'standard');
   }
 
   @override
@@ -135,10 +141,15 @@ class _ProfilesManagementScreenState
             const SizedBox(height: 10),
             TextField(
               controller: _nameController,
+              textCapitalization: TextCapitalization.words,
+              inputFormatters: const [TitleCaseInputFormatter()],
               decoration: InputDecoration(
                 hintText: 'Enter profile name',
                 hintStyle: const TextStyle(color: graySubtle),
-                prefixIcon: const Icon(Icons.person_outline, color: graySubtle),
+                prefixIcon: const Icon(
+                  Icons.person_outline_rounded,
+                  color: graySubtle,
+                ),
                 filled: true,
                 fillColor: Colors.white,
                 border: OutlineInputBorder(
@@ -160,95 +171,9 @@ class _ProfilesManagementScreenState
             ),
             const SizedBox(height: 24),
 
-            // Service Type
-            Text(
-              'Service Type',
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: grayText,
-                  ),
-            ),
-            const SizedBox(height: 10),
-            Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: grayBorder, width: 1),
-              ),
-              child: DropdownButton<String>(
-                isExpanded: true,
-                value: _selectedServiceType,
-                underline: const SizedBox(),
-                items: [
-                  DropdownMenuItem(
-                    value: 'standard',
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 12,
-                            height: 12,
-                            decoration: const BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: Colors.green,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          const Text('Standard'),
-                        ],
-                      ),
-                    ),
-                  ),
-                  DropdownMenuItem(
-                    value: 'rush',
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 12,
-                            height: 12,
-                            decoration: const BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: Colors.red,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          const Text('ASAP'),
-                        ],
-                      ),
-                    ),
-                  ),
-                  DropdownMenuItem(
-                    value: 'airport',
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 12,
-                            height: 12,
-                            decoration: const BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: Colors.blue,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          const Text('Airport'),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-                onChanged: (value) {
-                  if (value != null) {
-                    setState(() => _selectedServiceType = value);
-                  }
-                },
-              ),
-            ),
-            const SizedBox(height: 24),
+            // Service level is chosen per-photo during upload, not on the
+            // profile, so there is no service-level picker here (it would be a
+            // duplicate of the upload screen's picker).
 
             // Note
             Text(
@@ -262,10 +187,15 @@ class _ProfilesManagementScreenState
             TextField(
               controller: _noteController,
               maxLines: 3,
+              textCapitalization: TextCapitalization.sentences,
+              inputFormatters: const [SentenceCaseInputFormatter()],
               decoration: InputDecoration(
                 hintText: 'Add a note about this profile',
                 hintStyle: const TextStyle(color: graySubtle),
-                prefixIcon: const Icon(Icons.description_outlined, color: graySubtle),
+                prefixIcon: const Icon(
+                  Icons.description_outlined,
+                  color: graySubtle,
+                ),
                 filled: true,
                 fillColor: Colors.white,
                 border: OutlineInputBorder(

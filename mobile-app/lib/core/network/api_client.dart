@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -508,6 +510,56 @@ class ApiService {
   }) async {
     final response = await _dio.post('/api/export/excel',
         data: {'recipients': recipients, 'records': records});
+    return response.data as Map<String, dynamic>;
+  }
+
+  /// Single-job export: a detailed Excel (one row per attempt) plus the
+  /// watermarked photo(s) attached alongside. Pass empty [recipients] to just
+  /// get the Excel back (as `file_base64`) for the OS share sheet.
+  ///
+  /// [attachments] entries: {filename, content_b64, mimetype}.
+  ///
+  /// [header] carries the Rockstar service-record header fields (service_name,
+  /// status, agent, address, completion_type, served_to). [latestOnly] tells
+  /// the server to render just the most recent note vs the full attempt log.
+  Future<Map<String, dynamic>> exportJobExcel({
+    required List<String> recipients,
+    required List<Map<String, dynamic>> records,
+    List<Map<String, String>> attachments = const [],
+    String subject = 'Service Record',
+    String body = 'Service record attached.',
+    String? baseName,
+    Map<String, dynamic>? header,
+    bool latestOnly = false,
+  }) async {
+    final response = await _dio.post('/api/export/job', data: {
+      'recipients': recipients,
+      'records': records,
+      'attachments': attachments,
+      'subject': subject,
+      'body': body,
+      'latest_only': latestOnly,
+      if (header != null) 'header': header,
+      if (baseName != null) 'base_name': baseName,
+    });
+    return response.data as Map<String, dynamic>;
+  }
+
+  /// Email a client-generated single-job PDF service record to recipients.
+  Future<Map<String, dynamic>> emailServiceRecordPdf({
+    required List<String> recipients,
+    required String filePath,
+    String subject = 'Service Record',
+    String body = 'Service record attached.',
+  }) async {
+    final formData = FormData.fromMap({
+      'file': await MultipartFile.fromFile(filePath),
+      'recipients': jsonEncode(recipients),
+      'subject': subject,
+      'body': body,
+    });
+    final response =
+        await _dio.post('/api/export/pdf-email', data: formData);
     return response.data as Map<String, dynamic>;
   }
 }

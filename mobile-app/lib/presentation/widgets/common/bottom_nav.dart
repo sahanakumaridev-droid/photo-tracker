@@ -5,7 +5,9 @@ import 'package:flutter/services.dart';
 /// margin above the bottom edge, with a centered, elevated Upload button.
 ///
 /// Index map (matches the router shell):
-///   0 Home · 1 Map · 2 Earnings · 3 Log · 4 Settings · 5 Capture/Upload
+///   0 Home · 1 Map · 2 Earnings · 3 Log · 4 Capture/Upload
+/// Settings lives behind the top-bar avatar. The app launches on the Map but
+/// Home stays available as its own tab.
 class BottomNav extends StatelessWidget {
   const BottomNav({
     required this.currentIndex,
@@ -16,10 +18,7 @@ class BottomNav extends StatelessWidget {
   final int currentIndex;
   final ValueChanged<int> onTap;
 
-  static const Color _purple = Color(0xFF7C3AED); // purple accent
-  static const Color _indigo = Color(0xFF5445E6); // brand indigo (logo/icon)
   static const Color _muted = Color(0xFF9CA3AF);
-  static const Color _activePill = Color(0xFFF3E8FF); // soft purple pill
 
   void _go(int i) {
     HapticFeedback.selectionClick();
@@ -28,6 +27,8 @@ class BottomNav extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Follow the user's chosen accent so the picker recolours the whole app.
+    final accent = Theme.of(context).colorScheme.primary;
     return SafeArea(
       top: false,
       minimum: const EdgeInsets.only(bottom: 8),
@@ -48,14 +49,12 @@ class BottomNav extends StatelessWidget {
           ),
           child: Row(
             children: [
-              _tab(0, Icons.home_outlined, Icons.home_rounded, 'Home'),
-              _tab(1, Icons.map_outlined, Icons.map_rounded, 'Map'),
-              _tab(2, Icons.payments_outlined, Icons.payments_rounded,
-                  'Earnings'),
-              _tab(3, Icons.receipt_long_outlined,
-                  Icons.receipt_long_rounded, 'Log'),
-              _tab(4, Icons.settings_outlined, Icons.settings_rounded,
-                  'Settings'),
+              _tab(0, Icons.home_outlined, Icons.home_rounded, 'Home', accent),
+              _tab(1, Icons.map_outlined, Icons.map_rounded, 'Map', accent),
+              _tab(2, Icons.attach_money, Icons.monetization_on, 'Earnings',
+                  accent),
+              _tab(3, Icons.article_outlined, Icons.description_rounded, 'Log',
+                  accent),
               // End gap — hosts the floating Upload button above its own cell.
               Expanded(
                 child: SizedBox(
@@ -67,8 +66,9 @@ class BottomNav extends StatelessWidget {
                       Positioned(
                         top: -22,
                         child: _UploadButton(
-                          active: currentIndex == 5,
-                          onTap: () => _go(5),
+                          active: currentIndex == 4,
+                          accent: accent,
+                          onTap: () => _go(4),
                         ),
                       ),
                       Padding(
@@ -77,10 +77,10 @@ class BottomNav extends StatelessWidget {
                           duration: const Duration(milliseconds: 180),
                           style: TextStyle(
                             fontSize: 10,
-                            fontWeight: currentIndex == 5
+                            fontWeight: currentIndex == 4
                                 ? FontWeight.w700
                                 : FontWeight.w600,
-                            color: currentIndex == 5 ? _purple : _muted,
+                            color: currentIndex == 4 ? accent : _muted,
                           ),
                           child: const Text('Upload'),
                         ),
@@ -96,7 +96,8 @@ class BottomNav extends StatelessWidget {
     );
   }
 
-  Widget _tab(int index, IconData icon, IconData activeIcon, String label) {
+  Widget _tab(int index, IconData icon, IconData activeIcon, String label,
+      Color accent) {
     final active = currentIndex == index;
     return Expanded(
       child: GestureDetector(
@@ -110,11 +111,13 @@ class BottomNav extends StatelessWidget {
               curve: Curves.easeOut,
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
               decoration: BoxDecoration(
-                color: active ? _activePill : Colors.transparent,
+                color: active
+                    ? accent.withValues(alpha: 0.12)
+                    : Colors.transparent,
                 borderRadius: BorderRadius.circular(14),
               ),
               child: Icon(active ? activeIcon : icon,
-                  size: 20, color: active ? _purple : _muted),
+                  size: 20, color: active ? accent : _muted),
             ),
             const SizedBox(height: 4),
             Text(label,
@@ -123,7 +126,7 @@ class BottomNav extends StatelessWidget {
                 style: TextStyle(
                     fontSize: 10,
                     fontWeight: active ? FontWeight.w700 : FontWeight.w500,
-                    color: active ? _purple : _muted)),
+                    color: active ? accent : _muted)),
           ],
         ),
       ),
@@ -134,9 +137,11 @@ class BottomNav extends StatelessWidget {
 /// Floating Upload FAB with a brand gradient, glow shadow, and a tactile
 /// press-down scale animation.
 class _UploadButton extends StatefulWidget {
-  const _UploadButton({required this.active, required this.onTap});
+  const _UploadButton(
+      {required this.active, required this.accent, required this.onTap});
 
   final bool active;
+  final Color accent;
   final VoidCallback onTap;
 
   @override
@@ -163,16 +168,19 @@ class _UploadButtonState extends State<_UploadButton> {
           width: 60,
           height: 60,
           decoration: BoxDecoration(
-            gradient: const LinearGradient(
+            gradient: LinearGradient(
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
-              colors: [BottomNav._purple, BottomNav._indigo],
+              colors: [
+                widget.accent,
+                Color.lerp(widget.accent, const Color(0xFF5445E6), 0.5)!,
+              ],
             ),
             shape: BoxShape.circle,
             border: Border.all(color: Colors.white, width: 4),
             boxShadow: [
               BoxShadow(
-                color: BottomNav._purple
+                color: widget.accent
                     .withValues(alpha: widget.active ? 0.45 : 0.35),
                 blurRadius: 18,
                 offset: const Offset(0, 8),

@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/utils/constants.dart';
+import '../../../core/utils/permissions.dart';
 import '../../providers/auth_provider.dart';
 import '../../widgets/common/app_logo.dart';
 
@@ -49,7 +51,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         await ref.read(authProvider.notifier).login(email, password);
 
     if (success && mounted) {
-      context.go('/home');
+      // Walk the user through every permission prompt on their first login.
+      await requestAppPermissions();
+      if (!mounted) return;
+      // Land on the Map by default; Home remains in the bottom nav.
+      context.go('/map');
     } else if (mounted) {
       final error = ref.read(authProvider).error;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -131,7 +137,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 controller: _emailController,
                 decoration: const InputDecoration(
                   hintText: 'Enter your email',
-                  prefixIcon: Icon(Icons.email_outlined),
+                  prefixIcon: Icon(CupertinoIcons.envelope),
                 ),
                 keyboardType: TextInputType.emailAddress,
               ),
@@ -146,12 +152,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 controller: _passwordController,
                 decoration: InputDecoration(
                   hintText: 'Enter your password',
-                  prefixIcon: const Icon(Icons.lock_outlined),
+                  prefixIcon: const Icon(CupertinoIcons.lock),
                   suffixIcon: IconButton(
                     icon: Icon(
                       _obscurePassword
-                          ? Icons.visibility_off_outlined
-                          : Icons.visibility_outlined,
+                          ? CupertinoIcons.eye_slash
+                          : CupertinoIcons.eye,
                     ),
                     onPressed: () {
                       setState(() {
@@ -201,7 +207,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     child: OutlinedButton.icon(
                       onPressed: () =>
                           _fillDemoCredentials(AppConstants.demoEmail1),
-                      icon: const Icon(Icons.admin_panel_settings_outlined),
+                      icon: const Icon(CupertinoIcons.shield),
                       label: const Text('Admin'),
                     ),
                   ),
@@ -210,7 +216,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     child: OutlinedButton.icon(
                       onPressed: () =>
                           _fillDemoCredentials(AppConstants.demoEmail2),
-                      icon: const Icon(Icons.person_outlined),
+                      icon: const Icon(CupertinoIcons.person),
                       label: const Text('Demo'),
                     ),
                   ),

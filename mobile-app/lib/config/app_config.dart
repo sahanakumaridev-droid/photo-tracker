@@ -2,7 +2,10 @@
 /// Centralized configuration for API, timeouts, and feature flags
 class AppConfig {
   // API Configuration
-  static const String apiBaseUrl = 'http://24.199.85.230';
+  // Production VPS (Namecheap) over HTTPS. Endpoints add the /api/ prefix;
+  // Nginx proxies /api/ -> backend. The nip.io host auto-resolves to
+  // 159.198.79.219 and has a valid Let's Encrypt cert.
+  static const String apiBaseUrl = 'https://159-198-79-219.nip.io';
   static const int apiTimeout = 30; // seconds
   static const int apiRetryCount = 3;
 

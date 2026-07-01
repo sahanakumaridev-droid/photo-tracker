@@ -122,3 +122,9 @@ export const addRecipient      = (data)      => api.post('/recipients', data).th
 export const editRecipient     = (id, data)  => api.patch(`/recipients/${id}`, data).then(r => r.data)
 export const deleteRecipient   = (id)        => api.delete(`/recipients/${id}`).then(r => r.data)
 export const exportExcel       = (recipients, records) => api.post('/export/excel', { recipients, records }).then(r => r.data)
+
+// Single-job "Service Record": detailed Excel (one row per attempt: ID, Date,
+// Service, Address, Lat/Long, Status, Agent, Notes) + the photo(s) attached.
+// Pass recipients:[] to get the .xlsx back as file_base64 for a local download.
+// payload = { recipients, records, attachments, subject, body, base_name }
+export const exportJobExcel    = (payload) => api.post('/export/job', payload).then(r => r.data)

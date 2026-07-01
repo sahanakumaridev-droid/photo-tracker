@@ -1,0 +1,259 @@
+{
+  "@@locale": "en",
+
+  "appTitle": "Geo Tag",
+  "@appTitle": { "description": "Application title" },
+
+  "navHome": "Home",
+  "@navHome": { "description": "Bottom nav: Home tab" },
+
+  "navMap": "Map",
+  "@navMap": { "description": "Bottom nav: Map tab" },
+
+  "navEarnings": "Earnings",
+  "@navEarnings": { "description": "Bottom nav: Earnings tab" },
+
+  "navLog": "Log",
+  "@navLog": { "description": "Bottom nav: Log tab" },
+
+  "navSettings": "Settings",
+  "@navSettings": { "description": "Bottom nav: Settings tab" },
+
+  "navUpload": "Upload",
+  "@navUpload": { "description": "Bottom nav: Upload tab" },
+
+  "loginTitle": "Welcome back",
+  "@loginTitle": { "description": "Login screen heading" },
+
+  "loginSubtitle": "Sign in to continue",
+  "@loginSubtitle": { "description": "Login screen subheading" },
+
+  "loginButton": "Sign In",
+  "@loginButton": { "description": "Login button label" },
+
+  "logoutButton": "Sign Out",
+  "@logoutButton": { "description": "Sign out button label" },
+
+  "emailHint": "Email address",
+  "@emailHint": { "description": "Email field placeholder" },
+
+  "passwordHint": "Password",
+  "@passwordHint": { "description": "Password field placeholder" },
+
+  "uploadTitle": "Upload Photo",
+  "@uploadTitle": { "description": "Upload screen title" },
+
+  "uploadSelectPhoto": "Select Photo",
+  "@uploadSelectPhoto": { "description": "Button to pick a photo" },
+
+  "uploadCamera": "Camera",
+  "@uploadCamera": { "description": "Take photo with camera" },
+
+  "uploadGallery": "Gallery",
+  "@uploadGallery": { "description": "Pick from gallery" },
+
+  "uploadProfile": "Profile",
+  "@uploadProfile": { "description": "Profile picker label on upload screen" },
+
+  "uploadAddress": "Address",
+  "@uploadAddress": { "description": "Address field label on upload screen" },
+
+  "uploadNote": "Note",
+  "@uploadNote": { "description": "Note field label on upload screen" },
+
+  "uploadButton": "Upload",
+  "@uploadButton": { "description": "Final upload button" },
+
+  "uploadingProgress": "Uploading {current} of {total}…",
+  "@uploadingProgress": {
+    "description": "Upload progress indicator",
+    "placeholders": {
+      "current": { "type": "int" },
+      "total":   { "type": "int" }
+    }
+  },
+
+  "uploadNewProfile": "+ New Profile",
+  "@uploadNewProfile": { "description": "Button to create a new profile from upload screen" },
+
+  "profileName": "Profile Name",
+  "@profileName": { "description": "Profile name field label" },
+
+  "profileCreate": "Create Profile",
+  "@profileCreate": { "description": "Confirm button when creating a new profile" },
+
+  "profilePrimaryAddress": "Primary Address",
+  "@profilePrimaryAddress": { "description": "Label for a profile's primary address" },
+
+  "profileNoPhotos": "No photos yet",
+  "@profileNoPhotos": { "description": "Empty state on profile detail screen" },
+
+  "profilePhotosCount": "{count, plural, =1{1 photo} other{{count} photos}}",
+  "@profilePhotosCount": {
+    "description": "Photo count on profile screen",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+
+  "svcAsap": "ASAP",
+  "@svcAsap": { "description": "Service type label: ASAP/rush" },
+
+  "svcStandard": "Standard",
+  "@svcStandard": { "description": "Service type label: standard" },
+
+  "svcAirport": "Airport",
+  "@svcAirport": { "description": "Service type label: airport" },
+
+  "statusOpen": "Open",
+  "@statusOpen": { "description": "Job status: open" },
+
+  "statusInProgress": "In Progress",
+  "@statusInProgress": { "description": "Job status: in progress" },
+
+  "statusCompleted": "Completed",
+  "@statusCompleted": { "description": "Job status: completed" },
+
+  "statusArchived": "Archived",
+  "@statusArchived": { "description": "Job status: archived" },
+
+  "jobStatus": "JOB STATUS",
+  "@jobStatus": { "description": "Section header for job status card" },
+
+  "statusSummary": "STATUS SUMMARY",
+  "@statusSummary": { "description": "Section header for status summary card" },
+
+  "statusSummarySubtitle": "Full job lifecycle",
+  "@statusSummarySubtitle": { "description": "Subtitle of status summary card" },
+
+  "statusTapHint": "Tap any step to change the status",
+  "@statusTapHint": { "description": "Hint text below status stepper" },
+
+  "statusOpened": "Opened",
+  "@statusOpened": { "description": "Timeline label: job opened" },
+
+  "locationLabel": "LOCATION",
+  "@locationLabel": { "description": "Location section label on photo detail" },
+
+  "openInMaps": "Open in Maps",
+  "@openInMaps": { "description": "Button to open coordinates in maps" },
+
+  "copyCoords": "Copy Coords",
+  "@copyCoords": { "description": "Button to copy GPS coordinates" },
+
+  "coordsCopied": "Coordinates copied to clipboard",
+  "@coordsCopied": { "description": "Snackbar after copying coords" },
+
+  "mapLinkCopied": "Maps link copied — paste in your browser",
+  "@mapLinkCopied": { "description": "Snackbar after copying maps URL" },
+
+  "noteLabel": "Note",
+  "@noteLabel": { "description": "Note section label" },
+
+  "notePlaceholder": "Add a note…",
+  "@notePlaceholder": { "description": "Note field placeholder" },
+
+  "saveNote": "Save Note",
+  "@saveNote": { "description": "Button to save note" },
+
+  "noteSaved": "Note saved",
+  "@noteSaved": { "description": "Snackbar after saving note" },
+
+  "addressLabel": "Address & ZIP",
+  "@addressLabel": { "description": "Address field label in edit sheet" },
+
+  "saveAddress": "Save Address",
+  "@saveAddress": { "description": "Button to save address" },
+
+  "addressSaved": "Address saved",
+  "@addressSaved": { "description": "Snackbar after saving address" },
+
+  "addressAutoFill": "Auto-fill",
+  "@addressAutoFill": { "description": "Button to auto-fill address from GPS" },
+
+  "deletePhoto": "Delete Photo",
+  "@deletePhoto": { "description": "Delete photo button label" },
+
+  "deleteConfirmTitle": "Delete Photo",
+  "@deleteConfirmTitle": { "description": "Delete confirmation dialog title" },
+
+  "deleteConfirmBody": "This photo will be permanently deleted. This action cannot be undone.",
+  "@deleteConfirmBody": { "description": "Delete confirmation dialog body" },
+
+  "deleteConfirm": "Delete",
+  "@deleteConfirm": { "description": "Confirm delete button" },
+
+  "cancel": "Cancel",
+  "@cancel": { "description": "Generic cancel button" },
+
+  "editPhoto": "Edit Photo",
+  "@editPhoto": { "description": "Edit sheet title" },
+
+  "replacePhoto": "Replace Photo",
+  "@replacePhoto": { "description": "Replace photo option" },
+
+  "replacePhotoSubtitle": "Swap the image with a new one",
+  "@replacePhotoSubtitle": { "description": "Subtitle for replace photo option" },
+
+  "photoUpdated": "Photo updated successfully",
+  "@photoUpdated": { "description": "Snackbar after replacing photo" },
+
+  "photoDeleted": "Photo deleted",
+  "@photoDeleted": { "description": "Snackbar after deleting photo" },
+
+  "editLocation": "Edit Location",
+  "@editLocation": { "description": "Edit location option label" },
+
+  "timestampUpdated": "Timestamp updated",
+  "@timestampUpdated": { "description": "Snackbar after editing timestamp" },
+
+  "capturedLabel": "Captured",
+  "@capturedLabel": { "description": "Label for captured timestamp on photo detail" },
+
+  "payoutLabel": "Payout",
+  "@payoutLabel": { "description": "Label for payout amount" },
+
+  "linkedProfiles": "LINKED PROFILES",
+  "@linkedProfiles": { "description": "Section header for linked profiles on photo detail" },
+
+  "csvExportTitle": "Export CSV",
+  "@csvExportTitle": { "description": "CSV export button/action label" },
+
+  "tryAgain": "Try Again",
+  "@tryAgain": { "description": "Retry button label" },
+
+  "goBack": "Go Back",
+  "@goBack": { "description": "Go back button label" },
+
+  "photoNotFound": "Photo not found",
+  "@photoNotFound": { "description": "Error message when photo cannot be found" },
+
+  "photoNotFoundSubtitle": "This photo may have been deleted.",
+  "@photoNotFoundSubtitle": { "description": "Subtitle for photo not found state" },
+
+  "failedToLoadPhoto": "Failed to load photo",
+  "@failedToLoadPhoto": { "description": "Error message when photo fails to load" },
+
+  "couldNotLoadPhotos": "Could not load photos",
+  "@couldNotLoadPhotos": { "description": "Error state on profile detail screen" },
+
+  "fetchingAddress": "Fetching address…",
+  "@fetchingAddress": { "description": "Address resolution progress text" },
+
+  "locating": "Locating…",
+  "@locating": { "description": "GPS locating progress text" },
+
+  "statusUpdatedTo": "Status updated to {status}",
+  "@statusUpdatedTo": {
+    "description": "Snackbar after updating job status",
+    "placeholders": {
+      "status": { "type": "String" }
+    }
+  },
+
+  "takeNewPhoto": "Take a new photo",
+  "@takeNewPhoto": { "description": "Camera source option" },
+
+  "chooseFromGallery": "Choose from gallery",
+  "@chooseFromGallery": { "description": "Gallery source option" }
+}

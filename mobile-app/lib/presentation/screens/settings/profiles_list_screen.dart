@@ -4,12 +4,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../config/app_config.dart';
+import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../data/models/photo_model.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/location_provider.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
+import '../../widgets/common/create_profile_dialog.dart';
 
 class ProfilesListScreen extends ConsumerStatefulWidget {
   const ProfilesListScreen({super.key});
@@ -30,6 +32,17 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
     super.dispose();
   }
 
+  // Profile creation uses the shared dialog (same as upload & map-tap flows).
+  // The list is rebuilt automatically via the watched profilesProvider.
+  Future<void> _openCreateProfile() async {
+    final created = await showCreateProfileDialog(context);
+    if (created != null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Profile "${created.name}" created')),
+      );
+    }
+  }
+
   // ── Design tokens ─────────────────────────────────────────────────────────
   static const Color _grayBg   = Color(0xFFF8FAFC);
   static const Color _grayText = Color(0xFF6B7280);
@@ -39,13 +52,7 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
-  Color _svcColor(String serviceType) {
-    switch (serviceType.toLowerCase()) {
-      case 'rush':    return Colors.red;
-      case 'airport': return Colors.blue;
-      default:        return Colors.green;
-    }
-  }
+  Color _svcColor(String serviceType) => categoryOf(serviceType).color;
 
   /// Find the most recent photo for [profile] and return its coordinates.
   /// Returns null if the profile has no photos.
@@ -117,7 +124,7 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
         foregroundColor: _grayText,
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh_outlined),
+            icon: const Icon(Icons.refresh_rounded),
             tooltip: 'Refresh',
             onPressed: () {
               ref.invalidate(profilesProvider);
@@ -163,8 +170,8 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
                     style: TextStyle(color: _graySubtle, fontSize: 14)),
                   const SizedBox(height: 24),
                   ElevatedButton.icon(
-                    onPressed: () => context.push('/profiles-management'),
-                    icon: const Icon(Icons.add),
+                    onPressed: _openCreateProfile,
+                    icon: const Icon(Icons.add_rounded),
                     label: const Text('Create Profile'),
                     style: ElevatedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(
@@ -252,7 +259,7 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
                       horizontal: 16, vertical: 10),
                   color: const Color(0xFFFFF7ED),
                   child: Row(children: [
-                    const Icon(Icons.location_searching_rounded,
+                    const Icon(Icons.near_me_outlined,
                         size: 16, color: Color(0xFFEA580C)),
                     const SizedBox(width: 8),
                     Expanded(
@@ -273,7 +280,7 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
                       horizontal: 16, vertical: 8),
                   color: const Color(0xFFECFDF5),
                   child: Row(children: [
-                    const Icon(Icons.my_location_rounded,
+                    const Icon(Icons.location_on_rounded,
                         size: 14, color: Color(0xFF6B7280)),
                     const SizedBox(width: 8),
                     Text(
@@ -292,7 +299,7 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            const Icon(Icons.search_off_rounded,
+                            const Icon(Icons.manage_search_rounded,
                                 size: 52, color: _graySubtle),
                             const SizedBox(height: 12),
                             Text(
@@ -334,8 +341,8 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
         },
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => context.push('/profiles-management'),
-        icon: const Icon(Icons.add),
+        onPressed: _openCreateProfile,
+        icon: const Icon(Icons.add_rounded),
         label: const Text('Add Profile'),
       ),
     );
@@ -394,7 +401,7 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
                       ),
                       const SizedBox(height: 3),
                       Text(
-                        profile.serviceType.toUpperCase(),
+                        categoryLabel(profile.serviceType).toUpperCase(),
                         style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.w500,
@@ -420,7 +427,7 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
                         Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(Icons.near_me_rounded,
+                            const Icon(Icons.navigation_rounded,
                                 size: 12, color: _accent),
                             const SizedBox(width: 4),
                             Text(
@@ -447,7 +454,7 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
                   ),
                 ),
 
-                const Icon(Icons.chevron_right_outlined,
+                const Icon(Icons.chevron_right_rounded,
                     size: 24, color: _border),
               ],
             ),

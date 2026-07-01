@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../../../core/storage/upload_queue.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../data/models/photo_model.dart';
 import '../../../data/models/profile_model.dart';
@@ -57,7 +58,7 @@ Color _catColor(String c) {
 IconData _catIcon(String c) {
   switch (c) {
     case 'asap':     return Icons.bolt_rounded;
-    case 'next_day': return Icons.schedule_rounded;
+    case 'next_day': return Icons.access_time_rounded;
     case 'special':  return Icons.star_rounded;
     default:         return Icons.check_circle_rounded;
   }
@@ -94,6 +95,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
   late final MapController _mapController;
   String   _selectedProfile   = 'all';
   bool     _fetchingLocation  = false;
+  bool     _locationAttemptDone = false;
   Position? _userPosition;
   final _searchCtrl = TextEditingController();
 
@@ -101,20 +103,50 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
   void initState() {
     super.initState();
     _mapController = MapController();
-    _fetchUserLocation();
+    // Centring happens in [_onMapReady] (fired once the map can accept camera
+    // moves): a cached last-known fix snaps the camera to the user instantly,
+    // then the accurate fix refines it. This avoids moving the controller
+    // before the map is mounted.
   }
 
-  Future<void> _fetchUserLocation() async {
+  /// Fired by FlutterMap once it's ready to accept camera moves. Centre on the
+  /// user as fast as possible, then refine.
+  void _onMapReady() {
+    _centerOnLastKnown(); // instant — from the OS location cache
+    _fetchUserLocation(moveCamera: true); // accurate — refines when it lands
+  }
+
+  /// Snap the camera to the last-known location immediately so the map opens
+  /// on the user instead of a default city while the accurate fix is computed.
+  Future<void> _centerOnLastKnown() async {
+    final last = await LocationService.getLastKnownLocation();
+    // Don't fight a fresh accurate fix if it already arrived first.
+    if (last != null && mounted && _userPosition == null) {
+      _mapController.move(LatLng(last.latitude, last.longitude), 14);
+    }
+  }
+
+  Future<void> _fetchUserLocation({bool moveCamera = false}) async {
     if (_fetchingLocation) return;
     setState(() => _fetchingLocation = true);
     try {
       final pos = await LocationService.getCurrentLocation();
       if (pos != null && mounted) {
         setState(() => _userPosition = pos);
-        _mapController.move(LatLng(pos.latitude, pos.longitude), 14);
+        // Only recentre on the user when explicitly asked (e.g. the FAB).
+        // On first load we want the camera to frame the pins, not jump to
+        // the device location, which otherwise leaves all pins off-screen.
+        if (moveCamera) {
+          _mapController.move(LatLng(pos.latitude, pos.longitude), 14);
+        }
       }
     } finally {
-      if (mounted) setState(() => _fetchingLocation = false);
+      if (mounted) {
+        setState(() {
+          _fetchingLocation = false;
+          _locationAttemptDone = true;
+        });
+      }
     }
   }
 
@@ -143,6 +175,12 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
       if (p.longitude < minLng) minLng = p.longitude;
       if (p.longitude > maxLng) maxLng = p.longitude;
     }
+    // All pins at (nearly) the same spot → bounds have ~zero area and
+    // fitCamera would slam to maxZoom. Just centre on it at a sane zoom.
+    if ((maxLat - minLat).abs() < 1e-4 && (maxLng - minLng).abs() < 1e-4) {
+      _mapController.move(LatLng(minLat, minLng), 14);
+      return;
+    }
     _mapController.fitCamera(
       CameraFit.bounds(
         bounds: LatLngBounds(LatLng(minLat, minLng), LatLng(maxLat, maxLng)),
@@ -153,37 +191,34 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final photosAsync   = ref.watch(photosProvider);
-    final profilesAsync = ref.watch(profilesProvider);
+    // CRITICAL: the map must open INSTANTLY, centred on the user — never gate it
+    // behind the jobs network call, which can stall on poor field signal and
+    // leave the user staring at a blank spinner. Render the map with whatever
+    // data we already have; pins and the profile selector fill in on their own
+    // as the requests complete. The primary action (tap the map to log a new
+    // attempt) works the moment the map is up — no waiting on existing pins.
+    final photos   = ref.watch(photosProvider).valueOrNull ?? const <PhotoModel>[];
+    final profiles =
+        ref.watch(profilesProvider).valueOrNull ?? const <ProfileModel>[];
 
     return Scaffold(
       // Full-screen map — no AppBar, body extends to top
       extendBodyBehindAppBar: true,
       backgroundColor: const Color(0xFFF0F0F0),
-      body: photosAsync.when(
-        loading: () => const Center(
-          child: CircularProgressIndicator(strokeWidth: 2, color: _kAccent),
-        ),
-        error: (e, _) => _ErrorView(error: e, onRetry: _refresh),
-        data: (photos) => profilesAsync.when(
-          loading: () => const Center(
-            child: CircularProgressIndicator(strokeWidth: 2, color: _kAccent),
-          ),
-          error: (e, _) => _ErrorView(error: e, onRetry: _refresh),
-          data: (profiles) => _MapBody(
-            photos: photos,
-            profiles: profiles,
-            selectedProfile: _selectedProfile,
-            searchCtrl: _searchCtrl,
-            mapController: _mapController,
-            userPosition: _userPosition,
-            fetchingLocation: _fetchingLocation,
-            onProfileChanged: (v) => setState(() => _selectedProfile = v),
-            onFitAll: _fitAll,
-            onRefresh: _refresh,
-            onMyLocation: _fetchUserLocation,
-          ),
-        ),
+      body: _MapBody(
+        photos: photos,
+        profiles: profiles,
+        selectedProfile: _selectedProfile,
+        searchCtrl: _searchCtrl,
+        mapController: _mapController,
+        userPosition: _userPosition,
+        fetchingLocation: _fetchingLocation,
+        locationAttemptDone: _locationAttemptDone,
+        onMapReady: _onMapReady,
+        onProfileChanged: (v) => setState(() => _selectedProfile = v),
+        onFitAll: _fitAll,
+        onRefresh: _refresh,
+        onMyLocation: () => _fetchUserLocation(moveCamera: true),
       ),
     );
   }
@@ -197,12 +232,14 @@ class _MapBody extends ConsumerStatefulWidget {
     required this.selectedProfile,
     required this.searchCtrl,
     required this.mapController,
+    required this.onMapReady,
     required this.onProfileChanged,
     required this.onFitAll,
     required this.onRefresh,
     required this.onMyLocation,
     this.userPosition,
     this.fetchingLocation = false,
+    this.locationAttemptDone = false,
   });
 
   final List<PhotoModel>               photos;
@@ -210,12 +247,14 @@ class _MapBody extends ConsumerStatefulWidget {
   final String                         selectedProfile;
   final TextEditingController          searchCtrl;
   final MapController                  mapController;
+  final VoidCallback                   onMapReady;
   final ValueChanged<String>           onProfileChanged;
   final ValueChanged<List<PhotoModel>> onFitAll;
   final VoidCallback                   onRefresh;
   final VoidCallback                   onMyLocation;
   final Position?                      userPosition;
   final bool                           fetchingLocation;
+  final bool                           locationAttemptDone;
 
   @override
   ConsumerState<_MapBody> createState() => _MapBodyState();
@@ -223,6 +262,7 @@ class _MapBody extends ConsumerStatefulWidget {
 
 class _MapBodyState extends ConsumerState<_MapBody> {
   final Set<String> _levels = {};
+  bool _didInitialFit = false;
 
   @override
   Widget build(BuildContext context) {
@@ -251,6 +291,20 @@ class _MapBodyState extends ConsumerState<_MapBody> {
     final svcCounts = _countByService(geotagged);
     final hasData   = geotagged.isNotEmpty;
 
+    // The app opens centred on the user's live GPS (handled by the parent's
+    // last-known + accurate fixes). Only fall back to framing the pins once the
+    // location attempt has FINISHED with no fix — otherwise this would yank the
+    // camera away from the user while the GPS fix is still being acquired.
+    if (!_didInitialFit &&
+        hasData &&
+        widget.userPosition == null &&
+        widget.locationAttemptDone) {
+      _didInitialFit = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onFitAll(geotagged);
+      });
+    }
+
     const mapCenter = LatLng(32.7157, -117.1611);
 
     return Stack(
@@ -263,6 +317,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
             initialZoom: 13,
             minZoom: 2,
             maxZoom: 18,
+            onMapReady: widget.onMapReady,
             onTap: (_, latLng) {
               HapticFeedback.lightImpact();
               showMapUploadSheet(
@@ -358,7 +413,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                 onProfileChanged: widget.onProfileChanged,
               ),
               const SizedBox(height: 8),
-              // Category chips (F2)
+              // Category chips (F2) — leading "All" chip, then the four levels.
               _CategoryChips(
                 selected: _levels,
                 onToggle: (cat) => setState(() {
@@ -366,10 +421,13 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                       ? _levels.remove(cat)
                       : _levels.add(cat);
                 }),
+                onClearAll: () => setState(_levels.clear),
               ),
               const SizedBox(height: 8),
               // Contextual hint
               const _HintPill(),
+              // Offline upload queue indicator (auto-retries in the background).
+              const _PendingUploadsPill(),
             ],
           ),
         ),
@@ -442,13 +500,23 @@ class _FloatingHeader extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Explore Map',
-              style: TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.w800,
-                color: _kInk,
-                letterSpacing: -0.6,
+            RichText(
+              text: const TextSpan(
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.6,
+                ),
+                children: [
+                  TextSpan(
+                    text: 'Geo',
+                    style: TextStyle(color: Color(0xFF7C3AED)), // purple
+                  ),
+                  TextSpan(
+                    text: 'Tag',
+                    style: TextStyle(color: Color(0xFF5B21B6)), // dark
+                  ),
+                ],
               ),
             ),
             if (photoCount > 0) ...[
@@ -489,6 +557,32 @@ class _FloatingHeader extends StatelessWidget {
             Icons.refresh_rounded,
             size: 18,
             color: _kInkMuted,
+          ),
+        ),
+      ),
+      const SizedBox(width: 8),
+      // Settings / account — the single entry point now that the bottom
+      // Settings tab has been removed.
+      GestureDetector(
+        onTap: () {
+          HapticFeedback.lightImpact();
+          context.push('/settings');
+        },
+        child: Container(
+          width: 38,
+          height: 38,
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [_kAccent, Color(0xFF5445E6)],
+            ),
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(
+            Icons.person_rounded,
+            size: 20,
+            color: Colors.white,
           ),
         ),
       ),
@@ -556,7 +650,7 @@ class _SearchBar extends StatelessWidget {
                 value: 'all',
                 child: Row(
                   children: [
-                    Icon(Icons.apps_rounded, size: 16, color: _kInkMuted),
+                    Icon(Icons.grid_view_rounded, size: 16, color: _kInkMuted),
                     SizedBox(width: 8),
                     Text(
                       'All Profiles',
@@ -646,72 +740,85 @@ class _CategoryChips extends StatelessWidget {
   const _CategoryChips({
     required this.selected,
     required this.onToggle,
+    required this.onClearAll,
   });
   final Set<String>          selected;
   final ValueChanged<String> onToggle;
+  final VoidCallback         onClearAll;
 
   @override
-  Widget build(BuildContext context) => SizedBox(
-    height: 34,
-    child: ListView.separated(
-      scrollDirection: Axis.horizontal,
-      padding: EdgeInsets.zero,
-      itemCount: _kCats.length,
-      separatorBuilder: (_, __) => const SizedBox(width: 8),
-      itemBuilder: (_, i) {
-        final cat   = _kCats[i][0];
-        final label = _kCats[i][1];
-        final sel   = selected.contains(cat);
-        final color = _catColor(cat);
-        return GestureDetector(
-          onTap: () {
-            HapticFeedback.lightImpact();
-            onToggle(cat);
-          },
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            decoration: BoxDecoration(
-              color: sel ? color : _kSurface,
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(
-                color: sel ? color : _kSep,
-                width: 1.5,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: sel
-                      ? color.withValues(alpha: 0.25)
-                      : Colors.black.withValues(alpha: 0.06),
-                  blurRadius: sel ? 8 : 4,
-                  offset: const Offset(0, 2),
-                ),
-              ],
+  Widget build(BuildContext context) {
+    // All five chips share the row width so they're visible at once (no
+    // horizontal scroll). Each chip's content auto-scales to fit its cell.
+    final chips = <Widget>[];
+    for (int i = 0; i <= _kCats.length; i++) {
+      if (i > 0) chips.add(const SizedBox(width: 6));
+      chips.add(Expanded(child: _chip(i)));
+    }
+    return SizedBox(height: 34, child: Row(children: chips));
+  }
+
+  // i == 0 is the leading "All" chip; i >= 1 maps to _kCats[i - 1].
+  Widget _chip(int i) {
+    final bool isAll = i == 0;
+    final String cat = isAll ? '' : _kCats[i - 1][0];
+    // Shorten "Next Day" -> "NEXT" so the chip stays compact.
+    final String label = isAll
+        ? 'All'
+        : (cat == 'next_day' ? 'NEXT' : _kCats[i - 1][1]);
+    final bool sel = isAll ? selected.isEmpty : selected.contains(cat);
+    final Color color = isAll ? _kAccent : _catColor(cat);
+    final IconData icon = isAll ? Icons.apps_rounded : _catIcon(cat);
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.lightImpact();
+        isAll ? onClearAll() : onToggle(cat);
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        decoration: BoxDecoration(
+          color: sel ? color : _kSurface,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: sel ? color : _kSep,
+            width: 1.5,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: sel
+                  ? color.withValues(alpha: 0.25)
+                  : Colors.black.withValues(alpha: 0.06),
+              blurRadius: sel ? 8 : 4,
+              offset: const Offset(0, 2),
             ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  _catIcon(cat),
-                  size: 12,
-                  color: sel ? Colors.white : color,
-                ),
-                const SizedBox(width: 5),
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    color: sel ? Colors.white : _kInk,
+          ],
+        ),
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, size: 12, color: sel ? Colors.white : color),
+                  const SizedBox(width: 5),
+                  Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: sel ? Colors.white : _kInk,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
-        );
-      },
-    ),
-  );
+        ),
+      ),
+    );
+  }
 }
 
 // ── Hint pill ─────────────────────────────────────────────────────────────────
@@ -751,6 +858,63 @@ class _HintPill extends StatelessWidget {
       ),
     ),
   );
+}
+
+// ── Pending offline uploads pill ────────────────────────────────────────────
+/// Surfaces the offline upload queue. Hidden when empty; tapping forces a
+/// retry. The queue also retries itself automatically on a timer + when
+/// connectivity returns.
+class _PendingUploadsPill extends StatelessWidget {
+  const _PendingUploadsPill();
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder<int>(
+        valueListenable: UploadQueueService.instance.pendingCount,
+        builder: (_, count, __) {
+          if (count == 0) return const SizedBox.shrink();
+          return Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Align(
+              alignment: Alignment.center,
+              child: GestureDetector(
+                onTap: UploadQueueService.instance.process,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: _kAccent,
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: [
+                      BoxShadow(
+                        color: _kAccent.withValues(alpha: 0.3),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.cloud_upload_rounded,
+                          size: 13, color: Colors.white),
+                      const SizedBox(width: 6),
+                      Text(
+                        '$count upload${count > 1 ? 's' : ''} pending · '
+                        'retrying…',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      );
 }
 
 // ── My-location FAB ───────────────────────────────────────────────────────────
@@ -794,8 +958,8 @@ class _LocationFab extends StatelessWidget {
             )
           : Icon(
               userPosition != null
-                  ? Icons.my_location_rounded
-                  : Icons.location_searching_rounded,
+                  ? Icons.location_on_outlined
+                  : Icons.location_on_outlined,
               size: 22,
               color: userPosition != null ? _kAccent : _kSubtle,
             ),
@@ -964,7 +1128,7 @@ class _BottomCard extends StatelessWidget {
                   children: [
                     Expanded(
                       child: _CardBtn(
-                        icon: Icons.zoom_out_map_rounded,
+                        icon: Icons.fullscreen_rounded,
                         label: 'Fit All',
                         onTap: onFitAll,
                         filled: true,
@@ -973,7 +1137,7 @@ class _BottomCard extends StatelessWidget {
                     const SizedBox(width: 10),
                     Expanded(
                       child: _CardBtn(
-                        icon: Icons.list_alt_rounded,
+                        icon: Icons.format_list_bulleted_rounded,
                         label: 'View List',
                         onTap: onViewList,
                         filled: false,
@@ -1228,67 +1392,6 @@ class _UserLocationMarkerState extends State<_UserLocationMarker>
           ),
         ),
       ],
-    ),
-  );
-}
-
-// ── Error view ────────────────────────────────────────────────────────────────
-class _ErrorView extends StatelessWidget {
-  const _ErrorView({required this.error, required this.onRetry});
-  final Object       error;
-  final VoidCallback onRetry;
-
-  @override
-  Widget build(BuildContext context) => Center(
-    child: Padding(
-      padding: const EdgeInsets.all(32),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Container(
-            width: 64,
-            height: 64,
-            decoration: BoxDecoration(
-              color: const Color(0xFFDC2626).withValues(alpha: 0.1),
-              shape: BoxShape.circle,
-            ),
-            child: const Icon(
-              Icons.wifi_off_rounded,
-              size: 32,
-              color: Color(0xFFDC2626),
-            ),
-          ),
-          const SizedBox(height: 16),
-          const Text(
-            'Failed to load map data',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-              color: _kInk,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            error.toString().replaceAll('Exception: ', ''),
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 13, color: _kSubtle),
-          ),
-          const SizedBox(height: 24),
-          ElevatedButton.icon(
-            onPressed: onRetry,
-            icon: const Icon(Icons.refresh_rounded, size: 18),
-            label: const Text('Try Again'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: _kAccent,
-              foregroundColor: Colors.white,
-              elevation: 0,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-            ),
-          ),
-        ],
-      ),
     ),
   );
 }

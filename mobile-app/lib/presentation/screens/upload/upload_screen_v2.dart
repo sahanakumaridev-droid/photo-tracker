@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:exif/exif.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -15,11 +14,15 @@ import 'package:shimmer/shimmer.dart';
 
 import '../../../core/network/api_client.dart';
 import '../../../core/storage/local_storage.dart';
+import '../../../core/storage/upload_queue.dart';
 import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
+import '../../../core/utils/photo_stamp.dart';
+import '../../../core/utils/text_formatters.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
+import '../../widgets/common/create_profile_dialog.dart';
 import 'location_picker_map.dart';
 
 enum _UploadState { idle, uploading, processing, success, failed }
@@ -57,7 +60,9 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   int? _lastUploadedPhotoId;
 
   // ── State ─────────────────────────────────────────────────────────────────
-  File? _selectedImage;
+  // Multi-photo: each entry in _selectedImages has a matching _takenAts entry.
+  final List<File> _selectedImages = [];
+  final List<String?> _takenAts = [];
   ProfileModel? _selectedProfile;
   double? _latitude;
   double? _longitude;
@@ -67,16 +72,18 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   String? _locationErrorMsg;
   bool _isEditingAddress = false;
   String _selectedCategory = kDefaultCategory;
-  // F6: device capture time, locked the moment the photo is taken/picked.
-  String? _takenAt;
   // F1: when the user chooses to append to an existing pin.
   int? _locationGroupId;
   // Prevent the nearby-pin prompt from firing more than once per location.
   bool _nearbyCheckDone = false;
+  // Track how many photos have been uploaded when doing a multi-upload.
+  int _uploadedCount = 0;
 
   final _noteController = TextEditingController();
   final _addressController = TextEditingController();
   final _payRateController = TextEditingController();   // F7
+  final _servedToController = TextEditingController();
+  final _completionTypeController = TextEditingController();
   final _imagePicker = ImagePicker();
 
   @override
@@ -93,6 +100,8 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     _noteController.addListener(_saveDraft);
     _addressController.addListener(_saveDraft);
     _payRateController.addListener(_saveDraft);
+    _servedToController.addListener(_saveDraft);
+    _completionTypeController.addListener(_saveDraft);
   }
 
   @override
@@ -100,31 +109,27 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     _noteController.dispose();
     _addressController.dispose();
     _payRateController.dispose();
+    _servedToController.dispose();
+    _completionTypeController.dispose();
     super.dispose();
   }
 
   // ── F5: Draft auto-save & recovery ────────────────────────────────────────
   void _saveDraft() {
-    // Only persist when the user has selected a photo or profile.
-    // Auto-fetched GPS + reverse-geocoded address are NOT intentional actions
-    // and must not trigger a draft — they fire this via the text-controller
-    // listener and would cause the "Resume?" dialog on every fresh open.
-    if (_selectedImage == null && _selectedProfile == null) {
-      return;
-    }
+    if (_selectedImages.isEmpty && _selectedProfile == null) return;
     LocalStorage.savePinDraft(jsonEncode({
       'note': _noteController.text,
       'address': _addressController.text,
       'category': _selectedCategory,
       'payRate': _payRateController.text,
+      'servedTo': _servedToController.text,
+      'completionType': _completionTypeController.text,
       'profileId': _selectedProfile?.id,
-      // F5: also persist the in-progress photo + location, so a resumed
-      // draft doesn't need the photo retaken or the GPS fix redone.
-      'photoPath': _selectedImage?.path,
+      'photoPaths': _selectedImages.map((f) => f.path).toList(),
       'latitude': _latitude,
       'longitude': _longitude,
       'gpsAccuracy': _gpsAccuracy,
-      'takenAt': _takenAt,
+      'takenAts': _takenAts,
       'locationGroupId': _locationGroupId,
     }));
   }
@@ -162,12 +167,19 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       return;
     }
 
-    // F5: restore the in-progress photo (if it's still on disk).
-    final photoPath = draft['photoPath'] as String?;
-    final restoredImage =
-        photoPath != null && File(photoPath).existsSync()
-            ? File(photoPath)
-            : null;
+    // F5: restore in-progress photos (if still on disk).
+    final rawPaths = draft['photoPaths'];
+    final photoPaths = (rawPaths is List)
+        ? rawPaths.cast<String>()
+        : (draft['photoPath'] as String?) != null
+            ? [draft['photoPath'] as String]
+            : <String>[];
+    final restoredImages =
+        photoPaths.where((p) => File(p).existsSync()).map(File.new).toList();
+    final rawTakenAts = draft['takenAts'];
+    final restoredTakenAts = (rawTakenAts is List)
+        ? rawTakenAts.cast<String?>()
+        : List<String?>.filled(restoredImages.length, null);
 
     // F5: restore the previously-selected profile, if any.
     ProfileModel? restoredProfile;
@@ -189,13 +201,20 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       _noteController.text = (draft['note'] ?? '') as String;
       _addressController.text = (draft['address'] ?? '') as String;
       _payRateController.text = (draft['payRate'] ?? '') as String;
+      _servedToController.text = (draft['servedTo'] ?? '') as String;
+      _completionTypeController.text =
+          (draft['completionType'] ?? '') as String;
       _selectedCategory =
           (draft['category'] ?? kDefaultCategory) as String;
-      _selectedImage = restoredImage;
+      _selectedImages
+        ..clear()
+        ..addAll(restoredImages);
+      _takenAts
+        ..clear()
+        ..addAll(restoredTakenAts);
       _latitude = (draft['latitude'] as num?)?.toDouble();
       _longitude = (draft['longitude'] as num?)?.toDouble();
       _gpsAccuracy = (draft['gpsAccuracy'] as num?)?.toDouble();
-      _takenAt = draft['takenAt'] as String?;
       _locationGroupId = draft['locationGroupId'] as int?;
       if (restoredProfile != null) _selectedProfile = restoredProfile;
     });
@@ -439,47 +458,46 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     }
   }
 
-  // F6 — read the photo's real capture time from EXIF (DateTimeOriginal) so the
-  // timestamp reflects when the picture was TAKEN, not when it was uploaded.
-  Future<String> _captureTimeIso(File f) async {
-    try {
-      final tags = await readExifFromBytes(await f.readAsBytes());
-      final tag = tags['EXIF DateTimeOriginal'] ??
-          tags['EXIF DateTimeDigitized'] ??
-          tags['Image DateTime'];
-      if (tag != null) {
-        final m = RegExp(r'^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})')
-            .firstMatch(tag.printable);
-        if (m != null) {
-          final local = DateTime(
-            int.parse(m[1]!), int.parse(m[2]!), int.parse(m[3]!),
-            int.parse(m[4]!), int.parse(m[5]!), int.parse(m[6]!),
-          );
-          return local.toUtc().toIso8601String();
-        }
-      }
-    } catch (_) {/* fall through to now */}
-    return DateTime.now().toUtc().toIso8601String();
-  }
-
   Future<void> _openPicker(ImageSource source) async {
     try {
-      final picked = await _imagePicker.pickImage(
-        source: source,
-        imageQuality: 85,
-        maxWidth: 1920,
-      );
+      // Gallery: allow picking multiple images at once.
+      if (source == ImageSource.gallery) {
+        // Pick at full resolution so EXIF (capture date) survives; the
+        // watermark step downscales the image for upload.
+        final picked = await _imagePicker.pickMultiImage();
+        if (picked.isEmpty || !mounted) return;
+        HapticFeedback.mediumImpact();
+        final provisional = DateTime.now().toUtc().toIso8601String();
+        setState(() {
+          for (final x in picked) {
+            _selectedImages.add(File(x.path));
+            _takenAts.add(provisional);
+          }
+        });
+        // Refine each timestamp from EXIF in the background.
+        for (var i = _selectedImages.length - picked.length;
+            i < _selectedImages.length;
+            i++) {
+          final captured = await readCaptureTimeIso(_selectedImages[i]);
+          if (mounted) setState(() => _takenAts[i] = captured);
+        }
+        _saveDraft();
+        return;
+      }
+
+      // Camera: single shot. Full resolution so EXIF survives.
+      final picked = await _imagePicker.pickImage(source: source);
       if (picked != null && mounted) {
         HapticFeedback.mediumImpact();
+        final provisional = DateTime.now().toUtc().toIso8601String();
         setState(() {
-          _selectedImage = File(picked.path);
-          // F6: provisional capture time; refined from EXIF below.
-          _takenAt = DateTime.now().toUtc().toIso8601String();
+          _selectedImages.add(File(picked.path));
+          _takenAts.add(provisional);
         });
-        // F6: prefer the photo's real EXIF capture time over upload time
-        final captured = await _captureTimeIso(File(picked.path));
-        if (mounted) setState(() => _takenAt = captured);
-        // F5: persist the photo into the draft right away.
+        final captured = await readCaptureTimeIso(File(picked.path));
+        if (mounted) {
+          setState(() => _takenAts[_takenAts.length - 1] = captured);
+        }
         _saveDraft();
       }
     } on PlatformException catch (e) {
@@ -510,6 +528,88 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     }
   }
 
+  // Full-size preview showing the exact watermark (timestamp + address) that
+  // will be baked into the photo at upload time.
+  void _showPhotoPreview(int index) {
+    if (index < 0 || index >= _selectedImages.length) return;
+    HapticFeedback.lightImpact();
+    final address = _addressController.text.trim();
+    final takenAtIso = index < _takenAts.length ? _takenAts[index] : null;
+    showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.92),
+      builder: (dialogCtx) => Stack(
+        children: [
+          Center(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(dialogCtx).size.height * 0.8,
+                maxWidth: MediaQuery.of(dialogCtx).size.width * 0.95,
+              ),
+              child: InteractiveViewer(
+                child: Stack(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.file(_selectedImages[index]),
+                    ),
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      child: ClipRRect(
+                        borderRadius: const BorderRadius.vertical(
+                          bottom: Radius.circular(12),
+                        ),
+                        child: WatermarkBar(
+                          takenAtIso: takenAtIso,
+                          address: address,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          // Close button
+          Positioned(
+            top: MediaQuery.of(dialogCtx).padding.top + 8,
+            right: 12,
+            child: GestureDetector(
+              onTap: () => Navigator.pop(dialogCtx),
+              child: Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.5),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.close_rounded,
+                    color: Colors.white, size: 22),
+              ),
+            ),
+          ),
+          // Caption: where this timestamp comes from
+          Positioned(
+            left: 16,
+            right: 16,
+            bottom: MediaQuery.of(dialogCtx).padding.bottom + 16,
+            child: Text(
+              'Timestamp read from the photo · stamped on upload',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.7),
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showSnack(
     String msg, {
     bool isError = false,
@@ -523,8 +623,8 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
           children: [
             Icon(
               isError
-                  ? Icons.error_outline_rounded
-                  : Icons.check_circle_outline_rounded,
+                  ? Icons.error_outline
+                  : Icons.check_circle_outline,
               color: Colors.white,
               size: 18,
             ),
@@ -566,8 +666,8 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       return;
     }
 
-    if (_selectedImage == null) {
-      _showSnack('Please select a photo first', isError: true);
+    if (_selectedImages.isEmpty) {
+      _showSnack('Please select at least one photo', isError: true);
       return;
     }
     if (_selectedProfile == null) {
@@ -579,57 +679,123 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       return;
     }
 
-    // F1: fallback nearby check — only runs if the proactive GPS check
-    // didn't fire yet (e.g. user tapped Submit before GPS fixed).
     if (_locationGroupId == null && !_nearbyCheckDone) {
       await _checkNearbyAndMaybeReuse();
       if (!mounted) return;
     }
 
     HapticFeedback.mediumImpact();
-    setState(() => _uploadState = _UploadState.uploading);
+    setState(() {
+      _uploadState = _UploadState.uploading;
+      _uploadedCount = 0;
+    });
 
     final payRate = int.tryParse(_payRateController.text.trim());
+    final address = _addressController.text.trim().isEmpty
+        ? null
+        : _addressController.text.trim();
+    final note = _noteController.text.trim().isEmpty
+        ? null
+        : _noteController.text.trim();
+    final servedTo = _servedToController.text.trim().isEmpty
+        ? null
+        : _servedToController.text.trim();
+    final completionType = _completionTypeController.text.trim().isEmpty
+        ? null
+        : _completionTypeController.text.trim();
+
+    // The watermark caption is now drawn as a live display overlay
+    // (WatermarkCaption) in the feed + detail screens — from each photo's
+    // metadata — and re-baked into the file only at export time. So the
+    // ORIGINAL photo is uploaded/queued here; baking on upload would
+    // double-stamp beneath the overlay. (Queue/geotag handling below unchanged.)
+    final watermarked = List<File>.from(_selectedImages);
+
+    // ENQUEUE-FIRST: persist every photo to the durable offline queue BEFORE
+    // any network call. A signal drop, app switch, OR a hard kill mid-upload
+    // all auto-resume on their own — the original EXIF timestamp + geotag
+    // travel with each queued item and are never regenerated. The auto-drainer
+    // is paused so it can't race the in-order upload below and double-send.
+    UploadQueueService.instance.pauseAutoProcess();
+    final queueIds = <String>[];
+    for (var i = 0; i < watermarked.length; i++) {
+      final q = await UploadQueueService.instance.enqueue(
+        sourceFile: watermarked[i],
+        profileId: _selectedProfile!.id,
+        latitude: _latitude!,
+        longitude: _longitude!,
+        takenAt: _takenAts[i] ?? DateTime.now().toUtc().toIso8601String(),
+        address: address,
+        note: note,
+        category: _selectedCategory,
+        completionType: completionType,
+        servedTo: servedTo,
+        payRate: payRate,
+        locationGroupId: _locationGroupId,
+        profileName: _selectedProfile!.name,
+      );
+      queueIds.add(q.id);
+    }
 
     try {
-      final uploaded = await ref.read(uploadPhotoProvider({
-        'filePath': _selectedImage!.path,
-        'profileId': _selectedProfile!.id,
-        'latitude': _latitude,
-        'longitude': _longitude,
-        'address': _addressController.text.trim().isEmpty
-            ? null
-            : _addressController.text.trim(),
-        'note': _noteController.text.trim().isEmpty
-            ? null
-            : _noteController.text.trim(),
-        'category': _selectedCategory,
-        'payRate': payRate,
-        'takenAt': _takenAt,
-        'locationGroupId': _locationGroupId,
-      }).future);
+      int? lastId;
+      // Group the whole batch under one master pin. If we're adding to an
+      // existing pin, [_locationGroupId] is already set; otherwise the FIRST
+      // uploaded photo becomes the group anchor and every following photo
+      // attaches to it — so N photos make ONE profile/pin with N previews,
+      // not N separate profiles.
+      int? groupId = _locationGroupId;
+      for (var i = 0; i < watermarked.length; i++) {
+        final uploaded = await ref.read(uploadPhotoProvider({
+          'filePath': watermarked[i].path,
+          'profileId': _selectedProfile!.id,
+          'latitude': _latitude,
+          'longitude': _longitude,
+          'address': address,
+          'servedTo': servedTo,
+          'completionType': completionType,
+          'note': note,
+          'category': _selectedCategory,
+          'payRate': payRate,
+          'takenAt': _takenAts[i],
+          'locationGroupId': groupId,
+        }).future);
+        // Sent — drop it from the queue so the drainer can't re-send it.
+        await UploadQueueService.instance.remove(queueIds[i]);
+        lastId = uploaded.id;
+        groupId ??= uploaded.id;
+        if (mounted) setState(() => _uploadedCount = i + 1);
+      }
 
       if (!mounted) return;
-      // F5: pin committed — clear the saved draft.
       await LocalStorage.clearPinDraft();
       HapticFeedback.heavyImpact();
       setState(() {
         _uploadState = _UploadState.success;
-        _lastUploadedPhotoId = uploaded.id;
+        _lastUploadedPhotoId = lastId;
       });
+      final n = _selectedImages.length;
       _showSnack(_locationGroupId != null
-          ? 'Attempt added to existing pin'
-          : 'Photo uploaded successfully');
+          ? 'Added to existing pin ($n photo${n > 1 ? 's' : ''})'
+          : 'Uploaded $n photo${n > 1 ? 's' : ''} successfully');
     } catch (e) {
       debugPrint('[UPLOAD ERROR] $e');
       if (!mounted) return;
-      setState(() => _uploadState = _UploadState.failed);
+      // Field signal dropped (or the server is unreachable). The un-sent photos
+      // are already safe in the offline queue (enqueued above) and will upload
+      // automatically when connectivity returns — nothing more to persist.
+      final queued = watermarked.length - _uploadedCount;
+      await LocalStorage.clearPinDraft();
+      HapticFeedback.heavyImpact();
+      setState(() {
+        _uploadState = _UploadState.success;
+      });
       _showSnack(
-        e.toString().replaceAll('Exception: ', ''),
-        isError: true,
+        'Saved offline — $queued photo${queued > 1 ? 's' : ''} will upload '
+        'automatically when you have signal.',
       );
-      await Future<void>.delayed(const Duration(milliseconds: 1000));
-      if (mounted) setState(() => _uploadState = _UploadState.idle);
+    } finally {
+      UploadQueueService.instance.resumeAutoProcess();
     }
   }
 
@@ -683,7 +849,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   @override
   Widget build(BuildContext context) {
     final profilesAsync = ref.watch(profilesProvider);
-    final canUpload = _selectedImage != null &&
+    final canUpload = _selectedImages.isNotEmpty &&
         _selectedProfile != null &&
         _latitude != null &&
         _uploadState == _UploadState.idle;
@@ -731,12 +897,15 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
 
     switch (_uploadState) {
       case _UploadState.uploading:
-        label = 'Uploading photo…';
-        btnIcon = Icons.cloud_upload_rounded;
+        final total = _selectedImages.length;
+        label = total > 1
+            ? 'Uploading ${_uploadedCount + 1} of $total…'
+            : 'Uploading photo…';
+        btnIcon = Icons.cloud_upload_outlined;
         break;
       case _UploadState.processing:
         label = 'Processing…';
-        btnIcon = Icons.cloud_upload_rounded;
+        btnIcon = Icons.cloud_upload_outlined;
         break;
       case _UploadState.success:
         label = 'Upload Complete';
@@ -750,7 +919,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
         break;
       case _UploadState.idle:
         label = canUpload ? 'Upload Photo' : _missingFieldsHint();
-        btnIcon = Icons.cloud_upload_rounded;
+        btnIcon = Icons.cloud_upload_outlined;
     }
 
     final bool tappable =
@@ -916,7 +1085,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   // ── Header (step-based progress) ──────────────────────────────────────────
   Widget _buildHeader() {
     final items = <(String, bool)>[
-      ('Photo', _selectedImage != null),
+      ('Photo', _selectedImages.isNotEmpty),
       ('Profile', _selectedProfile != null),
       ('Location', _latitude != null && !_isLoadingLocation),
     ];
@@ -944,7 +1113,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
               Row(
                 children: [
                   IconButton(
-                    icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
+                    icon: const Icon(Icons.chevron_left_rounded, size: 20),
                     color: _inkMuted,
                     onPressed: context.pop,
                   ),
@@ -1071,129 +1240,163 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     );
   }
 
-  // ── Photo section ─────────────────────────────────────────────────────────
+  // ── Photo section (multi-photo) ──────────────────────────────────────────
   Widget _buildPhotoSection() => _card(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _sectionLabel('Photo', Icons.camera_alt_rounded,
-                required: true, done: _selectedImage != null),
+            _sectionLabel(
+              'Photos',
+              Icons.camera_alt_rounded,
+              required: true,
+              done: _selectedImages.isNotEmpty,
+            ),
+            if (_selectedImages.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(
+                '${_selectedImages.length} photo'
+                '${_selectedImages.length > 1 ? 's' : ''} selected'
+                ' · tap to preview the timestamp',
+                style: const TextStyle(fontSize: 12, color: _inkSubtle),
+              ),
+            ],
             const SizedBox(height: 12),
-            // Preview — tap opens camera directly
-            GestureDetector(
-              onTap: _selectedImage == null
-                  ? () => _pickImage(ImageSource.camera)
-                  : null,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: _selectedImage != null
-                    ? Stack(
+            // Thumbnail strip — shown when at least one photo is selected.
+            // Each thumbnail carries a live timestamp watermark identical to
+            // the one baked in at upload; tap to see the full-size preview.
+            if (_selectedImages.isNotEmpty)
+              SizedBox(
+                height: 130,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: _selectedImages.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  itemBuilder: (_, i) => GestureDetector(
+                    onTap: () => _showPhotoPreview(i),
+                    child: SizedBox(
+                      width: 110,
+                      child: Stack(
                         children: [
-                          Image.file(
-                            _selectedImage!,
-                            height: 220,
-                            width: double.infinity,
-                            fit: BoxFit.cover,
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: SizedBox(
+                              width: 110,
+                              height: 130,
+                              child: Stack(
+                                fit: StackFit.expand,
+                                children: [
+                                  Image.file(
+                                    _selectedImages[i],
+                                    fit: BoxFit.cover,
+                                    // Full-res source; decode small for the
+                                    // thumbnail to keep memory low.
+                                    cacheWidth: 320,
+                                  ),
+                                  // Live timestamp watermark (compact)
+                                  Positioned(
+                                    left: 0,
+                                    right: 0,
+                                    bottom: 0,
+                                    child: WatermarkBar(
+                                      takenAtIso: i < _takenAts.length
+                                          ? _takenAts[i]
+                                          : null,
+                                      compact: true,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                           ),
+                          // Remove button
                           Positioned(
-                            top: 10,
-                            right: 10,
+                            top: 4,
+                            right: 4,
                             child: GestureDetector(
-                              onTap: () => _pickImage(ImageSource.camera),
+                              onTap: () => setState(() {
+                                _selectedImages.removeAt(i);
+                                if (i < _takenAts.length) {
+                                  _takenAts.removeAt(i);
+                                }
+                                _saveDraft();
+                              }),
                               child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                  vertical: 6,
-                                ),
+                                width: 24,
+                                height: 24,
                                 decoration: BoxDecoration(
-                                  color: Colors.black.withValues(alpha: 0.55),
-                                  borderRadius: BorderRadius.circular(20),
+                                  color: Colors.black.withValues(alpha: 0.65),
+                                  shape: BoxShape.circle,
                                 ),
-                                child: const Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(
-                                      Icons.camera_alt_rounded,
-                                      size: 13,
-                                      color: Colors.white,
-                                    ),
-                                    SizedBox(width: 4),
-                                    Text(
-                                      'Retake',
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w600,
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                  ],
-                                ),
+                                child: const Icon(Icons.close_rounded,
+                                    size: 14, color: Colors.white),
+                              ),
+                            ),
+                          ),
+                          // Index badge
+                          Positioned(
+                            top: 4,
+                            left: 4,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 5, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.55),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                '${i + 1}',
+                                style: const TextStyle(
+                                    fontSize: 10,
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w700),
                               ),
                             ),
                           ),
                         ],
-                      )
-                    : Container(
-                        height: 210,
-                        width: double.infinity,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF5F0FF),
-                          borderRadius: BorderRadius.circular(18),
-                          border: Border.all(
-                            color: _accent.withValues(alpha: 0.22),
-                            width: 1.5,
-                          ),
-                        ),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Container(
-                              width: 72,
-                              height: 72,
-                              decoration: BoxDecoration(
-                                gradient: RadialGradient(
-                                  colors: [
-                                    _accent.withValues(alpha: 0.18),
-                                    _accent.withValues(alpha: 0.06),
-                                  ],
-                                ),
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: _accent.withValues(alpha: 0.18),
-                                  width: 1,
-                                ),
-                              ),
-                              child: const Icon(
-                                Icons.add_a_photo_rounded,
-                                size: 32,
-                                color: _accent,
-                              ),
-                            ),
-                            const SizedBox(height: 16),
-                            const Text(
-                              'Add a Photo',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
-                                color: _ink,
-                                letterSpacing: -0.3,
-                              ),
-                            ),
-                            const SizedBox(height: 5),
-                            const Text(
-                              'Capture now or upload from gallery',
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: _inkSubtle,
-                              ),
-                            ),
-                          ],
-                        ),
                       ),
+                    ),
+                  ),
+                ),
               ),
-            ),
+            // Prominent, always-visible capture-time field while building.
+            if (_selectedImages.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              _captureTimeCard(),
+            ],
+            if (_selectedImages.isEmpty)
+              GestureDetector(
+                onTap: () => _pickImage(ImageSource.camera),
+                child: Container(
+                  height: 140,
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF5F0FF),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: _accent.withValues(alpha: 0.22),
+                      width: 1.5,
+                    ),
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.camera_alt_rounded,
+                          size: 32, color: _accent.withValues(alpha: 0.7)),
+                      const SizedBox(height: 10),
+                      const Text('Add Photos',
+                          style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                              color: _ink)),
+                      const SizedBox(height: 4),
+                      const Text('Camera or gallery · multiple supported',
+                          style:
+                              TextStyle(fontSize: 12, color: _inkSubtle)),
+                    ],
+                  ),
+                ),
+              ),
             const SizedBox(height: 12),
-            // Buttons — Camera primary, Gallery secondary
             Row(
               children: [
                 Expanded(
@@ -1217,6 +1420,74 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
           ],
         ),
       );
+
+  // Always-visible timestamp field: shows the photo's capture time (EXIF) the
+  // moment a photo is added — this is exactly what gets baked into the
+  // watermark on upload.
+  Widget _captureTimeCard() {
+    final iso = _takenAts.isNotEmpty ? _takenAts.first : null;
+    final label = iso == null ? 'Reading photo time…' : formatStamp(iso);
+    final multi = _selectedImages.length > 1;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: _accentSoft,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: _accent.withValues(alpha: 0.25)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.schedule_rounded, size: 18, color: _accent),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'PHOTO TIMESTAMP',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: _accent,
+                    letterSpacing: 0.6,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: _ink,
+                  ),
+                ),
+                if (multi)
+                  const Text(
+                    'Each photo keeps its own capture time',
+                    style: TextStyle(fontSize: 11, color: _inkSubtle),
+                  ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: _accent.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: const Text(
+              'on watermark',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: _accent,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _srcBtn({
     required IconData icon,
@@ -1286,8 +1557,58 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
               error: (e, _) => _errorBox('Failed to load profiles'),
               data: (profiles) {
                 if (profiles.isEmpty) {
-                  return _errorBox(
-                    'No profiles found. Create one in Settings.',
+                  return Container(
+                    padding: const EdgeInsets.symmetric(
+                        vertical: 20, horizontal: 16),
+                    decoration: BoxDecoration(
+                      color: _canvas,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                          color: _accent.withValues(alpha: 0.25)),
+                    ),
+                    child: Column(
+                      children: [
+                        Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            color: _accent.withValues(alpha: 0.12),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Icons.person_add_alt_1_rounded,
+                              color: _accent, size: 22),
+                        ),
+                        const SizedBox(height: 10),
+                        const Text('No profiles yet',
+                            style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
+                                color: _ink)),
+                        const SizedBox(height: 4),
+                        const Text('Add a profile to attach this upload to.',
+                            textAlign: TextAlign.center,
+                            style:
+                                TextStyle(fontSize: 12.5, color: _inkMuted)),
+                        const SizedBox(height: 14),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            onPressed: _showCreateProfileDialog,
+                            icon: const Icon(Icons.add_rounded, size: 18),
+                            label: const Text('Add Profile'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _accent,
+                              foregroundColor: Colors.white,
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 13),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12)),
+                              elevation: 0,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   );
                 }
                 // Show selected profile or tap-to-pick row
@@ -1309,33 +1630,6 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                     ),
                     child: Row(
                       children: [
-                        Container(
-                          width: 36,
-                          height: 36,
-                          decoration: BoxDecoration(
-                            color: _selectedProfile != null
-                                ? _accent
-                                : _inkSubtle.withValues(alpha: 0.15),
-                            shape: BoxShape.circle,
-                          ),
-                          child: Center(
-                            child: _selectedProfile != null
-                                ? Text(
-                                    _selectedProfile!.name[0].toUpperCase(),
-                                    style: const TextStyle(
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.w700,
-                                      color: Colors.white,
-                                    ),
-                                  )
-                                : const Icon(
-                                    Icons.person_outline_rounded,
-                                    size: 18,
-                                    color: _inkSubtle,
-                                  ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
                         Expanded(
                           child: Text(
                             _selectedProfile?.name ?? 'Select a profile',
@@ -1492,6 +1786,38 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
               ),
             ),
             const SizedBox(height: 12),
+            // ── New profile shortcut ─────────────────────────────────────
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: GestureDetector(
+                onTap: () {
+                  Navigator.pop(context);
+                  _showCreateProfileDialog();
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 13),
+                  decoration: BoxDecoration(
+                    color: _accentSoft,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                        color: _accent.withValues(alpha: 0.35), width: 1.5),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.add_circle_outline_rounded,
+                          size: 18, color: _accent),
+                      SizedBox(width: 10),
+                      Text('New Profile',
+                          style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: _accent)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
             Flexible(
               child: ListView.builder(
                 shrinkWrap: true,
@@ -1510,13 +1836,9 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                     child: Container(
                       margin: const EdgeInsets.only(bottom: 8),
                       padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 13,
-                      ),
+                          horizontal: 14, vertical: 13),
                       decoration: BoxDecoration(
-                        color: sel
-                            ? _accentSoft
-                            : _canvas,
+                        color: sel ? _accentSoft : _canvas,
                         borderRadius: BorderRadius.circular(14),
                         border: sel
                             ? Border.all(color: _accent, width: 1.5)
@@ -1524,57 +1846,19 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                       ),
                       child: Row(
                         children: [
-                          Container(
-                            width: 36,
-                            height: 36,
-                            decoration: BoxDecoration(
-                              color: sel
-                                  ? _accent
-                                  : _accent.withValues(alpha: 0.12),
-                              shape: BoxShape.circle,
-                            ),
-                            child: Center(
-                              child: Text(
-                                p.name[0].toUpperCase(),
-                                style: TextStyle(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w700,
-                                  color: sel ? Colors.white : _accent,
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
                           Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  p.name,
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: sel
-                                        ? FontWeight.w600
-                                        : FontWeight.w400,
-                                    color: sel ? _accent : _ink,
-                                  ),
-                                ),
-                                Text(
-                                  _svcLabel(p.serviceType),
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: _inkSubtle,
-                                  ),
-                                ),
-                              ],
-                            ),
+                            child: Text(p.name,
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: sel
+                                      ? FontWeight.w600
+                                      : FontWeight.w400,
+                                  color: sel ? _accent : _ink,
+                                )),
                           ),
                           if (sel)
-                            const Icon(
-                              Icons.check_circle_rounded,
-                              color: _accent,
-                              size: 20,
-                            ),
+                            const Icon(Icons.check_circle_rounded,
+                                color: _accent, size: 20),
                         ],
                       ),
                     ),
@@ -1588,14 +1872,13 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     );
   }
 
-  String _svcLabel(String? t) {
-    switch ((t ?? '').toLowerCase()) {
-      case 'rush':
-        return 'ASAP service';
-      case 'airport':
-        return 'Airport service';
-      default:
-        return 'Standard service';
+  // ── Profile creation (shared dialog) ──────────────────────────────────────
+  Future<void> _showCreateProfileDialog() async {
+    final created = await showCreateProfileDialog(context);
+    if (created != null && mounted) {
+      setState(() => _selectedProfile = created);
+      _saveDraft();
+      _showSnack('Profile "${created.name}" created');
     }
   }
 
@@ -1666,7 +1949,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(
-                          Icons.my_location_rounded,
+                          Icons.location_on_outlined,
                           size: 13,
                           color: _isLoadingLocation ? _inkSubtle : _accent,
                         ),
@@ -1726,7 +2009,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                 child: Row(
                   children: [
                     const Icon(
-                      Icons.location_off_rounded,
+                      Icons.location_off_outlined,
                       size: 18,
                       color: _errorRed,
                     ),
@@ -1752,6 +2035,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                   TextField(
                     controller: _addressController,
                     maxLines: 2,
+                    textCapitalization: TextCapitalization.words,
                     style: const TextStyle(
                       fontSize: 13,
                       color: _ink,
@@ -1766,7 +2050,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                       prefixIcon: const Padding(
                         padding: EdgeInsets.only(left: 12, right: 8),
                         child: Icon(
-                          Icons.home_work_outlined,
+                          Icons.apartment_rounded,
                           size: 18,
                           color: _inkSubtle,
                         ),
@@ -1820,7 +2104,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                         child: Icon(
                           _isEditingAddress
                               ? Icons.check_rounded
-                              : Icons.edit_rounded,
+                              : Icons.edit_outlined,
                           size: 14,
                           color: _accent,
                         ),
@@ -1844,7 +2128,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                 child: Row(
                   children: [
                     Icon(
-                      Icons.gps_fixed_rounded,
+                      Icons.location_on_rounded,
                       size: 15,
                       color: (_gpsAccuracy != null && _gpsAccuracy! > 50)
                           ? Colors.orange
@@ -1891,13 +2175,36 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _sectionLabel('Note', Icons.edit_note_rounded),
+            _sectionLabel('Note', Icons.edit_outlined),
             const SizedBox(height: 14),
             _inputField(
               controller: _noteController,
               hint: 'Add a note about this photo…',
-              icon: Icons.notes_rounded,
+              icon: Icons.description_outlined,
               maxLines: 3,
+              textCapitalization: TextCapitalization.sentences,
+              inputFormatters: const [SentenceCaseInputFormatter()],
+            ),
+            const SizedBox(height: 16),
+            // Completion detail — Type (e.g. Substitute / Personal / Posted)
+            _fieldLabel('Type', optional: true),
+            const SizedBox(height: 6),
+            _inputField(
+              controller: _completionTypeController,
+              hint: 'e.g. Substitute, Personal, Posted',
+              icon: Icons.assignment_turned_in_outlined,
+              textCapitalization: TextCapitalization.words,
+            ),
+            const SizedBox(height: 16),
+            // Completion detail — Served To
+            _fieldLabel('Served To', optional: true),
+            const SizedBox(height: 6),
+            _inputField(
+              controller: _servedToController,
+              hint: 'Name of person served',
+              icon: Icons.person_outline,
+              textCapitalization: TextCapitalization.words,
+              inputFormatters: const [TitleCaseInputFormatter()],
             ),
             const SizedBox(height: 16),
             // F7 — Pay rate
@@ -1906,7 +2213,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
             _inputField(
               controller: _payRateController,
               hint: 'e.g. 30',
-              icon: Icons.attach_money_rounded,
+              icon: Icons.attach_money,
               keyboardType: TextInputType.number,
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
             ),
@@ -1917,7 +2224,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   /// Returns a hint about what's still needed.
   String _missingFieldsHint() {
     final missing = <String>[];
-    if (_selectedImage == null) missing.add('photo');
+    if (_selectedImages.isEmpty) missing.add('photo');
     if (_selectedProfile == null) missing.add('profile');
     if (_latitude == null && !_isLoadingLocation) missing.add('location');
     if (_isLoadingLocation) return 'Waiting for GPS…';
@@ -2072,12 +2379,14 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     int maxLines = 1,
     TextInputType? keyboardType,
     List<TextInputFormatter>? inputFormatters,
+    TextCapitalization textCapitalization = TextCapitalization.none,
   }) =>
       TextField(
         controller: controller,
         maxLines: maxLines,
         keyboardType: keyboardType,
         inputFormatters: inputFormatters,
+        textCapitalization: textCapitalization,
         style: const TextStyle(
           fontSize: 14,
           color: _ink,

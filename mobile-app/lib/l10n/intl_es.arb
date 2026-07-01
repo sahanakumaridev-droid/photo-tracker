@@ -1,0 +1,101 @@
+{
+  "@@locale": "es",
+
+  "appTitle": "Geo Tag",
+
+  "navHome": "Inicio",
+  "navMap": "Mapa",
+  "navEarnings": "Ganancias",
+  "navLog": "Registro",
+  "navSettings": "Ajustes",
+  "navUpload": "Subir",
+
+  "loginTitle": "Bienvenido de nuevo",
+  "loginSubtitle": "Inicia sesión para continuar",
+  "loginButton": "Iniciar sesión",
+  "logoutButton": "Cerrar sesión",
+  "emailHint": "Correo electrónico",
+  "passwordHint": "Contraseña",
+
+  "uploadTitle": "Subir foto",
+  "uploadSelectPhoto": "Seleccionar foto",
+  "uploadCamera": "Cámara",
+  "uploadGallery": "Galería",
+  "uploadProfile": "Perfil",
+  "uploadAddress": "Dirección",
+  "uploadNote": "Nota",
+  "uploadButton": "Subir",
+  "uploadingProgress": "Subiendo {current} de {total}…",
+  "uploadNewProfile": "+ Nuevo perfil",
+
+  "profileName": "Nombre del perfil",
+  "profileCreate": "Crear perfil",
+  "profilePrimaryAddress": "Dirección principal",
+  "profileNoPhotos": "Sin fotos aún",
+  "profilePhotosCount": "{count, plural, =1{1 foto} other{{count} fotos}}",
+
+  "svcAsap": "Urgente",
+  "svcStandard": "Estándar",
+  "svcAirport": "Aeropuerto",
+
+  "statusOpen": "Abierto",
+  "statusInProgress": "En progreso",
+  "statusCompleted": "Completado",
+  "statusArchived": "Archivado",
+
+  "jobStatus": "ESTADO DEL TRABAJO",
+  "statusSummary": "RESUMEN DE ESTADO",
+  "statusSummarySubtitle": "Ciclo completo del trabajo",
+  "statusTapHint": "Toca cualquier paso para cambiar el estado",
+  "statusOpened": "Abierto",
+
+  "locationLabel": "UBICACIÓN",
+  "openInMaps": "Abrir en mapas",
+  "copyCoords": "Copiar coordenadas",
+  "coordsCopied": "Coordenadas copiadas al portapapeles",
+  "mapLinkCopied": "Enlace de mapas copiado — pégalo en el navegador",
+
+  "noteLabel": "Nota",
+  "notePlaceholder": "Añadir una nota…",
+  "saveNote": "Guardar nota",
+  "noteSaved": "Nota guardada",
+
+  "addressLabel": "Dirección y código postal",
+  "saveAddress": "Guardar dirección",
+  "addressSaved": "Dirección guardada",
+  "addressAutoFill": "Autocompletar",
+
+  "deletePhoto": "Eliminar foto",
+  "deleteConfirmTitle": "Eliminar foto",
+  "deleteConfirmBody": "Esta foto se eliminará permanentemente. Esta acción no se puede deshacer.",
+  "deleteConfirm": "Eliminar",
+  "cancel": "Cancelar",
+
+  "editPhoto": "Editar foto",
+  "replacePhoto": "Reemplazar foto",
+  "replacePhotoSubtitle": "Cambia la imagen por una nueva",
+  "photoUpdated": "Foto actualizada correctamente",
+  "photoDeleted": "Foto eliminada",
+
+  "editLocation": "Editar ubicación",
+  "timestampUpdated": "Marca de tiempo actualizada",
+  "capturedLabel": "Capturada",
+  "payoutLabel": "Pago",
+  "linkedProfiles": "PERFILES VINCULADOS",
+
+  "csvExportTitle": "Exportar CSV",
+
+  "tryAgain": "Intentar de nuevo",
+  "goBack": "Volver",
+  "photoNotFound": "Foto no encontrada",
+  "photoNotFoundSubtitle": "Es posible que esta foto haya sido eliminada.",
+  "failedToLoadPhoto": "Error al cargar la foto",
+  "couldNotLoadPhotos": "No se pudieron cargar las fotos",
+  "fetchingAddress": "Obteniendo dirección…",
+  "locating": "Localizando…",
+
+  "statusUpdatedTo": "Estado actualizado a {status}",
+
+  "takeNewPhoto": "Tomar una nueva foto",
+  "chooseFromGallery": "Elegir de la galería"
+}

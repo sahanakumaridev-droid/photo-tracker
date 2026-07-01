@@ -290,7 +290,7 @@ class _LocationPickerMapState extends State<LocationPickerMap> {
                     BoxShadow(color: _accent.withValues(alpha: 0.45), blurRadius: _isDragging ? 16 : 8, spreadRadius: _isDragging ? 4 : 2),
                   ],
                 ),
-                child: const Icon(Icons.location_on, color: Colors.white, size: 20),
+                child: const Icon(Icons.location_on_rounded, color: Colors.white, size: 20),
               ),
               Container(width: 3, height: 12, color: _accent),
               Container(width: _isDragging ? 10 : 6, height: _isDragging ? 4 : 3,
@@ -321,7 +321,7 @@ class _LocationPickerMapState extends State<LocationPickerMap> {
                       ? const Padding(padding: EdgeInsets.all(12), child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: _accent)))
                       : const Icon(Icons.search_rounded, color: _inkSubtle, size: 20),
                   suffixIcon: _searchController.text.isNotEmpty
-                      ? IconButton(icon: const Icon(Icons.clear_rounded, size: 18), color: _inkSubtle, onPressed: () { _searchController.clear(); setState(() { _showResults = false; }); })
+                      ? IconButton(icon: const Icon(Icons.close_rounded, size: 18), color: _inkSubtle, onPressed: () { _searchController.clear(); setState(() { _showResults = false; }); })
                       : null,
                   border: InputBorder.none,
                   contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
@@ -389,7 +389,7 @@ class _LocationPickerMapState extends State<LocationPickerMap> {
               backgroundColor: _surface,
               foregroundColor: _accent,
               elevation: 4,
-              child: _locating ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.my_location),
+              child: _locating ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.location_on_outlined),
             ),
             const SizedBox(width: 12),
             Expanded(

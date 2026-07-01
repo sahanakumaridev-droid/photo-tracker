@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
+import '../../../core/utils/text_formatters.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/location_provider.dart';
 import '../../providers/photo_provider.dart';
@@ -28,7 +31,7 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
         elevation: 0,
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh_outlined),
+            icon: const Icon(CupertinoIcons.arrow_clockwise),
             onPressed: () => ref.refresh(profilesProvider),
           ),
         ],
@@ -41,7 +44,7 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
             child: TextField(
               decoration: InputDecoration(
                 hintText: 'Search profiles...',
-                prefixIcon: const Icon(Icons.search_outlined),
+                prefixIcon: const Icon(CupertinoIcons.search),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(8),
                 ),
@@ -59,7 +62,7 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const Icon(Icons.error_outline, size: 48, color: Colors.red),
+                    const Icon(CupertinoIcons.exclamationmark_circle, size: 48, color: Colors.red),
                     const SizedBox(height: 16),
                     Text('Error: $error'),
                     const SizedBox(height: 16),
@@ -72,9 +75,7 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
               ),
               data: (profiles) {
                 final filtered = profiles
-                    .where((p) =>
-                        p.name.toLowerCase().contains(_searchQuery) ||
-                        p.serviceType.toLowerCase().contains(_searchQuery))
+                    .where((p) => p.name.toLowerCase().contains(_searchQuery))
                     .toList();
 
                 // Sort by distance from current user location
@@ -127,13 +128,13 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        const Icon(Icons.folder_open_outlined, size: 48),
+                        const Icon(CupertinoIcons.folder_open, size: 48),
                         const SizedBox(height: 16),
                         const Text('No profiles found'),
                         const SizedBox(height: 16),
                         ElevatedButton.icon(
                           onPressed: () => _showCreateProfileDialog(context),
-                          icon: const Icon(Icons.add_outlined),
+                          icon: const Icon(CupertinoIcons.add),
                           label: const Text('Create Profile'),
                         ),
                       ],
@@ -154,13 +155,14 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: () => _showCreateProfileDialog(context),
-        child: const Icon(Icons.add_outlined),
+        child: const Icon(CupertinoIcons.add),
       ),
     );
   }
 
   Widget _buildProfileCard(BuildContext context, ProfileModel profile) {
-    final serviceTypeColor = _getServiceTypeColor(profile.serviceType);
+    const accent = Color(0xFF5B5BD6);
+    final note = profile.note;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -169,16 +171,13 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
           width: 48,
           height: 48,
           decoration: BoxDecoration(
-            color: serviceTypeColor.withValues(alpha: 0.2),
+            color: accent.withValues(alpha: 0.12),
             borderRadius: BorderRadius.circular(8),
           ),
-          child: Icon(
-            _getServiceTypeIcon(profile.serviceType),
-            color: serviceTypeColor,
-          ),
+          child: const Icon(CupertinoIcons.person_fill, color: accent),
         ),
         title: Text(profile.name),
-        subtitle: Text(profile.serviceType.toUpperCase()),
+        subtitle: (note != null && note.isNotEmpty) ? Text(note) : null,
         trailing: PopupMenuButton(
           itemBuilder: (context) => [
             PopupMenuItem(
@@ -198,45 +197,31 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
 
   void _showCreateProfileDialog(BuildContext context) {
     final nameController = TextEditingController();
-    var selectedServiceType = 'standard';
 
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Create Profile'),
-        content: StatefulBuilder(
-          builder: (context, setState) => Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameController,
-                decoration: const InputDecoration(
-                  labelText: 'Profile Name',
-                  hintText: 'Enter profile name',
-                ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameController,
+              textCapitalization: TextCapitalization.words,
+              inputFormatters: const [TitleCaseInputFormatter()],
+              decoration: const InputDecoration(
+                labelText: 'Profile Name',
+                hintText: 'Enter profile name',
               ),
-              const SizedBox(height: 16),
-              DropdownButton<String>(
-                isExpanded: true,
-                value: selectedServiceType,
-                items: const [
-                  DropdownMenuItem(value: 'standard', child: Text('Standard')),
-                  DropdownMenuItem(value: 'rush', child: Text('ASAP')),
-                  DropdownMenuItem(value: 'airport', child: Text('Airport')),
-                ]
-                    .map((item) => DropdownMenuItem(
-                          value: item.value,
-                          child: item.child,
-                        ))
-                    .toList(),
-                onChanged: (value) {
-                  if (value != null) {
-                    setState(() => selectedServiceType = value);
-                  }
-                },
-              ),
-            ],
-          ),
+            ),
+            const SizedBox(height: 8),
+            // Service level is chosen per-photo during upload, not on the
+            // profile — so there's only ever one place to set it.
+            const Text(
+              "You'll choose the service level when you upload a photo.",
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
         ),
         actions: [
           TextButton(
@@ -251,12 +236,10 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
                 );
                 return;
               }
-
               try {
                 await ref.read(createProfileProvider(
-                  (nameController.text, selectedServiceType),
+                  (nameController.text, kDefaultCategory),
                 ).future);
-
                 if (context.mounted) {
                   Navigator.pop(context);
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -281,48 +264,29 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
   void _showEditProfileDialog(BuildContext context, ProfileModel profile) {
     final nameController = TextEditingController(text: profile.name);
     final noteController = TextEditingController(text: profile.note ?? '');
-    var selectedServiceType = profile.serviceType;
 
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Edit Profile'),
-        content: StatefulBuilder(
-          builder: (context, setState) => Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameController,
-                decoration: const InputDecoration(labelText: 'Name'),
-              ),
-              const SizedBox(height: 12),
-              DropdownButton<String>(
-                isExpanded: true,
-                value: selectedServiceType,
-                items: const [
-                  DropdownMenuItem(value: 'standard', child: Text('Standard')),
-                  DropdownMenuItem(value: 'rush', child: Text('ASAP')),
-                  DropdownMenuItem(value: 'airport', child: Text('Airport')),
-                ]
-                    .map((item) => DropdownMenuItem(
-                          value: item.value,
-                          child: item.child,
-                        ))
-                    .toList(),
-                onChanged: (value) {
-                  if (value != null) {
-                    setState(() => selectedServiceType = value);
-                  }
-                },
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: noteController,
-                decoration: const InputDecoration(labelText: 'Note'),
-                maxLines: 2,
-              ),
-            ],
-          ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameController,
+              textCapitalization: TextCapitalization.words,
+              inputFormatters: const [TitleCaseInputFormatter()],
+              decoration: const InputDecoration(labelText: 'Name'),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: noteController,
+              textCapitalization: TextCapitalization.sentences,
+              inputFormatters: const [SentenceCaseInputFormatter()],
+              decoration: const InputDecoration(labelText: 'Note'),
+              maxLines: 2,
+            ),
+          ],
         ),
         actions: [
           TextButton(
@@ -332,18 +296,15 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
           ElevatedButton(
             onPressed: () async {
               try {
-                await ref.read(updateProfileProvider(
-                  (
-                    profile.id,
-                    nameController.text,
-                    selectedServiceType,
-                    noteController.text.isEmpty ? null : noteController.text,
-                  ),
-                ).future);
-
-                // Refresh profiles list so note change is visible immediately
+                await ref.read(updateProfileProvider((
+                  profile.id,
+                  nameController.text,
+                  // Service level is no longer a profile property; preserve
+                  // whatever was stored so the update is a no-op for it.
+                  profile.serviceType,
+                  noteController.text.isEmpty ? null : noteController.text,
+                )).future);
                 ref.invalidate(profilesProvider);
-
                 if (context.mounted) {
                   Navigator.pop(context);
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -403,25 +364,4 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
     );
   }
 
-  Color _getServiceTypeColor(String serviceType) {
-    switch (serviceType.toLowerCase()) {
-      case 'rush':
-        return Colors.red;
-      case 'airport':
-        return Colors.blue;
-      default:
-        return Colors.green;
-    }
-  }
-
-  IconData _getServiceTypeIcon(String serviceType) {
-    switch (serviceType.toLowerCase()) {
-      case 'rush':
-        return Icons.local_fire_department_outlined;
-      case 'airport':
-        return Icons.flight_outlined;
-      default:
-        return Icons.check_circle_outlined;
-    }
-  }
 }

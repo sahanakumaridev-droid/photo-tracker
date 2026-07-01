@@ -8,6 +8,9 @@ import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 
 import '../../../core/utils/location_service.dart';
+import '../../../core/utils/maps_launcher.dart';
+import '../../../core/utils/photo_stamp.dart';
+import '../../../core/utils/text_formatters.dart';
 import '../../../data/models/photo_model.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
@@ -102,6 +105,9 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
 
   // Add-photo state
   File? _pickedFile;
+  // EXIF capture time of the picked photo (falls back to now). Shown live as
+  // a watermark and baked into the image on upload.
+  String? _takenAt;
   final _noteCtrl = TextEditingController();
   int? _addProfileId;
   bool _uploading = false;
@@ -142,6 +148,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
       _photoIdx = 0;
       _addingPhoto = false;
       _pickedFile = null;
+      _takenAt = null;
       _noteCtrl.clear();
       _addProfileId = widget.groups[i].profileId;
     });
@@ -175,15 +182,16 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
 
   Future<void> _pickImage(ImageSource source) async {
     HapticFeedback.lightImpact();
-    final picked = await _picker.pickImage(
-      source: source,
-      imageQuality: 85,
-      maxWidth: 1920,
-    );
+    // Full resolution so EXIF (capture date) survives; watermark downscales.
+    final picked = await _picker.pickImage(source: source);
     if (picked != null && mounted) {
       setState(() {
         _pickedFile = File(picked.path);
+        // Show a provisional time immediately; refine from EXIF below.
+        _takenAt = DateTime.now().toUtc().toIso8601String();
       });
+      final captured = await readCaptureTimeIso(File(picked.path));
+      if (mounted) setState(() => _takenAt = captured);
     }
   }
 
@@ -191,17 +199,23 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
     if (_pickedFile == null || _addProfileId == null) return;
     setState(() => _uploading = true);
     try {
+      final takenAt = _takenAt ?? DateTime.now().toUtc().toIso8601String();
+      // Upload the ORIGINAL photo; the watermark is a display overlay + export
+      // re-bake now, so baking here would double-stamp beneath the overlay.
+      final watermarked = _pickedFile!;
       await ref.read(uploadPhotoProvider({
-        'filePath': _pickedFile!.path,
+        'filePath': watermarked.path,
         'profileId': _addProfileId,
         'latitude': widget.lat,
         'longitude': widget.lng,
         'note': _noteCtrl.text.trim().isEmpty ? null : _noteCtrl.text.trim(),
+        'takenAt': takenAt,
       }).future);
       if (mounted) {
         setState(() {
           _addingPhoto = false;
           _pickedFile = null;
+          _takenAt = null;
           _noteCtrl.clear();
         });
         widget.onUpdated();
@@ -425,7 +439,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
               errorBuilder: (_, __, ___) => Container(
                 color: _surface,
                 child: const Icon(
-                  Icons.broken_image_outlined,
+                  Icons.photo_library_outlined,
                   color: Colors.white38,
                   size: 40,
                 ),
@@ -452,7 +466,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                         shape: BoxShape.circle,
                       ),
                       child: const Icon(
-                        Icons.chevron_left,
+                        Icons.chevron_left_rounded,
                         color: Colors.white,
                         size: 20,
                       ),
@@ -477,7 +491,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                         shape: BoxShape.circle,
                       ),
                       child: const Icon(
-                        Icons.chevron_right,
+                        Icons.chevron_right_rounded,
                         color: Colors.white,
                         size: 20,
                       ),
@@ -655,11 +669,26 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
               children: [
                 ClipRRect(
                   borderRadius: BorderRadius.circular(8),
-                  child: Image.file(
-                    _pickedFile!,
+                  child: SizedBox(
                     height: 100,
                     width: double.infinity,
-                    fit: BoxFit.cover,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        Image.file(_pickedFile!,
+                            fit: BoxFit.cover, cacheWidth: 720),
+                        // Live timestamp watermark — matches upload.
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          bottom: 0,
+                          child: WatermarkBar(
+                            takenAtIso: _takenAt,
+                            compact: true,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
                 Positioned(
@@ -668,6 +697,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                   child: GestureDetector(
                     onTap: () => setState(() {
                       _pickedFile = null;
+                      _takenAt = null;
                     }),
                     child: Container(
                       padding: const EdgeInsets.all(4),
@@ -676,7 +706,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                         borderRadius: BorderRadius.circular(4),
                       ),
                       child: const Icon(
-                        Icons.close,
+                        Icons.close_rounded,
                         size: 14,
                         color: Colors.white,
                       ),
@@ -691,6 +721,8 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
           TextField(
             controller: _noteCtrl,
             maxLines: 2,
+            textCapitalization: TextCapitalization.sentences,
+            inputFormatters: const [SentenceCaseInputFormatter()],
             style: const TextStyle(fontSize: 13, color: _textPrimary),
             decoration: InputDecoration(
               hintText: 'Add a note… (optional)',
@@ -864,7 +896,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                     ),
                     const SizedBox(width: 6),
                     Icon(
-                      Icons.chevron_right,
+                      Icons.chevron_right_rounded,
                       size: 14,
                       color: Colors.white.withOpacity(0.3),
                     ),
@@ -879,24 +911,36 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
           // Timestamp + coords
           if (ph.timestamp != null)
             _metaRow(Icons.access_time_rounded, _formatTs(ph.timestamp)),
-          // Address line — human-readable with ZIP inline
+          // Address line — human-readable with ZIP inline; tap to open Maps
           if (_fetchingAddress)
             _metaRow(Icons.location_on_rounded, 'Fetching address…')
           else if (_pinAddress != null)
-            _metaRow(Icons.location_on_rounded, _pinAddress!)
+            _metaRow(
+              Icons.location_on_rounded,
+              _pinAddress!,
+              onTap: () => MapsLauncher.openLocation(
+                address: _pinAddress,
+                lat: ph.latitude,
+                lng: ph.longitude,
+              ),
+            )
           else
             _metaRow(
               Icons.location_on_rounded,
               '${ph.latitude.toStringAsFixed(5)}, ${ph.longitude.toStringAsFixed(5)}',
+              onTap: () => MapsLauncher.openLocation(
+                lat: ph.latitude,
+                lng: ph.longitude,
+              ),
             ),
           // Coordinates always shown below address
           if (!_fetchingAddress)
             _metaRow(
-              Icons.gps_fixed_rounded,
+              Icons.location_on_rounded,
               '${ph.latitude.toStringAsFixed(6)}, ${ph.longitude.toStringAsFixed(6)}',
             ),
           if (ph.note != null && ph.note!.isNotEmpty)
-            _metaRow(Icons.notes_rounded, ph.note!),
+            _metaRow(Icons.description_outlined, ph.note!),
 
           const SizedBox(height: 12),
 
@@ -930,21 +974,38 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
       ),
     );
 
-  Widget _metaRow(IconData icon, String text) => Padding(
-        padding: const EdgeInsets.only(bottom: 5),
-        child: Row(
-          children: [
-            Icon(icon, size: 13, color: _textMuted),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Text(
-                text,
-                style: const TextStyle(fontSize: 12, color: _textMuted),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
+  Widget _metaRow(IconData icon, String text, {VoidCallback? onTap}) {
+    final row = Padding(
+      padding: const EdgeInsets.only(bottom: 5),
+      child: Row(
+        children: [
+          Icon(icon, size: 13, color: onTap != null ? _accent : _textMuted),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(
+                fontSize: 12,
+                color: onTap != null ? _accent : _textMuted,
+                fontWeight: onTap != null ? FontWeight.w600 : FontWeight.w400,
+                decoration:
+                    onTap != null ? TextDecoration.underline : null,
+                decorationColor: _accent,
               ),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
             ),
-          ],
-        ),
-      );
+          ),
+        ],
+      ),
+    );
+    if (onTap == null) return row;
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.lightImpact();
+        onTap();
+      },
+      child: row,
+    );
+  }
 }

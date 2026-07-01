@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -15,6 +16,7 @@ import '../../../config/app_config.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
+import '../../../core/utils/maps_launcher.dart';
 import '../../../data/models/log_entry_model.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/location_provider.dart';
@@ -161,7 +163,9 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
         startTime: _startTimeStr,
         endTime: _endTimeStr,
         zipCode: null,
-        status: _selectedServiceType,
+        // Service type is filtered client-side (the backend `status` field is
+        // job lifecycle status, not service type) — see _applyClientFilters.
+        status: null,
         search: _searchQuery.isEmpty ? null : _searchQuery,
       );
 
@@ -186,12 +190,21 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
         _selectedCategory = null;
       });
 
-  /// Apply the client-side category filter (the backend doesn't filter on it).
-  List<LogEntryModel> _applyCategoryFilter(List<LogEntryModel> logs) {
-    if (_selectedCategory == null) return logs;
-    return logs
-        .where((l) => categoryOf(l.category).value == _selectedCategory)
-        .toList();
+  /// Apply client-side filters for service type and category (the backend
+  /// doesn't reliably filter on either).
+  List<LogEntryModel> _applyClientFilters(List<LogEntryModel> logs) {
+    if (_selectedServiceType == null && _selectedCategory == null) return logs;
+    return logs.where((l) {
+      if (_selectedServiceType != null &&
+          (l.serviceType ?? '').toLowerCase() != _selectedServiceType) {
+        return false;
+      }
+      if (_selectedCategory != null &&
+          categoryOf(l.category).value != _selectedCategory) {
+        return false;
+      }
+      return true;
+    }).toList();
   }
 
   // ── Time helpers ──────────────────────────────────────────────────────────
@@ -313,28 +326,42 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
 
   // ── CSV + Share ───────────────────────────────────────────────────────────
 
-  /// Build a CSV string from the current log entries
+  /// Build a CSV string — canonical export schema (permanent contract):
+  /// ID & Cntrl # | Date & Time | Service Ordered | Address | Detailed Notes
   String _buildCsv(List<LogEntryModel> logs) {
     final buf = StringBuffer();
-    // Header row
-    buf.writeln('ID,Timestamp,Profile,Service Type,Category,ZIP Code,Latitude,Longitude,Note');
+    buf.writeln('"ID & Cntrl #","Date & Time","Service Ordered","Address","Detailed Notes"');
     for (final log in logs) {
       String esc(String? v) => '"${(v ?? '').replaceAll('"', '""')}"';
-      final profiles = (log.profiles != null && log.profiles!.isNotEmpty)
-          ? log.profiles!.map((p) => p.name).join(' | ')
-          : (log.profileName ?? '');
+
+      // ID & Cntrl # — profile id / profile name
+      final profileId = log.profileId?.toString() ?? '';
+      final profileName = log.profileName ?? '';
+      final idCtrl = profileId.isNotEmpty && profileName.isNotEmpty
+          ? '$profileId / $profileName'
+          : profileId.isNotEmpty ? profileId : profileName;
+
+      // Date & Time — YYYY-MM-DD HH:mm:ss local
+      final dateTime = log.timestamp != null
+          ? DateFormat('yyyy-MM-dd HH:mm:ss')
+              .format(DateTime.parse(log.timestamp!).toLocal())
+          : '';
+
+      // Service Ordered — human-readable label
+      final svc = _svcLabel(log.serviceType);
+
+      // Address — full address, preserve formatting
+      final addr = log.address ?? log.zipCode ?? '';
+
+      // Detailed Notes — plain text
+      final notes = log.note ?? '';
+
       buf.writeln([
-        log.id,
-        esc(log.timestamp != null
-            ? DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.parse(log.timestamp!).toLocal())
-            : ''),
-        esc(profiles),
-        esc(log.serviceType),
-        esc(categoryLabel(log.category)),
-        esc(log.zipCode),
-        log.latitude.toStringAsFixed(6),
-        log.longitude.toStringAsFixed(6),
-        esc(log.note),
+        esc(idCtrl),
+        esc(dateTime),
+        esc(svc),
+        esc(addr),
+        esc(notes),
       ].join(','));
     }
     return buf.toString();
@@ -564,9 +591,10 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                 const SizedBox(height: 16),
                 const Divider(color: _separator),
                 const SizedBox(height: 12),
-                // ── Export — single option: Excel spreadsheet → email ──
-                // (F11) Per spec, the only export path is an Excel sheet sent to
-                // a saved/chosen recipient.
+                // ── Export — multi-job Excel spreadsheet → email ──
+                // Multiple selected jobs are sent as one .xlsx to a chosen
+                // recipient. (Single-job service records — formatted email +
+                // photo — are exported from a photo's detail screen.)
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
@@ -578,7 +606,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                             Navigator.pop(ctx);
                             _exportExcel(exportLogs);
                           },
-                    icon: const Icon(Icons.grid_on_rounded, size: 16),
+                    icon: const Icon(CupertinoIcons.square_grid_2x2_fill, size: 16),
                     label: const Text('Export Excel → Email'),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF16A34A),
@@ -661,7 +689,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                         selected.remove(email);
                       });
                     },
-                    deleteIcon: const Icon(Icons.close, size: 16),
+                    deleteIcon: const Icon(CupertinoIcons.xmark, size: 16),
                   );
                 }).toList(),
               ),
@@ -679,7 +707,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                     ),
                   ),
                   IconButton(
-                    icon: const Icon(Icons.add_circle, color: _accent),
+                    icon: const Icon(CupertinoIcons.plus_circle_fill, color: _accent),
                     onPressed: () async {
                       final email = addCtrl.text.trim();
                       if (!email.contains('@')) return;
@@ -717,20 +745,31 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
 
     _showSnack('Generating Excel…');
     try {
-      final records = logs
-          .map((log) => {
-                'id': log.id,
-                'timestamp': log.timestamp,
-                'profile_name': log.profileName,
-                'service_type': log.serviceType,
-                'category': log.category,
-                'address': log.address,
-                'zip_code': log.zipCode,
-                'latitude': log.latitude,
-                'longitude': log.longitude,
-                'note': log.note,
-              })
-          .toList();
+      // Canonical multi-job export schema (matches backend _EXPORT_COLUMNS):
+      // id_ctrl | date_time | service_ordered | address | coordinates |
+      // detailed_notes
+      final records = logs.map((log) {
+        final profileId = log.profileId?.toString() ?? '';
+        final profileName = log.profileName ?? '';
+        final idCtrl = profileId.isNotEmpty && profileName.isNotEmpty
+            ? '$profileId / $profileName'
+            : profileId.isNotEmpty
+                ? profileId
+                : profileName;
+        final dateTime = log.timestamp != null
+            ? DateFormat('yyyy-MM-dd HH:mm:ss')
+                .format(DateTime.parse(log.timestamp!).toLocal())
+            : '';
+        return {
+          'id_ctrl': idCtrl,
+          'date_time': dateTime,
+          'service_ordered': _svcLabel(log.serviceType),
+          'address': _addressWithZip(log),
+          'coordinates': '${log.latitude.toStringAsFixed(6)}, '
+              '${log.longitude.toStringAsFixed(6)}',
+          'detailed_notes': log.note ?? '',
+        };
+      }).toList();
       final result = await api.exportExcel(
           recipients: selected.toList(), records: records);
       if (!mounted) return;
@@ -740,6 +779,14 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     } catch (e) {
       if (mounted) _showSnack('Excel export failed: $e');
     }
+  }
+
+  String _addressWithZip(LogEntryModel log) {
+    final address = log.address ?? '';
+    final zip = log.zipCode ?? '';
+    if (address.isEmpty) return zip;
+    if (zip.isNotEmpty && !address.contains(zip)) return '$address, $zip';
+    return address;
   }
 
   // ── Filter sheet ──────────────────────────────────────────────────────────
@@ -839,7 +886,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                         width: 1.5),
                     ),
                     child: Row(children: [
-                      Icon(Icons.calendar_today_rounded, size: 17,
+                      Icon(CupertinoIcons.calendar, size: 17,
                           color: tempDate != null ? _accent : _inkSubtle),
                       const SizedBox(width: 12),
                       Expanded(
@@ -865,7 +912,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                             decoration: BoxDecoration(
                               color: _inkSubtle.withValues(alpha: 0.15),
                               shape: BoxShape.circle),
-                            child: const Icon(Icons.close_rounded, size: 12, color: _inkMuted),
+                            child: const Icon(CupertinoIcons.xmark, size: 12, color: _inkMuted),
                           ),
                         ),
                     ]),
@@ -884,7 +931,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                         ctx: ctx,
                         label: 'Start time',
                         value: tempStart,
-                        icon: Icons.schedule_rounded,
+                        icon: CupertinoIcons.clock,
                         onPicked: (t) => ss(() => tempStart = t),
                         onClear: () => ss(() => tempStart = null),
                       ),
@@ -895,7 +942,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                         ctx: ctx,
                         label: 'End time',
                         value: tempEnd,
-                        icon: Icons.schedule_rounded,
+                        icon: CupertinoIcons.clock,
                         onPicked: (t) => ss(() => tempEnd = t),
                         onClear: () => ss(() => tempEnd = null),
                       ),
@@ -1048,7 +1095,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
             if (value != null)
               GestureDetector(
                 onTap: onClear,
-                child: const Icon(Icons.close_rounded, size: 14, color: _inkMuted),
+                child: const Icon(CupertinoIcons.xmark, size: 14, color: _inkMuted),
               ),
           ]),
         ),
@@ -1100,7 +1147,12 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
   @override
   Widget build(BuildContext context) {
     final logAsync = ref.watch(logProvider(_filters));
-    final logs = logAsync.valueOrNull ?? [];
+    // Apply the client-side filters (service type / category) here too, so the
+    // header's Export button operates on EXACTLY the records shown in the list
+    // below. Without this the export used the unfiltered set — selecting/seeing
+    // 6 records but exporting more. _applyClientFilters is idempotent, so the
+    // body re-applying it to the same data is harmless.
+    final logs = _applyClientFilters(logAsync.valueOrNull ?? []);
     final userPos = ref.watch(currentLocationProvider).valueOrNull;
 
     return Scaffold(
@@ -1193,7 +1245,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.ios_share_rounded,
+                      const Icon(CupertinoIcons.share,
                           size: 16, color: Colors.white),
                       const SizedBox(width: 6),
                       Text(
@@ -1258,7 +1310,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
             prefixIcon: Padding(
               padding: const EdgeInsets.only(left: 14, right: 8),
               child: Icon(
-                Icons.search_rounded,
+                CupertinoIcons.search,
                 size: 20,
                 color: _searchFocused ? _accent : _inkSubtle,
               ),
@@ -1286,7 +1338,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                           shape: BoxShape.circle,
                         ),
                         child: const Icon(
-                          Icons.close_rounded,
+                          CupertinoIcons.xmark,
                           size: 13,
                           color: _inkMuted,
                         ),
@@ -1307,7 +1359,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                             borderRadius: BorderRadius.circular(10),
                           ),
                           child: Icon(
-                            Icons.tune_rounded,
+                            CupertinoIcons.slider_horizontal_3,
                             size: 19,
                             color: _hasFilters ? _accent : _inkSubtle,
                           ),
@@ -1375,7 +1427,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                             '${_startTime?.format(context) ?? '00:00'}'
                             '–${_endTime?.format(context) ?? 'end'}'
                           : DateFormat('MMM d').format(_selectedDate!),
-                      icon: Icons.calendar_today_rounded,
+                      icon: CupertinoIcons.calendar,
                       color: _accent,
                       onRemove: () => setState(() {
                         _selectedDate = null;
@@ -1387,7 +1439,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                     if (_selectedDate != null) const SizedBox(width: 6),
                     _activeChip(
                       label: _svcLabel(_selectedServiceType),
-                      icon: Icons.label_rounded,
+                      icon: CupertinoIcons.tag_fill,
                       color: _svcColor(_selectedServiceType),
                       onRemove: () =>
                           setState(() => _selectedServiceType = null),
@@ -1459,7 +1511,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                   color: color.withValues(alpha: 0.2),
                   shape: BoxShape.circle,
                 ),
-                child: Icon(Icons.close_rounded, size: 10, color: color),
+                child: Icon(CupertinoIcons.xmark, size: 10, color: color),
               ),
             ),
           ],
@@ -1476,7 +1528,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
         error: (err, _) => _buildError(err),
         data: (allLogs) {
           if (allLogs.isEmpty) return _buildEmpty();
-          final logs = _applyCategoryFilter(allLogs);
+          final logs = _applyClientFilters(allLogs);
           if (logs.isEmpty) return _buildEmpty();
           return _buildGroupedList(logs, userPos);
         },
@@ -1613,7 +1665,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
           ),
         ),
         child: selected
-            ? const Icon(Icons.check_rounded, size: 15, color: Colors.white)
+            ? const Icon(CupertinoIcons.checkmark, size: 15, color: Colors.white)
             : null,
       );
 
@@ -1710,7 +1762,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                           height: 60,
                           color: _canvas,
                           child: const Icon(
-                            Icons.image_outlined,
+                            CupertinoIcons.photo_fill_on_rectangle_fill,
                             color: _inkSubtle,
                             size: 22,
                           ),
@@ -1806,7 +1858,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                                   child: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      const Icon(Icons.near_me_rounded,
+                                      const Icon(CupertinoIcons.location_fill,
                                           size: 10,
                                           color: Color(0xFF0284C7)),
                                       const SizedBox(width: 3),
@@ -1825,28 +1877,23 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                           // Location row
                           _LocationText(log: log),
                           const SizedBox(height: 2),
-                          // Coordinates row — always shown below address
-                          Row(
-                            children: [
-                              const Icon(
-                                Icons.gps_fixed_rounded,
-                                size: 12,
+                          // Coordinates row — plain reference text below the
+                          // address. No leading arrow: the only navigation
+                          // affordance is the _LocationText hyperlink above,
+                          // so there's a single, unambiguous "open in Maps"
+                          // tap target. Indented to align with that link.
+                          Padding(
+                            padding: const EdgeInsets.only(left: 17),
+                            child: Text(
+                              _coordsLabel(log),
+                              style: const TextStyle(
+                                fontSize: 11,
                                 color: _inkSubtle,
+                                fontFamily: 'monospace',
                               ),
-                              const SizedBox(width: 4),
-                              Expanded(
-                                child: Text(
-                                  _coordsLabel(log),
-                                  style: const TextStyle(
-                                    fontSize: 11,
-                                    color: _inkSubtle,
-                                    fontFamily: 'monospace',
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            ],
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
                           const SizedBox(height: 4),
                           // Timestamp
@@ -1854,7 +1901,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                             Row(
                               children: [
                                 const Icon(
-                                  Icons.access_time_rounded,
+                                  CupertinoIcons.clock,
                                   size: 12,
                                   color: _inkSubtle,
                                 ),
@@ -1920,7 +1967,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                           borderRadius: BorderRadius.circular(6),
                         ),
                         child: const Icon(
-                          Icons.notes_rounded,
+                          CupertinoIcons.doc_text,
                           size: 12,
                           color: _accent,
                         ),
@@ -1966,7 +2013,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                 shape: BoxShape.circle,
               ),
               child: const Icon(
-                Icons.history_rounded,
+                CupertinoIcons.clock,
                 size: 38,
                 color: _accent,
               ),
@@ -2051,7 +2098,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                 shape: BoxShape.circle,
               ),
               child: const Icon(
-                Icons.cloud_off_rounded,
+                CupertinoIcons.xmark_circle,
                 size: 38,
                 color: _rushRed,
               ),
@@ -2119,9 +2166,11 @@ class _LocationText extends StatefulWidget {
 
 class _LocationTextState extends State<_LocationText> {
   String? _resolvedAddress;
+  // Maps-suitable address (a real street address) — null when we only have a
+  // ZIP or raw coordinates, in which case Maps falls back to lat/lng.
+  String? _queryAddress;
   bool _fetching = false;
-  static const Color _inkMuted = Color(0xFF4B5563);
-  static const Color _inkSubtle = Color(0xFF9CA3AF);
+  static const Color _accent = Color(0xFF7C3AED);
 
   @override
   void initState() {
@@ -2134,9 +2183,15 @@ class _LocationTextState extends State<_LocationText> {
     if (log.address != null && log.address!.isNotEmpty) {
       final addr = log.address!;
       if (log.zipCode != null && log.zipCode!.isNotEmpty && !addr.contains(log.zipCode!)) {
-        setState(() => _resolvedAddress = '$addr, ${log.zipCode}');
+        setState(() {
+          _resolvedAddress = '$addr, ${log.zipCode}';
+          _queryAddress = '$addr, ${log.zipCode}';
+        });
       } else {
-        setState(() => _resolvedAddress = addr);
+        setState(() {
+          _resolvedAddress = addr;
+          _queryAddress = addr;
+        });
       }
       return;
     }
@@ -2149,22 +2204,44 @@ class _LocationTextState extends State<_LocationText> {
     try {
       final addr = await LocationService.reverseGeocode(log.latitude, log.longitude);
       if (mounted && addr != null && addr.isNotEmpty) {
-        setState(() => _resolvedAddress = addr);
+        setState(() {
+          _resolvedAddress = addr;
+          _queryAddress = addr;
+        });
       }
     } catch (_) {}
     _fetching = false;
   }
 
+  void _openMaps() {
+    HapticFeedback.lightImpact();
+    MapsLauncher.openLocation(
+      address: _queryAddress,
+      lat: widget.log.latitude,
+      lng: widget.log.longitude,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final text = _resolvedAddress ?? '${widget.log.latitude.toStringAsFixed(4)}, ${widget.log.longitude.toStringAsFixed(4)}';
-    return Row(children: [
-      const Icon(Icons.location_on_rounded, size: 13, color: _inkSubtle),
-      const SizedBox(width: 4),
-      Expanded(child: Text(text,
-        style: const TextStyle(fontSize: 13, color: _inkMuted, fontWeight: FontWeight.w500),
-        maxLines: 1, overflow: TextOverflow.ellipsis)),
-    ]);
+    return GestureDetector(
+      onTap: _openMaps,
+      behavior: HitTestBehavior.opaque,
+      child: Row(children: [
+        const Icon(CupertinoIcons.location_fill, size: 13, color: _accent),
+        const SizedBox(width: 4),
+        Expanded(child: Text(text,
+          style: const TextStyle(
+            fontSize: 13,
+            color: _accent,
+            fontWeight: FontWeight.w600,
+            decoration: TextDecoration.underline,
+            decorationColor: _accent,
+          ),
+          maxLines: 1, overflow: TextOverflow.ellipsis)),
+      ]),
+    );
   }
 }
 

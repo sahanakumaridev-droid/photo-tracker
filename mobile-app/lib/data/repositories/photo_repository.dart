@@ -32,6 +32,8 @@ class PhotoRepository {
     String? address,
     String? note,
     String? category,
+    String? completionType,    // e.g. Substitute | Personal
+    String? servedTo,          // who service was served to
     int? payRate,              // F7
     String? takenAt,           // F6 device capture time (ISO)
     int? locationGroupId,      // F1 append to existing master pin
@@ -47,6 +49,9 @@ class PhotoRepository {
         if (address != null && address.isNotEmpty) 'address': address,
         if (note != null && note.isNotEmpty) 'note': note,
         if (category != null && category.isNotEmpty) 'category': category,
+        if (completionType != null && completionType.isNotEmpty)
+          'completion_type': completionType,
+        if (servedTo != null && servedTo.isNotEmpty) 'served_to': servedTo,
         if (payRate != null) 'pay_rate': payRate,
         // F6: lock timestamp to device capture time
         'taken_at': takenAt ?? DateTime.now().toUtc().toIso8601String(),

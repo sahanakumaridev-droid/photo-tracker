@@ -17,6 +17,23 @@ function MapPicker({ location, onPick }) {
   return location ? <Marker position={[location.lat, location.lng]} icon={pinIcon} /> : null
 }
 
+// Priority categories — the single source of truth, shared with the Profiles
+// page and mobile (asap / special / next_day / standard).
+const CATEGORIES = [
+  { value: 'asap',     label: 'ASAP',     color: '#ef4444', emoji: '🔴' },
+  { value: 'special',  label: 'Special',  color: '#f59e0b', emoji: '🟠' },
+  { value: 'next_day', label: 'Next Day', color: '#eab308', emoji: '🟡' },
+  { value: 'standard', label: 'Standard', color: '#10b981', emoji: '🟢' },
+]
+// Map any stored value (incl. legacy rush/airport) to one of the 4 categories.
+function normalizeCat(v) {
+  const x = (v || 'standard').toLowerCase()
+  if (x === 'rush') return 'asap'
+  if (x === 'airport') return 'special'
+  return CATEGORIES.some(c => c.value === x) ? x : 'standard'
+}
+const catOf = (v) => CATEGORIES.find(c => c.value === normalizeCat(v)) || CATEGORIES[3]
+
 // PST formatter
 function toPST(isoString) {
   if (!isoString) return ''
@@ -435,18 +452,25 @@ export default function Upload({ showToast }) {
                   autoFocus required
                   style={{marginBottom:10}}
                 />
-                <label style={{marginBottom:4}}>Service Type</label>
-                <div style={{display:'flex', gap:6, marginBottom:12}}>
-                  {['standard','rush'].map(t => (
-                    <button
-                      key={t} type="button"
-                      onClick={() => setNewProfSvc(t)}
-                      className={`btn ${newProfSvc === t ? (t==='rush' ? 'btn-dark' : 'btn-green') : 'btn-outline'}`}
-                      style={{fontSize:11, padding:'5px 12px', flex:1, justifyContent:'center'}}
-                    >
-                      {t === 'rush' ? '🔴 Rush' : '🟢 Standard'}
-                    </button>
-                  ))}
+                <label style={{marginBottom:4}}>Priority category</label>
+                <div style={{display:'flex', gap:6, marginBottom:12, flexWrap:'wrap'}}>
+                  {CATEGORIES.map(c => {
+                    const sel = normalizeCat(newProfSvc) === c.value
+                    return (
+                      <button
+                        key={c.value} type="button"
+                        onClick={() => setNewProfSvc(c.value)}
+                        style={{
+                          flex:'1 1 40%', padding:'7px 10px', borderRadius:8, fontSize:12, fontWeight:700, cursor:'pointer',
+                          border:'1px solid ' + (sel ? c.color : 'rgba(0,0,0,0.12)'),
+                          background: sel ? c.color : 'transparent',
+                          color: sel ? '#fff' : '#64748b',
+                        }}
+                      >
+                        {c.emoji} {c.label}
+                      </button>
+                    )
+                  })}
                 </div>
                 <button className="btn btn-dark" type="submit" disabled={creatingProf} style={{width:'100%', justifyContent:'center', fontSize:12}}>
                   {creatingProf ? 'Creating…' : '+ Create & Select'}
@@ -462,12 +486,13 @@ export default function Upload({ showToast }) {
                     className={`profile-row ${selected?.id === p.id ? 'selected' : ''}`}
                     onClick={() => setSelected(p)}
                   >
-                    <div className={`avatar av-${p.service_type}`}>{p.name.charAt(0)}</div>
+                    <div className="avatar" style={{background:catOf(p.service_type).color}}>{p.name.charAt(0)}</div>
                     <div style={{flex:1}}>
                       <div style={{fontWeight:700, fontSize:14}}>{p.name}</div>
                       <div style={{fontSize:11, color:'rgba(100,100,120,0.6)', marginTop:1, fontFamily:'Geist Mono, monospace'}}>#{p.id}</div>
                     </div>
-                    <span className={`badge badge-${p.service_type}`}>{p.service_type === 'rush' ? '🔴 ASAP' : '🟢 Standard'}</span>
+                    {(() => { const c = catOf(p.service_type)
+                      return <span style={{fontSize:11, fontWeight:700, color:'#fff', background:c.color, borderRadius:8, padding:'3px 9px'}}>{c.emoji} {c.label}</span> })()}
                     {selected?.id === p.id && <span style={{fontWeight:800, color:'#a5b4fc', marginLeft:4}}>✓</span>}
                   </div>
                 ))

@@ -19,6 +19,8 @@ class PhotoModel {
     this.profileName,
     this.serviceType,
     this.category,
+    this.completionType,
+    this.servedTo,
     this.profiles,
     this.isFavorited = false,
     this.payRate,
@@ -56,6 +58,12 @@ class PhotoModel {
   final String? serviceType;
   /// Per-photo priority category: standard | special | next_day | asap
   final String? category;
+  /// Completion detail (mirrors the Rockstar email): e.g. Substitute, Personal.
+  @JsonKey(name: 'completion_type')
+  final String? completionType;
+  /// Who the service was served to.
+  @JsonKey(name: 'served_to')
+  final String? servedTo;
   final List<ProfileModel>? profiles;
   @JsonKey(name: 'is_favorited', defaultValue: false)
   final bool isFavorited;
@@ -90,6 +98,8 @@ class PhotoModel {
     String? profileName,
     String? serviceType,
     String? category,
+    String? completionType,
+    String? servedTo,
     List<ProfileModel>? profiles,
     bool? isFavorited,
     int? payRate,
@@ -113,6 +123,8 @@ class PhotoModel {
         profileName: profileName ?? this.profileName,
         serviceType: serviceType ?? this.serviceType,
         category: category ?? this.category,
+        completionType: completionType ?? this.completionType,
+        servedTo: servedTo ?? this.servedTo,
         profiles: profiles ?? this.profiles,
         isFavorited: isFavorited ?? this.isFavorited,
         payRate: payRate ?? this.payRate,

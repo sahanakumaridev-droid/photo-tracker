@@ -116,6 +116,21 @@ class LocationService {
     }
   }
 
+  /// Instant, best-effort location straight from the OS cache. Used to centre
+  /// the map the moment it opens — before the slower, high-accuracy
+  /// [getCurrentLocation] fix lands. Returns null if there's no cached fix or
+  /// no permission yet (the accurate fetch then handles centring once it
+  /// resolves). Deliberately does NOT trigger a permission prompt or any GPS
+  /// hardware wake — it must return immediately.
+  static Future<Position?> getLastKnownLocation() async {
+    try {
+      return await Geolocator.getLastKnownPosition();
+    } catch (e) {
+      debugPrint('[Location] last-known error: $e');
+      return null;
+    }
+  }
+
   // ── Watch stream ──────────────────────────────────────────────────────────
 
   /// Stream of position updates. Uses high accuracy + 10 m distance filter.

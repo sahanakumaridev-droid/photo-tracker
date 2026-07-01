@@ -1,11 +1,16 @@
 #!/bin/bash
-# One-command deploy to DigitalOcean droplet
+# One-command deploy to the Namecheap VPS
 # Usage: ./deploy.sh
 # Run from the photo-tracker/ directory
 
 set -e
 
-DROPLET_IP="24.199.85.230"
+# Namecheap VPS (159.198.79.219 / zedev.website). The mobile app talks to
+# https://159-198-79-219.nip.io which is served from this host.
+# NOTE: the DB now lives in PostgreSQL on this box (DATABASE_URL in backend/.env),
+# not in the SQLite file. The rsync below ships code only and never touches .env,
+# so the connection string is preserved across deploys.
+DROPLET_IP="159.198.79.219"
 REMOTE="root@${DROPLET_IP}"
 
 echo "==> Building frontend..."
@@ -75,8 +80,15 @@ systemctl daemon-reload
 systemctl enable photo-tracker
 systemctl restart photo-tracker
 
-# Nginx config
-cat > /etc/nginx/sites-available/photo-tracker << 'EOF'
+# Nginx config — FIRST-TIME SETUP ONLY.
+# If a config already exists (e.g. one that certbot upgraded to HTTPS/443),
+# DO NOT overwrite it — that would strip the SSL server block and break
+# https://159-198-79-219.nip.io, which the mobile app depends on. Deploys
+# only refresh code + static files; TLS/nginx is managed out of band.
+if [ -f /etc/nginx/sites-available/photo-tracker ]; then
+  echo "--- nginx config already present — leaving it untouched (preserves HTTPS)."
+else
+  cat > /etc/nginx/sites-available/photo-tracker << 'EOF'
 server {
     listen 80;
     server_name _;
@@ -102,12 +114,12 @@ server {
     }
 }
 EOF
-
-ln -sf /etc/nginx/sites-available/photo-tracker /etc/nginx/sites-enabled/photo-tracker
-rm -f /etc/nginx/sites-enabled/default
-
-nginx -t
-systemctl reload nginx
+  ln -sf /etc/nginx/sites-available/photo-tracker /etc/nginx/sites-enabled/photo-tracker
+  rm -f /etc/nginx/sites-enabled/default
+  nginx -t
+  systemctl reload nginx
+  echo "--- nginx configured (HTTP). Run certbot --nginx afterwards to enable HTTPS."
+fi
 
 # Firewall
 ufw allow OpenSSH > /dev/null 2>&1 || true

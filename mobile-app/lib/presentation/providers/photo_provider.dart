@@ -23,6 +23,8 @@ final uploadPhotoProvider =
       address: params['address'] as String?,
       note: params['note'] as String?,
       category: params['category'] as String?,
+      completionType: params['completionType'] as String?,
+      servedTo: params['servedTo'] as String?,
       payRate: params['payRate'] as int?,
       takenAt: params['takenAt'] as String?,
       locationGroupId: params['locationGroupId'] as int?,

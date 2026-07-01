@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -9,6 +10,7 @@ import 'package:shimmer/shimmer.dart';
 import '../../../config/app_config.dart';
 import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
+import '../../../core/utils/photo_stamp.dart';
 import '../../../data/models/photo_model.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/auth_provider.dart';
@@ -31,12 +33,11 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
   static const Color _purpleSoft = Color(0xFFEDE9FE);
   static const Color _bg         = Color(0xFFFAFAFA);
   static const Color _card       = Color(0xFFFFFFFF);
-  static const Color _hair       = Color(0xFFE5E7EB);
 
 
-  String? _selectedCategory;
   final Set<int> _optimisticFlips = {};
   Position? _devicePosition;
+  String? _selectedCategory; // null = show all
 
   @override
   void initState() {
@@ -97,30 +98,22 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
   }
 
   List<PhotoModel> _filtered(List<PhotoModel> all) {
-    final list = all.where((p) {
-      if (_selectedCategory != null &&
-          categoryOf(p.category).value != _selectedCategory) {
-        return false;
-      }
-      return true;
-    }).toList()
+    final src = _selectedCategory == null
+        ? all
+        : all.where((p) => (p.category ?? 'standard') == _selectedCategory).toList();
+    return List<PhotoModel>.from(src)
+      // Newest upload first, so a freshly added post always lands at the top.
+      // `id` is auto-increment (higher = uploaded later) and always present;
+      // fall back to created_at, then capture timestamp. Grouped pins sort by
+      // their most-recent photo. (Distance is still shown per card via the
+      // "Nearby / N miles away" label — it's just no longer the sort key.)
       ..sort((a, b) {
-        final pos = _devicePosition;
-        if (pos != null) {
-          final da = Geolocator.distanceBetween(
-              pos.latitude, pos.longitude, a.latitude, a.longitude);
-          final db = Geolocator.distanceBetween(
-              pos.latitude, pos.longitude, b.latitude, b.longitude);
-          return da.compareTo(db);
-        }
+        if (a.id != b.id) return b.id.compareTo(a.id);
+        final ca = a.createdAt ?? '';
+        final cb = b.createdAt ?? '';
+        if (ca != cb) return cb.compareTo(ca);
         return (b.timestamp ?? '').compareTo(a.timestamp ?? '');
       });
-    return list;
-  }
-
-  int _countFor(List<PhotoModel> all, String? cat) {
-    if (cat == null) return all.length;
-    return all.where((p) => categoryOf(p.category).value == cat).length;
   }
 
   String _firstName(String? email) {
@@ -189,48 +182,75 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
     final name = _firstName(auth.email);
     return Container(
       decoration: const BoxDecoration(
-        color: _card,
-        border: Border(bottom: BorderSide(color: _hair, width: 0.5)),
+        gradient: LinearGradient(
+          colors: [Color(0xFF1E1B4B), Color(0xFF312E81)],
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+        ),
       ),
       child: SafeArea(
         bottom: false,
         child: SizedBox(
-          height: 54,
+          height: 64,
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                const AppLogo(size: 38, radius: 11, withShadow: false),
-                const SizedBox(width: 8),
-                ShaderMask(
-                  shaderCallback: (b) => const LinearGradient(
-                    colors: [Color(0xFF7C3AED), Color(0xFF5B21B6)],
-                  ).createShader(b),
-                  child: const Text('GeoTag',
-                      style: TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.w800,
-                          color: Colors.white,
-                          letterSpacing: -0.6)),
+                // Logo
+                const AppLogo(size: 40, radius: 12, withShadow: false),
+                const SizedBox(width: 10),
+                // Wordmark: violet "Geo" + purple "Tag"
+                RichText(
+                  text: const TextSpan(
+                    style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: -1,
+                      height: 1,
+                    ),
+                    children: [
+                      TextSpan(
+                        text: 'Geo',
+                        style: TextStyle(color: Color(0xFFA78BFA)), // violet
+                      ),
+                      TextSpan(
+                        text: 'Tag',
+                        style: TextStyle(color: Color(0xFF7C3AED)), // purple
+                      ),
+                    ],
+                  ),
                 ),
                 const Spacer(),
-                _iconBtn(Icons.notifications_none_rounded,
+                // Notification bell
+                _iconBtn(CupertinoIcons.bell,
                     badge: true, onTap: () => context.push('/log')),
-                const SizedBox(width: 6),
+                const SizedBox(width: 10),
+                // Avatar
                 GestureDetector(
                   onTap: () {
                     HapticFeedback.selectionClick();
                     context.push('/settings');
                   },
-                  child: CircleAvatar(
-                    radius: 17,
-                    backgroundColor: _purple,
-                    child: Text(
-                      name.isEmpty ? 'A' : name[0].toUpperCase(),
-                      style: const TextStyle(
+                  child: Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: const Color(0xFF38BDF8).withValues(alpha: 0.2),
+                      border: Border.all(
+                          color: const Color(0xFF38BDF8).withValues(alpha: 0.6),
+                          width: 2),
+                    ),
+                    child: Center(
+                      child: Text(
+                        name.isEmpty ? 'A' : name[0].toUpperCase(),
+                        style: const TextStyle(
                           color: Colors.white,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700),
+                          fontSize: 15,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
                     ),
                   ),
                 ),
@@ -253,21 +273,30 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
         clipBehavior: Clip.none,
         children: [
           Container(
-            width: 38,
-            height: 38,
-            decoration: const BoxDecoration(
-                color: _bg, shape: BoxShape.circle),
-            child: Icon(icon, size: 22, color: _ink),
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.12),
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.25),
+                width: 1.2,
+              ),
+            ),
+            child: Icon(icon, size: 20, color: Colors.white),
           ),
           if (badge)
             Positioned(
-              top: 4,
-              right: 4,
+              top: 6,
+              right: 6,
               child: Container(
                 width: 9,
                 height: 9,
-                decoration: const BoxDecoration(
-                    color: Color(0xFFEF4444), shape: BoxShape.circle),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF87171),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: const Color(0xFF312E81), width: 1.5),
+                ),
               ),
             ),
         ],
@@ -275,26 +304,126 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
     );
   }
 
+  // ── Category filter bar ───────────────────────────────────────────────────
+  // Leading "All" chip shows every job; the category chips filter to one
+  // service. Either way the feed below stays sorted nearest-first.
+  Widget _categoryBar() {
+    return Container(
+      color: _card,
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+      // All five chips share the row width so they are visible at once
+      // (no horizontal scroll). Each chip's content auto-scales to fit.
+      child: Row(
+        children: [
+          Expanded(
+            child: _filterChip(
+              label: 'ALL',
+              icon: Icons.apps_rounded,
+              color: const Color(0xFF312E81),
+              softColor: const Color(0xFFEEF2FF),
+              selected: _selectedCategory == null,
+              onTap: () {
+                HapticFeedback.selectionClick();
+                setState(() => _selectedCategory = null);
+              },
+            ),
+          ),
+          ...kPhotoCategories.map((cat) {
+            final selected = _selectedCategory == cat.value;
+            // Show "NEXT" instead of "Next Day" to keep chips compact
+            final chipLabel =
+                cat.value == 'next_day' ? 'NEXT' : cat.label.toUpperCase();
+            return Expanded(
+              child: _filterChip(
+                label: chipLabel,
+                icon: cat.icon,
+                color: cat.color,
+                softColor: cat.softColor,
+                selected: selected,
+                onTap: () {
+                  HapticFeedback.selectionClick();
+                  setState(() =>
+                      _selectedCategory = selected ? null : cat.value);
+                },
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  Widget _filterChip({
+    required String label,
+    required IconData icon,
+    required Color color,
+    required Color softColor,
+    required bool selected,
+    required VoidCallback onTap,
+  }) =>
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 2),
+        child: GestureDetector(
+          onTap: onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeInOut,
+            height: 36,
+            decoration: BoxDecoration(
+              color: selected ? color : softColor,
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                // Scale icon+label down to fit the (now narrower) chip so all
+                // five chips stay on one line without overflowing.
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(icon,
+                          size: 12, color: selected ? Colors.white : color),
+                      const SizedBox(width: 4),
+                      Text(
+                        label,
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w800,
+                          color: selected ? Colors.white : color,
+                          letterSpacing: 0.3,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
   // ── Full feed ─────────────────────────────────────────────────────────────
   Widget _feed(
       AuthState auth, List<PhotoModel> all, List<ProfileModel> profiles) {
+    // Default to showing every job ("All") — no category is pre-selected, so
+    // the feed opens with the full list sorted nearest-first.
     final posts = _filtered(all);
+    // Collapse photos that share a master pin (same location group) into one
+    // card so a profile/location with several photos shows ONE post with a
+    // swipeable multi-photo preview — not a separate card per photo.
+    final groups = _groupByPin(posts);
     return CustomScrollView(
       physics: const AlwaysScrollableScrollPhysics(),
       slivers: [
-        // ── Category chips ──────────────────────────────────────────────────
-        SliverToBoxAdapter(
-          child: _categoryStrip(all),
-        ),
-        // ── Stories (profiles) ──────────────────────────────────────────────
-        SliverToBoxAdapter(
-          child: _storiesRow(auth, profiles),
-        ),
-        const SliverToBoxAdapter(
-          child: Divider(height: 1, color: _hair),
+        // ── Category filter bar (sticky) ──────────────────────────────────
+        SliverPersistentHeader(
+          pinned: true,
+          delegate: _StickyBarDelegate(child: _categoryBar()),
         ),
         // ── Posts ────────────────────────────────────────────────────────────
-        if (posts.isEmpty)
+        if (groups.isEmpty)
           SliverFillRemaining(
             hasScrollBody: false,
             child: _emptyFeed(),
@@ -303,212 +432,39 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
           SliverList(
             delegate: SliverChildBuilderDelegate(
               (_, i) {
-                if (i < posts.length) return _postCard(posts[i]);
+                if (i < groups.length) return _postCard(groups[i]);
                 return const SizedBox(height: 100);
               },
-              childCount: posts.length + 1,
+              childCount: groups.length + 1,
             ),
           ),
       ],
     );
   }
 
-  // ── Category strip ────────────────────────────────────────────────────────
-  Widget _categoryStrip(List<PhotoModel> all) {
-    final chips = <({String? value, String label, Color color, Color soft, IconData icon})>[
-      (value: null,       label: 'All',      color: _ink,             soft: const Color(0xFFF3F4F6), icon: Icons.apps_rounded),
-      (value: 'asap',     label: 'ASAP',     color: const Color(0xFFEF4444), soft: const Color(0xFFFEE2E2), icon: Icons.bolt_rounded),
-      (value: 'special',  label: 'Special',  color: const Color(0xFFF97316), soft: const Color(0xFFFFEDD5), icon: Icons.star_rounded),
-      (value: 'standard', label: 'Standard', color: const Color(0xFF10B981), soft: const Color(0xFFD1FAE5), icon: Icons.check_circle_rounded),
-      (value: 'next_day', label: 'Next Day', color: const Color(0xFFEAB308), soft: const Color(0xFFFEF9C3), icon: Icons.event_rounded),
-    ];
-
-    return Container(
-      color: _card,
-      child: SizedBox(
-        height: 52,
-        child: ListView.separated(
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          itemCount: chips.length,
-          separatorBuilder: (_, __) => const SizedBox(width: 8),
-          itemBuilder: (_, i) {
-            final c = chips[i];
-            final sel = _selectedCategory == c.value;
-            final n = _countFor(all, c.value);
-            return GestureDetector(
-              onTap: () {
-                HapticFeedback.selectionClick();
-                setState(() => _selectedCategory = c.value);
-              },
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 180),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                decoration: BoxDecoration(
-                  color: sel ? c.color : c.soft,
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(c.icon,
-                        size: 14,
-                        color: sel ? Colors.white : c.color),
-                    const SizedBox(width: 5),
-                    Text(c.label,
-                        style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                            color: sel ? Colors.white : c.color)),
-                    const SizedBox(width: 5),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 5, vertical: 1),
-                      decoration: BoxDecoration(
-                        color: sel
-                            ? Colors.white.withValues(alpha: 0.3)
-                            : c.color.withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Text('$n',
-                          style: TextStyle(
-                              fontSize: 10.5,
-                              fontWeight: FontWeight.w800,
-                              color: sel ? Colors.white : c.color)),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        ),
-      ),
-    );
+  // Group photos that belong to the same pin so one card shows all of them.
+  // Primary key is "same profile + same address" (matches how uploads are
+  // grouped server-side and collapses older photos that predate that logic);
+  // falls back to the master-pin/location-group id, then the photo id.
+  List<List<PhotoModel>> _groupByPin(List<PhotoModel> posts) {
+    final map = <String, List<PhotoModel>>{};
+    for (final p in posts) {
+      final addr = (p.address ?? '').trim().toLowerCase();
+      final prof = (p.profileName ?? '').trim().toLowerCase();
+      final key = addr.isNotEmpty
+          ? 'pa:$prof|$addr'
+          : 'lg:${p.locationGroupId ?? p.id}';
+      (map[key] ??= <PhotoModel>[]).add(p);
+    }
+    return map.values.toList();
   }
 
-  // ── Stories row ───────────────────────────────────────────────────────────
-  Widget _storiesRow(AuthState auth, List<ProfileModel> profiles) {
-    final name = _firstName(auth.email);
-    return Container(
-      color: _card,
-      height: 112,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        itemCount: profiles.length + 1,
-        separatorBuilder: (_, __) => const SizedBox(width: 16),
-        itemBuilder: (_, i) {
-          if (i == 0) {
-            // "Your story" — upload new
-            return GestureDetector(
-              onTap: () {
-                HapticFeedback.lightImpact();
-                context.push('/upload');
-              },
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Stack(
-                    children: [
-                      CircleAvatar(
-                        radius: 30,
-                        backgroundColor: _purpleSoft,
-                        child: Text(
-                          name.isEmpty ? 'A' : name[0].toUpperCase(),
-                          style: const TextStyle(
-                              fontSize: 22,
-                              fontWeight: FontWeight.w700,
-                              color: _purple),
-                        ),
-                      ),
-                      Positioned(
-                        bottom: 0,
-                        right: 0,
-                        child: Container(
-                          width: 20,
-                          height: 20,
-                          decoration: const BoxDecoration(
-                            color: _purple,
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(Icons.add,
-                              size: 14, color: Colors.white),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  const Text('Your story',
-                      style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: _ink)),
-                ],
-              ),
-            );
-          }
-          final p = profiles[i - 1];
-          return GestureDetector(
-            onTap: () {
-              HapticFeedback.selectionClick();
-              context.push('/settings');
-            },
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 62,
-                  height: 62,
-                  padding: const EdgeInsets.all(2.5),
-                  decoration: const BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [Color(0xFF7C3AED), Color(0xFFF97316)],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
-                    shape: BoxShape.circle,
-                  ),
-                  child: Container(
-                    decoration: const BoxDecoration(
-                      color: _card,
-                      shape: BoxShape.circle,
-                    ),
-                    child: CircleAvatar(
-                      radius: 26,
-                      backgroundColor: _purpleSoft,
-                      child: Text(
-                        p.name.isNotEmpty ? p.name[0].toUpperCase() : '?',
-                        style: const TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.w700,
-                            color: _purple),
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 6),
-                SizedBox(
-                  width: 62,
-                  child: Text(p.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: _ink)),
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
 
   // ── Instagram-style post card ─────────────────────────────────────────────
-  Widget _postCard(PhotoModel p) {
+  // [group] holds every photo sharing this master pin; the first is the
+  // primary used for the header/caption, and all of them feed the carousel.
+  Widget _postCard(List<PhotoModel> group) {
+    final p = group.first;
     final fav = _isFav(p);
     final cat = categoryOf(p.category);
     final dist = _distanceLabel(p);
@@ -582,7 +538,7 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
                       const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
                   decoration: BoxDecoration(
                     color: cat.softColor,
-                    borderRadius: BorderRadius.circular(10),
+                    borderRadius: BorderRadius.circular(20),
                   ),
                   child: Row(mainAxisSize: MainAxisSize.min, children: [
                     Icon(cat.icon, size: 11, color: cat.color),
@@ -607,47 +563,28 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
             ),
           ),
 
-          // ── Full-width photo ──────────────────────────────────────────
-          GestureDetector(
-            onDoubleTap: () => _toggleFav(p),
-            onTap: () {
-              HapticFeedback.selectionClick();
-              context.push('/photo/${p.id}');
-            },
-            child: AspectRatio(
-              aspectRatio: 4 / 3,
-              child: Image.network(
-                _fullUrl(p.imageUrl),
-                fit: BoxFit.cover,
-                loadingBuilder: (_, child, prog) => prog == null
-                    ? child
-                    : Container(
-                        color: const Color(0xFFF3F4F6),
-                        child: const Center(
-                          child: SizedBox(
-                            width: 24,
-                            height: 24,
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2, color: _muted),
-                          ),
-                        ),
-                      ),
-                errorBuilder: (_, __, ___) => Container(
-                  color: const Color(0xFFF3F4F6),
-                  child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.image_not_supported_outlined,
-                            color: _muted, size: 32),
-                        const SizedBox(height: 8),
-                        Text('No image',
-                            style: TextStyle(
-                                color: _muted.withValues(alpha: 0.6),
-                                fontSize: 12)),
-                      ]),
+          // ── Full-width photo (swipeable when the pin has several) ───────
+          // The watermark caption is drawn as a live overlay per image (see
+          // captions), so EVERY post shows it — including older photos uploaded
+          // before the stamp was baked in.
+          _PhotoCarousel(
+            images: [for (final g in group) _fullUrl(g.imageUrl)],
+            captions: [
+              for (final g in group)
+                WatermarkCaption(
+                  takenAtIso: g.takenAt ?? g.timestamp,
+                  address: g.address ?? g.zipCode ?? '',
+                  latitude: g.latitude,
+                  longitude: g.longitude,
+                  serviceLabel: categoryOf(g.category).label,
+                  compact: true,
                 ),
-              ),
-            ),
+            ],
+            onOpenIndex: (i) {
+              HapticFeedback.selectionClick();
+              context.push('/photo/${group[i].id}');
+            },
+            onDoubleTap: () => _toggleFav(p),
           ),
 
           // ── Action bar ────────────────────────────────────────────────
@@ -732,7 +669,7 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
                           horizontal: 7, vertical: 3),
                       decoration: BoxDecoration(
                         color: _purpleSoft,
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: BorderRadius.circular(12),
                       ),
                       child: Text(dist,
                           style: const TextStyle(
@@ -761,7 +698,7 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
                             horizontal: 7, vertical: 3),
                         decoration: BoxDecoration(
                           color: const Color(0xFFDCFCE7),
-                          borderRadius: BorderRadius.circular(8),
+                          borderRadius: BorderRadius.circular(12),
                         ),
                         child: Text(
                           '\$${p.payRate}',
@@ -794,7 +731,7 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
                 height: 72,
                 decoration: const BoxDecoration(
                     color: _purpleSoft, shape: BoxShape.circle),
-                child: const Icon(Icons.photo_camera_outlined,
+                child: const Icon(Icons.camera_alt_outlined,
                     size: 34, color: _purple),
               ),
               const SizedBox(height: 18),
@@ -804,13 +741,10 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
                       fontWeight: FontWeight.w700,
                       color: _ink)),
               const SizedBox(height: 6),
-              Text(
-                _selectedCategory != null
-                    ? 'No ${categoryOf(_selectedCategory).label} photos found.\nTry a different category.'
-                    : 'Upload your first location photo\nto get started.',
+              const Text(
+                'Upload your first location photo\nto get started.',
                 textAlign: TextAlign.center,
-                style: const TextStyle(
-                    fontSize: 14, color: _muted, height: 1.5),
+                style: TextStyle(fontSize: 14, color: _muted, height: 1.5),
               ),
               const SizedBox(height: 24),
               ElevatedButton.icon(
@@ -838,7 +772,7 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
         children: const [
           SizedBox(height: 100),
           Column(mainAxisSize: MainAxisSize.min, children: [
-            Icon(Icons.cloud_off_rounded, size: 48, color: _muted),
+            Icon(Icons.wifi_off_rounded, size: 48, color: _muted),
             SizedBox(height: 14),
             Text('Something went wrong',
                 style: TextStyle(
@@ -864,8 +798,8 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Row(children: [
                 for (var i = 0; i < 5; i++) ...[
-                  _bone(i == 0 ? 56 : 90, 36, r: 20),
-                  if (i < 4) const SizedBox(width: 8),
+                  Expanded(child: _bone(double.infinity, 36, r: 20)),
+                  if (i < 4) const SizedBox(width: 6),
                 ]
               ]),
             ),
@@ -933,7 +867,168 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
       );
 }
 
+class _StickyBarDelegate extends SliverPersistentHeaderDelegate {
+  const _StickyBarDelegate({required this.child});
+  final Widget child;
+
+  // Category bar: 8px top padding + 36px chip + 10px bottom padding = 54px
+  static const double _h = 54;
+
+  @override double get minExtent => _h;
+  @override double get maxExtent => _h;
+
+  @override
+  Widget build(BuildContext ctx, double shrinkOffset, bool overlapsContent) =>
+      child;
+
+  @override
+  bool shouldRebuild(_StickyBarDelegate old) => old.child != child;
+}
+
 extension _S on String {
   String _cap() =>
       isEmpty ? this : '${this[0].toUpperCase()}${substring(1).toLowerCase()}';
+}
+
+/// Swipeable 4:3 photo preview for a post. When a pin has multiple photos it
+/// shows a page count badge and dot indicators; with a single photo it's just
+/// the image. Tapping opens the currently-visible photo's detail.
+class _PhotoCarousel extends StatefulWidget {
+  const _PhotoCarousel({
+    required this.images,
+    required this.onOpenIndex,
+    required this.onDoubleTap,
+    this.captions = const [],
+  });
+
+  final List<String> images;
+  /// Watermark overlay per image (parallel to [images]); may be empty.
+  final List<Widget> captions;
+  final void Function(int index) onOpenIndex;
+  final VoidCallback onDoubleTap;
+
+  @override
+  State<_PhotoCarousel> createState() => _PhotoCarouselState();
+}
+
+class _PhotoCarouselState extends State<_PhotoCarousel> {
+  final _controller = PageController();
+  int _index = 0;
+
+  static const Color _muted = Color(0xFF6B7280);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final n = widget.images.length;
+    return GestureDetector(
+      onTap: () => widget.onOpenIndex(_index),
+      onDoubleTap: widget.onDoubleTap,
+      child: AspectRatio(
+        aspectRatio: 4 / 3,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            PageView.builder(
+              controller: _controller,
+              itemCount: n,
+              onPageChanged: (i) => setState(() => _index = i),
+              itemBuilder: (_, i) => Stack(
+                fit: StackFit.expand,
+                children: [
+                  Image.network(
+                    widget.images[i],
+                    fit: BoxFit.cover,
+                    loadingBuilder: (_, child, prog) => prog == null
+                        ? child
+                        : Container(
+                            color: const Color(0xFFF3F4F6),
+                            child: const Center(
+                              child: SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: _muted),
+                              ),
+                            ),
+                          ),
+                    errorBuilder: (_, __, ___) => Container(
+                      color: const Color(0xFFF3F4F6),
+                      child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.photo_library_outlined,
+                                color: _muted, size: 32),
+                            const SizedBox(height: 8),
+                            Text('No image',
+                                style: TextStyle(
+                                    color: _muted.withValues(alpha: 0.6),
+                                    fontSize: 12)),
+                          ]),
+                    ),
+                  ),
+                  // Watermark caption overlay for this image.
+                  if (i < widget.captions.length) widget.captions[i],
+                ],
+              ),
+            ),
+            // Count badge (top-right) — only when there's more than one photo.
+            if (n > 1)
+              Positioned(
+                top: 10,
+                right: 10,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.55),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    const Icon(Icons.collections_rounded,
+                        size: 13, color: Colors.white),
+                    const SizedBox(width: 5),
+                    Text('${_index + 1}/$n',
+                        style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white)),
+                  ]),
+                ),
+              ),
+            // Dot indicators (bottom-center).
+            if (n > 1)
+              Positioned(
+                bottom: 10,
+                left: 0,
+                right: 0,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    for (var i = 0; i < n; i++)
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        margin: const EdgeInsets.symmetric(horizontal: 3),
+                        width: i == _index ? 18 : 6,
+                        height: 6,
+                        decoration: BoxDecoration(
+                          color: i == _index
+                              ? Colors.white
+                              : Colors.white.withValues(alpha: 0.5),
+                          borderRadius: BorderRadius.circular(3),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }

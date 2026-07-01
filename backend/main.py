@@ -51,8 +51,15 @@ async def rewrite_api_prefix(request: Request, call_next):
     return await call_next(request)
 
 
-DATABASE_URL = "sqlite:///./photo_tracker.db"
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# DATABASE_URL comes from the environment (.env) in production, e.g.
+#   postgresql+psycopg2://user:pass@localhost:5432/photo_tracker
+# and falls back to a local SQLite file for development.
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./photo_tracker.db")
+if DATABASE_URL.startswith("sqlite"):
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+else:
+    # Postgres/other: check_same_thread is SQLite-only; pre-ping avoids stale conns.
+    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
@@ -93,6 +100,11 @@ class Photo(Base):
     note      = Column(Text,   nullable=True)
     # per-photo priority category: standard | special | next_day | asap
     category  = Column(String, nullable=True, default="standard")
+    # Completion detail fields (mirror the Rockstar service-record email):
+    #   completion_type — e.g. Substitute | Personal | Corporate | Posted
+    #   served_to       — who the service was served to
+    completion_type = Column(String, nullable=True)
+    served_to       = Column(String, nullable=True)
     # legacy single profile_id kept for backward compat
     profile_id    = Column(Integer, nullable=True)
     is_favorited  = Column(Integer, nullable=False, default=0)
@@ -161,6 +173,18 @@ class TimestampEdit(Base):
     edited_at = Column(DateTime, default=datetime.utcnow)
 
 
+class StatusHistory(Base):
+    """Audit trail for every job-status change (open/in_progress/completed/
+    archived), supporting forward, backward and jump transitions + undo."""
+    __tablename__ = "status_history"
+    id         = Column(Integer, primary_key=True, index=True)
+    photo_id   = Column(Integer, ForeignKey("photos.id", ondelete="CASCADE"), index=True)
+    old_status = Column(String, nullable=True)
+    new_status = Column(String, nullable=False)
+    updated_by = Column(Integer, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
 class PayoutPeriod(Base):
     """F8: finalized pay-period snapshot (live totals are aggregated on demand)."""
     __tablename__ = "payout_periods"
@@ -191,6 +215,8 @@ def _ensure_columns():
         "original_timestamp": "DATETIME",
         "edited_timestamp":   "DATETIME",
         "pay_rate":           "INTEGER",
+        "completion_type":    "VARCHAR",
+        "served_to":          "VARCHAR",
         "status":             "VARCHAR NOT NULL DEFAULT 'open'",
         "completed_at":       "DATETIME",
         "user_id":            "INTEGER",
@@ -262,6 +288,8 @@ def _photo_dict(ph):
         "address":            ph.address,
         "note":               ph.note,
         "category":           ph.category or "standard",
+        "completion_type":    ph.completion_type,
+        "served_to":          ph.served_to,
         "pay_rate":           ph.pay_rate,
         "status":             ph.status or "open",
         "completed_at":       _to_pst_iso(ph.completed_at),
@@ -437,6 +465,8 @@ async def upload_photo(
     address:           str        = Form(""),
     note:              str        = Form(""),
     category:          str        = Form("standard"),
+    completion_type:   str        = Form(""),    # e.g. Substitute | Personal
+    served_to:         str        = Form(""),    # who service was served to
     taken_at:          str        = Form(""),    # F6: device capture time (ISO)
     pay_rate:          str        = Form(""),     # F7: whole dollars
     user_id:           str        = Form(""),     # F8/F9: attribution
@@ -493,6 +523,8 @@ async def upload_photo(
                               if category.strip().lower() in
                               ("standard", "special", "next_day", "asap")
                               else "standard"),
+        completion_type    = completion_type.strip() or None,
+        served_to          = served_to.strip() or None,
         pay_rate           = pay_val,
         user_id            = uid,
         status             = initial_status,
@@ -503,9 +535,28 @@ async def upload_photo(
     db.add(photo)
     db.commit()
     db.refresh(photo)
-    # F1: if appending to an existing master pin use its group; else the row is
-    # its own group root.
-    photo.location_group_id = grp if grp else photo.id
+    # F1: if appending to an explicit master pin, use its group. Otherwise, reuse
+    # an existing group for the SAME profile + SAME address so repeated uploads
+    # to one place collapse into ONE master pin (multiple photos under one
+    # profile) instead of spawning separate pins. Falls back to its own id.
+    if grp:
+        photo.location_group_id = grp
+    else:
+        addr_norm = (address.strip() or "").lower()
+        reuse_group = None
+        if addr_norm:
+            siblings = (
+                db.query(Photo)
+                .filter(Photo.id != photo.id,
+                        Photo.profile_id == profile_id,
+                        Photo.location_group_id.isnot(None))
+                .all()
+            )
+            for s in siblings:
+                if (s.address or "").strip().lower() == addr_norm:
+                    reuse_group = s.location_group_id
+                    break
+        photo.location_group_id = reuse_group if reuse_group else photo.id
     db.commit()
     db.refresh(photo)
     result = _photo_dict(photo)
@@ -1106,12 +1157,48 @@ async def update_status(photo_id: int, data: dict = Body(...)):
     if st not in ("open", "in_progress", "completed", "archived"):
         db.close()
         raise HTTPException(status_code=422, detail="status must be open|in_progress|completed|archived")
+    old_status = photo.status or "open"
+    # Any transition is allowed (forward, backward, or jump) — the client
+    # confirms the change and can revert by sending the previous status back.
     photo.status = st
     if st in ("completed", "archived") and not photo.completed_at:
         photo.completed_at = datetime.utcnow()
+    # Moving back out of a terminal state clears the completion stamp so
+    # earnings/archive views stay consistent with the live status.
+    if st in ("open", "in_progress"):
+        photo.completed_at = None
+    # Record the transition for the audit trail / undo.
+    db.add(StatusHistory(
+        photo_id=photo_id,
+        old_status=old_status,
+        new_status=st,
+        updated_by=data.get("updated_by"),
+    ))
     db.commit()
     db.close()
-    return {"ok": True, "status": st}
+    return {"ok": True, "status": st, "previous_status": old_status}
+
+
+@app.get("/photos/{photo_id}/status-history")
+def status_history(photo_id: int):
+    db = SessionLocal()
+    rows = (
+        db.query(StatusHistory)
+        .filter(StatusHistory.photo_id == photo_id)
+        .order_by(StatusHistory.updated_at.desc())
+        .all()
+    )
+    db.close()
+    return [
+        {
+            "id": r.id,
+            "old_status": r.old_status,
+            "new_status": r.new_status,
+            "updated_by": r.updated_by,
+            "updated_at": _to_pst_iso(r.updated_at),
+        }
+        for r in rows
+    ]
 
 
 @app.get("/archive")
@@ -1407,50 +1494,67 @@ def delete_recipient(rid: int):
 
 # ─── F11: EXCEL EXPORT (replaces multi-format exports) ──────────────────────
 
+# Multi-job export (selecting & sending many jobs to one recipient) — the
+# canonical 5-column log layout the client signed off on.
 _EXPORT_COLUMNS = [
-    ("timestamp",    "Timestamp (PST)"),
-    ("profile_name", "Profile"),
-    ("service_type", "Status"),
-    ("category",     "Service Level"),
-    ("pay_rate",     "Pay Rate ($)"),
-    ("address",      "Address"),
-    ("zip_code",     "ZIP"),
-    ("latitude",     "Latitude"),
-    ("longitude",    "Longitude"),
-    ("note",         "Note"),
+    ("id_ctrl",         "ID & Cntrl #"),
+    ("date_time",       "Date & Time"),
+    ("service_ordered", "Service Ordered"),
+    ("address",         "Address"),
+    ("coordinates",     "Lat / Long"),
+    ("detailed_notes",  "Detailed Notes"),
 ]
 
+# Single-job export — same shape as above plus the few extras the client asked
+# for on individual records (coordinates, status, agent). The watermarked photo
+# rides along as a separate attachment.
+_EXPORT_COLUMNS_JOB = [
+    ("id_ctrl",         "ID & Cntrl #"),
+    ("date_time",       "Date & Time"),
+    ("service_ordered", "Service Ordered"),
+    ("address",         "Address"),
+    ("coordinates",     "Lat / Long"),
+    ("job_status",      "Job Status"),
+    ("agent",           "Agent"),
+    ("detailed_notes",  "Detailed Notes"),
+]
 
-def _build_xlsx(records):
-    """Return (bytes, filename) for an .xlsx of the records."""
+_COL_WIDTHS = {
+    "ID & Cntrl #": 24, "Date & Time": 22, "Service Ordered": 18,
+    "Address": 32, "Lat / Long": 24, "Job Status": 16, "Agent": 18,
+    "Detailed Notes": 36,
+}
+
+
+def _build_xlsx(records, columns=_EXPORT_COLUMNS, sheet_title="Activity Log",
+                base_name="log_export"):
+    """Return (bytes, filename) for an .xlsx (or CSV fallback) of the records,
+    using the supplied (key, header) column set."""
     if Workbook is None:
         # Fallback: CSV bytes
         buf = io.StringIO()
         w = _csv.writer(buf)
-        w.writerow([h for _, h in _EXPORT_COLUMNS])
+        w.writerow([h for _, h in columns])
         for r in records:
-            w.writerow([r.get(k, "") for k, _ in _EXPORT_COLUMNS])
-        return buf.getvalue().encode(), "log_export.csv"
+            w.writerow([r.get(k, "") for k, _ in columns])
+        return buf.getvalue().encode(), f"{base_name}.csv"
     wb = Workbook()
     ws = wb.active
-    ws.title = "Activity Log"
+    ws.title = sheet_title
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill("solid", fgColor="6366F1")
-    for col, (_, label) in enumerate(_EXPORT_COLUMNS, start=1):
+    for col, (_, label) in enumerate(columns, start=1):
         c = ws.cell(row=1, column=col, value=label)
         c.font = header_font
         c.fill = header_fill
     for ri, r in enumerate(records, start=2):
-        for ci, (key, _) in enumerate(_EXPORT_COLUMNS, start=1):
-            val = r.get(key, "")
-            if key == "category":
-                val = str(val).replace("_", " ").title()
-            ws.cell(row=ri, column=ci, value=val)
-    for col in range(1, len(_EXPORT_COLUMNS) + 1):
-        ws.column_dimensions[chr(64 + col)].width = 18
+        for ci, (key, _) in enumerate(columns, start=1):
+            ws.cell(row=ri, column=ci, value=r.get(key, ""))
+    for col, (_, label) in enumerate(columns, start=1):
+        ws.column_dimensions[chr(64 + col)].width = _COL_WIDTHS.get(label, 20)
     bio = io.BytesIO()
     wb.save(bio)
-    return bio.getvalue(), "log_export.xlsx"
+    return bio.getvalue(), f"{base_name}.xlsx"
 
 
 @app.post("/export/excel")
@@ -1521,6 +1625,268 @@ async def export_excel(request: Request):
                     "count": len(records)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Excel export failed: {str(e)}")
+
+
+def _esc(s):
+    """Minimal HTML escape for values dropped into the email body."""
+    return (str(s or "")
+            .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _fmt_note_stamp(date_time):
+    """'YYYY-MM-DD HH:MM:SS' -> 'hh:mm am  -  MM/DD/YYYY'. Falls back to raw."""
+    raw = str(date_time or "").strip()
+    if not raw:
+        return ""
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            dt = datetime.strptime(raw, fmt)
+            return f"{dt.strftime('%I:%M %p').lower().lstrip('0')}  -  {dt.strftime('%m/%d/%Y')}"
+        except (ValueError, TypeError):
+            continue
+    return raw
+
+
+def _build_service_record_html(records, header=None, latest_only=False):
+    """Build the Rockstar-style 'SERVICE RECORDED' email body from the export
+    records (newest-first, as the app sends them) plus an optional ``header``
+    dict carrying the top-block fields. Mirrors the format the client receives
+    from Rockstar Processing: a header block + a 'PREV NOTES FROM SERVICE' log.
+    """
+    records = records or []
+    header = header or {}
+    latest = records[0] if records else {}
+
+    def hv(key, fallback_key=None, default="—"):
+        v = header.get(key)
+        if not v and fallback_key:
+            v = latest.get(fallback_key)
+        return _esc(v) if v else default
+
+    rows = [
+        ("Dispatch Type",          hv("dispatch_type", "service_ordered", "Standard")),
+        ("Service Name",           hv("service_name")),
+        ("Status",                 hv("status", "job_status")),
+        ("Agent",                  hv("agent", "agent")),
+        ("Actual Service Address", hv("address", "address")),
+        ("Completed Type",         hv("completion_type")),
+        ("Served To",              hv("served_to")),
+    ]
+    header_html = "".join(
+        f'<tr><td style="padding:2px 12px 2px 0;color:#64748b;white-space:nowrap;">'
+        f'{label}:</td><td style="padding:2px 0;color:#0f172a;font-weight:600;">'
+        f'{value}</td></tr>'
+        for label, value in rows
+    )
+
+    # PREV NOTES FROM SERVICE — oldest-first, like the Rockstar email.
+    note_records = ([latest] if latest_only else list(reversed(records)))
+    note_lines = []
+    for r in note_records:
+        note = (r.get("detailed_notes") or "").strip()
+        if not note:
+            continue
+        stamp = _fmt_note_stamp(r.get("date_time"))
+        prefix = f"{stamp}  -  " if stamp else ""
+        note_lines.append(
+            f'<div style="margin:0 0 10px;color:#0f172a;line-height:1.5;">'
+            f'<span style="color:#475569;">{_esc(prefix)}</span>{_esc(note)}</div>'
+        )
+    notes_html = ("".join(note_lines)
+                  or '<div style="color:#94a3b8;">No notes recorded.</div>')
+
+    section_title = ("MOST RECENT NOTE FROM SERVICE" if latest_only
+                     else "PREV NOTES FROM SERVICE")
+
+    return f"""\
+<div style="font-family:Arial,Helvetica,sans-serif;color:#0f172a;max-width:640px;">
+  <p style="margin:0 0 14px;line-height:1.5;">
+    You've recorded a completion or final service for Rockstar Processing.
+    The status of this delivery has been immediately sent to Dispatch and the Client.
+  </p>
+  <table style="border-collapse:collapse;font-size:14px;margin:0 0 16px;">{header_html}</table>
+  <p style="margin:0 0 6px;font-weight:700;">You have recorded a service attempt or completion</p>
+  <hr style="border:none;border-top:1px solid #e2e8f0;margin:12px 0;">
+  <h3 style="margin:0 0 12px;font-size:14px;letter-spacing:0.4px;color:#334155;">{section_title}</h3>
+  {notes_html}
+  <hr style="border:none;border-top:1px solid #e2e8f0;margin:16px 0 10px;">
+  <p style="margin:0;font-size:11px;color:#94a3b8;line-height:1.5;">
+    Dates and times appear with each attempt. If they are missing, the agent
+    needs to edit and record. This stamp may not reflect the actual time of the
+    service and is for troubleshooting only.
+  </p>
+</div>"""
+
+
+@app.post("/export/job")
+async def export_job(request: Request):
+    """Single-job export: a detailed one-sheet Excel (one row per attempt, with
+    coordinates / status / agent) plus the watermarked photo(s) attached
+    alongside in the same email, with a Rockstar-style service-record HTML body.
+    JSON body only (mobile).
+
+    With no recipients (or when email isn't configured) the Excel is returned as
+    base64 so the app can hand it to the OS share sheet together with the photos
+    it already holds locally.
+    """
+    data = await request.json()
+    recipients = data.get("recipients") or ([data["to"]] if data.get("to") else [])
+    recipients = [e.strip() for e in recipients if e and "@" in e]
+    records = data.get("records", [])
+    # attachments: [{"filename", "content_b64", "mimetype"}] — the watermarked photos
+    attachments = data.get("attachments", [])
+    subject = (data.get("subject") or "Service Record").strip()
+    latest_only = bool(data.get("latest_only"))
+    html_body = _build_service_record_html(
+        records, data.get("header"), latest_only)
+
+    file_bytes, fname = _build_xlsx(
+        records, _EXPORT_COLUMNS_JOB, sheet_title="Service Record",
+        base_name=data.get("base_name") or "service-record")
+    xlsx_b64 = base64.b64encode(file_bytes).decode()
+
+    smtp_host = os.environ.get("SMTP_HOST")
+    smtp_user = os.environ.get("SMTP_USER")
+    smtp_pass = os.environ.get("SMTP_PASS")
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    sg_api_key = os.environ.get("SENDGRID_API_KEY")
+    sg_sender = os.environ.get("SENDGRID_SENDER_EMAIL")
+
+    # Share flow (no recipients) or email not configured → return the file.
+    if not recipients or (not sg_api_key and (not smtp_host or not smtp_user)):
+        return {"ok": True,
+                "message": ("File generated" if not recipients
+                            else "Email not configured — file returned"),
+                "filename": fname, "file_base64": xlsx_b64, "count": len(records)}
+
+    _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    try:
+        if sg_api_key and SendGridAPIClient and Mail:
+            from sendgrid.helpers.mail import (
+                Attachment, FileContent, FileName, FileType, Disposition)
+            atts = [Attachment(
+                FileContent(xlsx_b64), FileName(fname),
+                FileType(_XLSX_MIME), Disposition("attachment"))]
+            for a in attachments:
+                if a.get("content_b64"):
+                    atts.append(Attachment(
+                        FileContent(a["content_b64"]),
+                        FileName(a.get("filename", "photo.jpg")),
+                        FileType(a.get("mimetype", "image/jpeg")),
+                        Disposition("attachment")))
+            message = Mail(from_email=sg_sender, to_emails=recipients,
+                           subject=subject, html_content=html_body)
+            message.attachment = atts
+            SendGridAPIClient(sg_api_key).send(message)
+        else:
+            from email.mime.application import MIMEApplication
+            from email.mime.image import MIMEImage
+            msg = MIMEMultipart()
+            msg["Subject"] = subject
+            msg["From"] = smtp_user
+            msg["To"] = ", ".join(recipients)
+            msg.attach(MIMEText(html_body, "html"))
+            part = MIMEApplication(file_bytes, _subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            part.add_header("Content-Disposition", "attachment", filename=fname)
+            msg.attach(part)
+            for a in attachments:
+                if a.get("content_b64"):
+                    img = MIMEImage(base64.b64decode(a["content_b64"]))
+                    img.add_header("Content-Disposition", "attachment",
+                                   filename=a.get("filename", "photo.jpg"))
+                    msg.attach(img)
+            with smtplib.SMTP(smtp_host, smtp_port) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_pass)
+                server.sendmail(smtp_user, recipients, msg.as_string())
+        return {"ok": True,
+                "message": f"Service record sent to {', '.join(recipients)}",
+                "count": len(records)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Job export failed: {str(e)}")
+
+
+@app.post("/export/pdf-email")
+async def export_pdf_email(request: Request):
+    """Email a client-generated single-job PDF service record to recipients.
+
+    Accepts multipart (file=<pdf>, recipients=<json list> or to=<email>,
+    subject, body) or JSON (file_base64, filename, recipients/to, subject,
+    body). Mirrors the /export/excel send logic (SendGrid or SMTP)."""
+    content_type = request.headers.get("content-type", "")
+    subject = "Service Record"
+    body = "Service record attached."
+    filename = "service-record.pdf"
+    pdf_bytes = None
+
+    if "application/json" in content_type:
+        data = await request.json()
+        recipients = data.get("recipients") or (
+            [data["to"]] if data.get("to") else [])
+        subject = (data.get("subject") or subject).strip()
+        body = (data.get("body") or body)
+        filename = (data.get("filename") or filename)
+        b64 = data.get("file_base64")
+        if b64:
+            pdf_bytes = base64.b64decode(b64)
+    else:
+        form = await request.form()
+        recipients = json.loads(form.get("recipients", "[]")) or (
+            [form.get("to")] if form.get("to") else [])
+        subject = (form.get("subject") or subject).strip()
+        body = (form.get("body") or body)
+        upload = form.get("file")
+        if upload is not None and hasattr(upload, "read"):
+            pdf_bytes = await upload.read()
+            filename = getattr(upload, "filename", None) or filename
+
+    recipients = [e.strip() for e in recipients if e and "@" in e]
+    if not recipients:
+        raise HTTPException(status_code=422, detail="At least one recipient email required")
+    if not pdf_bytes:
+        raise HTTPException(status_code=422, detail="PDF file is required")
+
+    b64 = base64.b64encode(pdf_bytes).decode()
+
+    smtp_host = os.environ.get("SMTP_HOST")
+    smtp_user = os.environ.get("SMTP_USER")
+    smtp_pass = os.environ.get("SMTP_PASS")
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    sg_api_key = os.environ.get("SENDGRID_API_KEY")
+    sg_sender = os.environ.get("SENDGRID_SENDER_EMAIL")
+
+    if not sg_api_key and (not smtp_host or not smtp_user):
+        return {"ok": True, "message": "Email not configured — file returned",
+                "filename": filename, "file_base64": b64}
+
+    try:
+        if sg_api_key and SendGridAPIClient and Mail:
+            from sendgrid.helpers.mail import (
+                Attachment, FileContent, FileName, FileType, Disposition)
+            message = Mail(from_email=sg_sender, to_emails=recipients,
+                           subject=subject,
+                           html_content=f"<p>{body}</p>")
+            message.attachment = Attachment(
+                FileContent(b64), FileName(filename),
+                FileType("application/pdf"), Disposition("attachment"))
+            SendGridAPIClient(sg_api_key).send(message)
+        else:
+            from email.mime.application import MIMEApplication
+            msg = MIMEMultipart()
+            msg["Subject"] = subject
+            msg["From"] = smtp_user
+            msg["To"] = ", ".join(recipients)
+            msg.attach(MIMEText(body, "plain"))
+            part = MIMEApplication(pdf_bytes, _subtype="pdf")
+            part.add_header("Content-Disposition", "attachment", filename=filename)
+            msg.attach(part)
+            with smtplib.SMTP(smtp_host, smtp_port) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_pass)
+                server.sendmail(smtp_user, recipients, msg.as_string())
+        return {"ok": True, "message": f"Service record sent to {', '.join(recipients)}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Email failed: {str(e)}")
 
 
 # ─── USERS (lightweight identity for attribution) ───────────────────────────

@@ -237,7 +237,7 @@ class _EditLocationScreenState extends ConsumerState<EditLocationScreen> {
               children: [
                 IconButton(
                   icon: const Icon(
-                    Icons.arrow_back_ios_new_rounded,
+                    Icons.chevron_left_rounded,
                     size: 20,
                   ),
                   color: _inkMuted,

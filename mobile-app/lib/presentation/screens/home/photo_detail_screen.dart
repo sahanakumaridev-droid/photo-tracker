@@ -1,14 +1,27 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../../config/app_config.dart';
+import '../../../core/network/api_client.dart';
+import '../../../core/utils/category.dart';
+import '../../../core/utils/job_pdf.dart';
 import '../../../core/utils/location_service.dart';
+import '../../../core/utils/photo_stamp.dart';
+import '../../../core/utils/text_formatters.dart';
+import '../../../core/utils/maps_launcher.dart';
 import '../../../data/models/photo_model.dart';
+import '../../providers/auth_provider.dart';
 import '../../providers/photo_provider.dart';
 
 class PhotoDetailScreen extends ConsumerStatefulWidget {
@@ -18,6 +31,13 @@ class PhotoDetailScreen extends ConsumerStatefulWidget {
 
   @override
   ConsumerState<PhotoDetailScreen> createState() => _PhotoDetailScreenState();
+}
+
+/// Result of the export options dialog: what to export + where to send it.
+class _ExportChoice {
+  const _ExportChoice(this.options, {required this.email});
+  final JobExportOptions options;
+  final bool email; // true = email to recipients, false = share sheet
 }
 
 class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
@@ -120,13 +140,13 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
   IconData _statusIcon(String status) {
     switch (status) {
       case 'in_progress':
-        return Icons.autorenew_rounded;
+        return Icons.sync_rounded;
       case 'completed':
         return Icons.check_circle_rounded;
       case 'archived':
         return Icons.inventory_2_rounded;
       default:
-        return Icons.radio_button_unchecked_rounded;
+        return Icons.radio_button_unchecked;
     }
   }
 
@@ -144,22 +164,37 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
   }
 
   Future<void> _setStatus(PhotoModel photo, String status) async {
-    if (status == (photo.status ?? 'open')) return;
+    final current = photo.status ?? 'open';
+    if (status == current) return;
     HapticFeedback.mediumImpact();
+
+    // Confirm every status change — forward OR backward — so an accidental
+    // tap can't silently move a job (e.g. straight to Completed).
+    final confirmed = await _confirmStatusChange(current, status);
+    if (confirmed != true || !mounted) return;
+
     try {
       await ref.read(updateStatusProvider((photo.id, status)).future);
       if (mounted) {
         HapticFeedback.heavyImpact();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Status updated to ${_statusLabel(status)}'),
-            backgroundColor: _statusColor(status),
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              content: Text('Status updated to ${_statusLabel(status)}'),
+              backgroundColor: _statusColor(status),
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+              // One-tap revert to the prior status (no extra confirm).
+              action: SnackBarAction(
+                label: 'Undo',
+                textColor: Colors.white,
+                onPressed: () => _revertStatus(photo.id, current),
+              ),
             ),
-          ),
-        );
+          );
       }
     } catch (e) {
       if (mounted) {
@@ -173,6 +208,554 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
         ));
       }
     }
+  }
+
+  /// Explicit undo from the snackbar — reverts straight to [previous] without
+  /// re-confirming, since the user has just chosen to undo.
+  Future<void> _revertStatus(int photoId, String previous) async {
+    HapticFeedback.mediumImpact();
+    try {
+      await ref.read(updateStatusProvider((photoId, previous)).future);
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              content: Text('Reverted to ${_statusLabel(previous)}'),
+              backgroundColor: _statusColor(previous),
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+          );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(e.toString().replaceAll('Exception: ', '')),
+          backgroundColor: _rushRed,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+        ));
+      }
+    }
+  }
+
+  /// "Are you sure?" confirmation shown before any status change. Names both
+  /// the old and the new status and whether it's moving forward or back.
+  Future<bool?> _confirmStatusChange(String from, String to) {
+    final fromIdx = _statusSteps.indexOf(from);
+    final toIdx = _statusSteps.indexOf(to);
+    final goingBack = toIdx >= 0 && fromIdx >= 0 && toIdx < fromIdx;
+    final toColor = _statusColor(to);
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+        ),
+        title: Row(
+          children: [
+            Icon(
+              goingBack ? Icons.undo_rounded : _statusIcon(to),
+              color: toColor,
+              size: 22,
+            ),
+            const SizedBox(width: 10),
+            Text(goingBack ? 'Revert status?' : 'Change status?',
+                style: const TextStyle(
+                    fontSize: 17, fontWeight: FontWeight.w700)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('You are changing this job from',
+                style: TextStyle(fontSize: 14, color: _inkSubtle)),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                _statusPill(from),
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 8),
+                  child: Icon(Icons.arrow_forward_rounded,
+                      size: 16, color: _inkSubtle),
+                ),
+                _statusPill(to),
+              ],
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: toColor,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+            ),
+            child: const Text('Confirm'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _statusPill(String status) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: _statusColor(status).withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Text(
+          _statusLabel(status),
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
+            color: _statusColor(status),
+          ),
+        ),
+      );
+
+  // ── Single-job export: detailed Excel + watermarked photo(s) ──────────────
+  // One row per attempt (ID & Cntrl #, Date & Time, Service Ordered, Address,
+  // Lat/Long, Job Status, Agent, Detailed Notes); the watermarked photos ride
+  // along as separate attachments in the same email. Multi-job Excel export
+  // (in the Log screen) is unchanged.
+  Future<void> _exportJob(PhotoModel photo) async {
+    final choice = await _showExportOptionsDialog();
+    if (choice == null || !mounted) return;
+    final opts = choice.options;
+
+    // A "job" = all attempts for the same profile, newest-first.
+    final all = ref.read(photosProvider).valueOrNull ?? const <PhotoModel>[];
+    final pid = photo.profileId;
+    final attempts = (pid == null
+        ? <PhotoModel>[photo]
+        : all.where((p) => p.profileId == pid).toList())
+      ..sort((a, b) => (b.takenAt ?? b.timestamp ?? '')
+          .compareTo(a.takenAt ?? a.timestamp ?? ''));
+    if (attempts.isEmpty) attempts.add(photo);
+
+    // Latest-only = just the most recent attempt; otherwise every attempt.
+    final selected = opts.latestOnly ? attempts.take(1).toList() : attempts;
+    final total = attempts.length;
+
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(const SnackBar(
+        content: Text('Building service record…'),
+        behavior: SnackBarBehavior.floating,
+      ));
+
+    try {
+      final dio = ref.read(dioProvider);
+      final agentEmail = ref.read(authProvider).email;
+      final agentName = (agentEmail != null && agentEmail.contains('@'))
+          ? agentEmail.split('@').first
+          : (agentEmail ?? '');
+
+      final records = <Map<String, dynamic>>[];
+      // {filename, content_b64, mimetype} — the watermarked photos.
+      final attachments = <Map<String, String>>[];
+
+      for (final p in selected) {
+        // Chronological attempt number (#1 = earliest) within the full job.
+        final attemptNo = total - attempts.indexOf(p);
+        records.add(_jobRecord(p, attemptNo, agentName));
+
+        if (opts.includeImages) {
+          try {
+            final resp = await dio.get<List<int>>(
+              p.imageUrl,
+              options: Options(responseType: ResponseType.bytes),
+            );
+            if (resp.data != null) {
+              // Uploads store the RAW photo (the app shows the watermark as a
+              // live overlay). For export we bake the caption into the file so
+              // the downloaded/emailed photo carries a permanent stamp.
+              final tmp = await getTemporaryDirectory();
+              final raw = File('${tmp.path}/exp_${p.id}_$attemptNo.img');
+              await raw.writeAsBytes(resp.data!);
+              final stamped = await applyWatermark(
+                raw,
+                p.takenAt ?? p.timestamp ?? '',
+                p.address ?? p.zipCode ?? '',
+                latitude: p.latitude,
+                longitude: p.longitude,
+                serviceLabel: categoryLabel(p.category ?? p.serviceType),
+                attemptNumber: attemptNo,
+                agentName: agentName,
+              );
+              attachments.add({
+                'filename': 'attempt_${attemptNo}_${p.id}.png',
+                'content_b64': base64Encode(await stamped.readAsBytes()),
+                'mimetype': 'image/png',
+              });
+            }
+          } catch (_) {/* skip image on fetch failure */}
+        }
+      }
+
+      final safeName = (photo.profileName ?? 'job')
+          .replaceAll(RegExp(r'[^A-Za-z0-9_-]+'), '_');
+      final baseName = 'service-record-$safeName';
+
+      if (!mounted) return;
+      if (choice.email) {
+        await _emailJobRecord(photo, records, attachments, baseName,
+            _jobHeader(photo, agentName), opts.latestOnly);
+      } else {
+        await _shareJobRecord(photo, records, attachments, baseName);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(
+          content: Text('Export failed: '
+              '${e.toString().replaceAll('Exception: ', '')}'),
+          backgroundColor: _rushRed,
+          behavior: SnackBarBehavior.floating,
+        ));
+    }
+  }
+
+  /// Builds one Excel row for an attempt, matching the client's column set:
+  /// ID & Cntrl # · Date & Time · Service Ordered · Address · Lat/Long ·
+  /// Job Status · Agent · Detailed Notes.
+  Map<String, dynamic> _jobRecord(
+      PhotoModel p, int attemptNo, String agentName) {
+    final profileId = p.profileId?.toString() ?? '';
+    final profileName = p.profileName ?? '';
+    final idCtrl = profileId.isNotEmpty && profileName.isNotEmpty
+        ? '$profileId / $profileName'
+        : profileId.isNotEmpty
+            ? profileId
+            : profileName;
+
+    final tsIso = p.takenAt ?? p.timestamp;
+    final dateTime = tsIso != null
+        ? DateFormat('yyyy-MM-dd HH:mm:ss')
+            .format(DateTime.parse(tsIso).toLocal())
+        : '';
+
+    // Address inline with ZIP when the ZIP isn't already part of it.
+    var address = p.address ?? '';
+    final zip = p.zipCode ?? '';
+    if (address.isEmpty) {
+      address = zip;
+    } else if (zip.isNotEmpty && !address.contains(zip)) {
+      address = '$address, $zip';
+    }
+
+    final note = (p.note ?? '').trim();
+    return {
+      'id_ctrl': idCtrl,
+      'date_time': dateTime,
+      'service_ordered': categoryLabel(p.category ?? p.serviceType),
+      'address': address,
+      'coordinates':
+          '${p.latitude.toStringAsFixed(6)}, ${p.longitude.toStringAsFixed(6)}',
+      'job_status': _statusLabel(p.status ?? 'open'),
+      'agent': agentName,
+      'completion_type': p.completionType ?? '',
+      'served_to': p.servedTo ?? '',
+      'detailed_notes': note.isEmpty ? 'Attempt #$attemptNo' : note,
+    };
+  }
+
+  /// Rockstar service-record header for the email body, drawn from the most
+  /// recent attempt ([photo]) of the job.
+  Map<String, dynamic> _jobHeader(PhotoModel photo, String agentName) {
+    var address = photo.address ?? '';
+    final zip = photo.zipCode ?? '';
+    if (address.isEmpty) {
+      address = zip;
+    } else if (zip.isNotEmpty && !address.contains(zip)) {
+      address = '$address, $zip';
+    }
+    return {
+      'service_name': photo.profileName ?? '',
+      'dispatch_type': categoryLabel(photo.category ?? photo.serviceType),
+      'status': _statusLabel(photo.status ?? 'open'),
+      'agent': agentName,
+      'address': address,
+      'completion_type': photo.completionType ?? '',
+      'served_to': photo.servedTo ?? '',
+    };
+  }
+
+  /// Emails the Excel + photo attachments to chosen recipients (Dispatch /
+  /// client), after letting the user pick from saved recipients + a one-off.
+  Future<void> _emailJobRecord(
+    PhotoModel photo,
+    List<Map<String, dynamic>> records,
+    List<Map<String, String>> attachments,
+    String baseName,
+    Map<String, dynamic> header,
+    bool latestOnly,
+  ) async {
+    final api = ref.read(apiServiceProvider);
+    var saved = <Map<String, dynamic>>[];
+    try {
+      saved = await api.getRecipients();
+    } catch (_) {/* offline / not configured — user can still type one */}
+    if (!mounted) return;
+
+    final recipients = await _pickRecipients(saved);
+    if (recipients == null || recipients.isEmpty || !mounted) return;
+
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(const SnackBar(
+        content: Text('Emailing service record…'),
+        behavior: SnackBarBehavior.floating,
+      ));
+    try {
+      final res = await api.exportJobExcel(
+        recipients: recipients,
+        records: records,
+        attachments: attachments,
+        subject: 'Service Record — ${photo.profileName ?? ''}',
+        body: 'Service record for ${photo.profileName ?? 'this job'} attached.',
+        baseName: baseName,
+        header: header,
+        latestOnly: latestOnly,
+      );
+      if (!mounted) return;
+      final notConfigured = res['file_base64'] != null;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(
+          content: Text(notConfigured
+              ? 'Email isn\'t set up on the server yet — record generated.'
+              : 'Service record emailed to ${recipients.length} '
+                  'recipient${recipients.length > 1 ? 's' : ''}.'),
+          backgroundColor: notConfigured ? null : _standardGreen,
+          behavior: SnackBarBehavior.floating,
+        ));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(
+          content: Text('Email failed: '
+              '${e.toString().replaceAll('Exception: ', '')}'),
+          backgroundColor: _rushRed,
+          behavior: SnackBarBehavior.floating,
+        ));
+    }
+  }
+
+  /// Builds the Excel server-side (no recipients) and hands it to the OS share
+  /// sheet together with the watermarked photos the app already fetched.
+  Future<void> _shareJobRecord(
+    PhotoModel photo,
+    List<Map<String, dynamic>> records,
+    List<Map<String, String>> attachments,
+    String baseName,
+  ) async {
+    final api = ref.read(apiServiceProvider);
+    final res = await api.exportJobExcel(
+      recipients: const [],
+      records: records,
+      baseName: baseName,
+    );
+    if (!mounted) return;
+
+    final files = <XFile>[];
+    final b64 = res['file_base64'] as String?;
+    if (b64 != null) {
+      files.add(XFile.fromData(
+        base64Decode(b64),
+        name: (res['filename'] as String?) ?? '$baseName.xlsx',
+        mimeType:
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      ));
+    }
+    for (final a in attachments) {
+      files.add(XFile.fromData(
+        base64Decode(a['content_b64']!),
+        name: a['filename'],
+        mimeType: a['mimetype'],
+      ));
+    }
+    if (files.isEmpty) return;
+
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    await Share.shareXFiles(
+      files,
+      subject: 'Service Record — ${photo.profileName ?? ''}',
+    );
+  }
+
+  /// Recipient picker: tick any saved recipients and/or add a one-off email.
+  Future<List<String>?> _pickRecipients(
+      List<Map<String, dynamic>> saved) {
+    final selected = <String>{};
+    final customCtrl = TextEditingController();
+    return showDialog<List<String>>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Text('Email to',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (saved.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 8),
+                    child: Text('No saved recipients — add one below.',
+                        style: TextStyle(fontSize: 13, color: _inkSubtle)),
+                  ),
+                ...saved.map((r) {
+                  final email = (r['email'] ?? '').toString();
+                  final label = (r['label'] ?? '').toString();
+                  return CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    value: selected.contains(email),
+                    title: Text(label.isEmpty ? email : label),
+                    subtitle: label.isEmpty ? null : Text(email),
+                    onChanged: (v) => setLocal(() {
+                      if (v ?? false) {
+                        selected.add(email);
+                      } else {
+                        selected.remove(email);
+                      }
+                    }),
+                  );
+                }),
+                TextField(
+                  controller: customCtrl,
+                  keyboardType: TextInputType.emailAddress,
+                  decoration: const InputDecoration(
+                    hintText: 'Add another email…',
+                    isDense: true,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                final out = {...selected};
+                final custom = customCtrl.text.trim();
+                if (custom.contains('@')) out.add(custom);
+                Navigator.pop(ctx, out.toList());
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _accent,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+              ),
+              child: const Text('Send'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Lets the user pick: latest attempt only vs all attempts, whether to embed
+  /// the watermarked images, and the destination (Share sheet or email to saved
+  /// recipients). Returns null on cancel.
+  Future<_ExportChoice?> _showExportOptionsDialog() {
+    var latestOnly = false;
+    var includeImages = true;
+    return showDialog<_ExportChoice>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Text('Export service record',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Latest attempt only'),
+                subtitle: const Text('Off = include every attempt'),
+                value: latestOnly,
+                onChanged: (v) => setLocal(() => latestOnly = v),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Include photos'),
+                subtitle: const Text('Off = text-only record'),
+                value: includeImages,
+                onChanged: (v) => setLocal(() => includeImages = v),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            // Email straight to saved recipients (Dispatch / client).
+            OutlinedButton.icon(
+              onPressed: () => Navigator.pop(
+                ctx,
+                _ExportChoice(
+                  JobExportOptions(
+                      latestOnly: latestOnly, includeImages: includeImages),
+                  email: true,
+                ),
+              ),
+              icon: const Icon(Icons.email_outlined, size: 16),
+              style: OutlinedButton.styleFrom(foregroundColor: _accent),
+              label: const Text('Email…'),
+            ),
+            ElevatedButton.icon(
+              onPressed: () => Navigator.pop(
+                ctx,
+                _ExportChoice(
+                  JobExportOptions(
+                      latestOnly: latestOnly, includeImages: includeImages),
+                  email: false,
+                ),
+              ),
+              icon: const Icon(Icons.ios_share_rounded, size: 16),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _accent,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+              ),
+              label: const Text('Share'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   String _formatTs(String? ts) {
@@ -262,16 +845,19 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
   }
 
   // ── Map / clipboard actions ───────────────────────────────────────────────
-  Future<void> _openInMaps(double lat, double lng) async {
-    final mapsUrl =
-        'https://www.google.com/maps/search/?api=1&query=$lat,$lng';
-    await Clipboard.setData(ClipboardData(text: mapsUrl));
-    if (mounted) {
+  Future<void> _openInMaps(PhotoModel photo) async {
+    // Prefer the human-readable address (behaves like pasting it into Maps);
+    // fall back to coordinates when no address is available.
+    final address = photo.address ?? _resolvedAddress;
+    final launched = await MapsLauncher.openLocation(
+      address: address,
+      lat: photo.latitude,
+      lng: photo.longitude,
+    );
+    if (!launched && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: const Text(
-            'Maps link copied — paste in your browser',
-          ),
+          content: const Text('Could not open Maps'),
           backgroundColor: _accent,
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(
@@ -413,7 +999,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                   shape: BoxShape.circle,
                 ),
                 child: const Icon(
-                  Icons.image_not_supported_outlined,
+                  Icons.photo_library_outlined,
                   size: 36,
                   color: _accent,
                 ),
@@ -467,9 +1053,15 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
             surfaceTintColor: Colors.transparent,
             leading: _backButton(context, dark: false),
             actions: [
+              // Export this job as a PDF service record
+              IconButton(
+                icon: const Icon(Icons.ios_share_rounded, color: Colors.white),
+                tooltip: 'Export service record (PDF)',
+                onPressed: () => _exportJob(photo),
+              ),
               // Edit photo
               IconButton(
-                icon: const Icon(Icons.edit_rounded, color: Colors.white),
+                icon: const Icon(Icons.edit_outlined, color: Colors.white),
                 tooltip: 'Edit photo',
                 onPressed: () => _showEditSheet(photo),
               ),
@@ -515,70 +1107,17 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                         color: Colors.black87,
                         child: const Center(
                           child: Icon(
-                            Icons.broken_image_outlined,
+                            Icons.photo_library_outlined,
                             color: Colors.white38,
                             size: 48,
                           ),
                         ),
                       ),
                     ),
-                    // Gradient overlay at bottom
+                    // Photo ID badge (top-right, clear of the caption below)
                     Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
-                      height: 100,
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [
-                              Colors.transparent,
-                              Colors.black.withValues(alpha: 0.6),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                    // Service type badge
-                    Positioned(
-                      bottom: 16,
-                      left: 16,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 5,
-                        ),
-                        decoration: BoxDecoration(
-                          color: svcColor,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              _svcIcon(photo.serviceType),
-                              size: 13,
-                              color: Colors.white,
-                            ),
-                            const SizedBox(width: 5),
-                            Text(
-                              _svcLabel(photo.serviceType),
-                              style: const TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                                color: Colors.white,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    // Photo ID badge
-                    Positioned(
-                      bottom: 16,
-                      right: 16,
+                      top: 12,
+                      right: 12,
                       child: Container(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 10,
@@ -597,6 +1136,18 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                           ),
                         ),
                       ),
+                    ),
+                    // Live watermark caption drawn from the photo's metadata
+                    // (date / address / coordinates / service) so EVERY photo
+                    // shows it — including ones uploaded before the stamp was
+                    // baked in. Includes its own bottom gradient for contrast.
+                    WatermarkCaption(
+                      takenAtIso: photo.takenAt ?? photo.timestamp,
+                      address: photo.address ?? photo.zipCode ?? '',
+                      latitude: photo.latitude,
+                      longitude: photo.longitude,
+                      serviceLabel:
+                          categoryLabel(photo.category ?? photo.serviceType),
                     ),
                   ],
                 ),
@@ -619,10 +1170,17 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                   _buildStatusCard(photo),
                   const SizedBox(height: 10),
 
+                  // Status summary (only when job is closed)
+                  if (photo.status == 'completed' ||
+                      photo.status == 'archived') ...[
+                    _buildStatusSummaryCard(photo),
+                    const SizedBox(height: 10),
+                  ],
+
                   // Payout
                   if (photo.payRate != null) ...[
                     _buildInfoCard(
-                      icon: Icons.attach_money_rounded,
+                      icon: Icons.attach_money,
                       label: 'Payout',
                       value: '\$${photo.payRate}',
                       iconColor: const Color(0xFF16A34A),
@@ -639,7 +1197,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                     trailing: _withinTsWindow(photo)
                         ? TextButton.icon(
                             onPressed: () => _editTimestamp(photo),
-                            icon: const Icon(Icons.edit_rounded, size: 15),
+                            icon: const Icon(Icons.edit_outlined, size: 15),
                             label: const Text('Edit'),
                             style: TextButton.styleFrom(
                               foregroundColor: _accent,
@@ -651,7 +1209,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                           )
                         : const Padding(
                             padding: EdgeInsets.only(top: 2),
-                            child: Icon(Icons.lock_outline_rounded,
+                            child: Icon(Icons.lock_outlined,
                                 size: 15, color: _inkSubtle),
                           ),
                   ),
@@ -664,7 +1222,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                   // Note card (if present)
                   if (photo.note != null && photo.note!.isNotEmpty) ...[
                     _buildInfoCard(
-                      icon: Icons.notes_rounded,
+                      icon: Icons.description_outlined,
                       label: 'Note',
                       value: photo.note!,
                       iconColor: const Color(0xFF0284C7),
@@ -861,12 +1419,14 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                 Icon(Icons.touch_app_rounded,
                     size: 13, color: _inkSubtle),
                 SizedBox(width: 6),
-                Text(
-                  'Tap any step to change the status',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: _inkSubtle,
-                    fontWeight: FontWeight.w500,
+                Expanded(
+                  child: Text(
+                    'Tap any stage to change status — you\'ll be asked to confirm',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: _inkSubtle,
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
                 ),
               ],
@@ -915,7 +1475,9 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
     final stepColor = _statusColor(step);
 
     return GestureDetector(
-      onTap: () => _setStatus(photo, step),
+      // Any stage is tappable now — forward, backward, or jump. The confirm
+      // dialog in _setStatus guards against accidental changes.
+      onTap: isActive ? null : () => _setStatus(photo, step),
       behavior: HitTestBehavior.opaque,
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -977,6 +1539,259 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
               ),
               textAlign: TextAlign.center,
               maxLines: 2,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Status summary (shown when job is completed / archived) ──────────────
+  Widget _buildStatusSummaryCard(PhotoModel photo) {
+    final steps = [
+      _SummaryStep(
+        status: 'open',
+        label: 'Opened',
+        icon: Icons.radio_button_unchecked,
+        timestamp: photo.createdAt ?? photo.timestamp,
+        color: _airportBlue,
+      ),
+      const _SummaryStep(
+        status: 'in_progress',
+        label: 'In Progress',
+        icon: Icons.sync_rounded,
+        timestamp: null,
+        color: Color(0xFFF59E0B),
+      ),
+      _SummaryStep(
+        status: 'completed',
+        label: 'Completed',
+        icon: Icons.check_circle_rounded,
+        timestamp: photo.completedAt,
+        color: _standardGreen,
+      ),
+      if (photo.status == 'archived')
+        const _SummaryStep(
+          status: 'archived',
+          label: 'Archived',
+          icon: Icons.inventory_2_rounded,
+          timestamp: null,
+          color: _inkSubtle,
+        ),
+    ];
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+      decoration: BoxDecoration(
+        color: _surface,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header
+          Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: _standardGreen.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(Icons.format_list_bulleted_rounded,
+                    size: 18, color: _standardGreen),
+              ),
+              const SizedBox(width: 12),
+              const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'STATUS SUMMARY',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: _inkSubtle,
+                      letterSpacing: 0.8,
+                    ),
+                  ),
+                  SizedBox(height: 1),
+                  Text(
+                    'Full job lifecycle',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: _ink,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          // Timeline rows
+          for (int i = 0; i < steps.length; i++) ...[
+            _buildSummaryRow(steps[i], isLast: i == steps.length - 1),
+          ],
+          // Closing line item — a distinct entry added when the job closes,
+          // summarising how it was closed (payout, closing note, time).
+          if (photo.status == 'completed' || photo.status == 'archived')
+            _buildClosingLineItem(photo),
+        ],
+      ),
+    );
+  }
+
+  // Distinct closing summary appended on close — relates the lifecycle to the
+  // concrete outcome of the job (what was paid, any closing note).
+  Widget _buildClosingLineItem(PhotoModel photo) {
+    final isArchived = photo.status == 'archived';
+    final details = <String>[];
+    if (photo.payRate != null) details.add('Payout \$${photo.payRate}');
+    if (photo.note != null && photo.note!.trim().isNotEmpty) {
+      details.add(photo.note!.trim());
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: _accentSoft,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: _accent.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 32,
+            height: 32,
+            decoration: const BoxDecoration(
+              color: _accent,
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              isArchived ? Icons.inventory_2_rounded : Icons.task_alt_rounded,
+              size: 17,
+              color: Colors.white,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        isArchived ? 'Job Closed & Archived' : 'Job Closed',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: _accent,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      _formatTs(photo.completedAt),
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: _inkMuted,
+                      ),
+                    ),
+                  ],
+                ),
+                if (details.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    details.join('  •  '),
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: _inkMuted,
+                      height: 1.35,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSummaryRow(_SummaryStep step, {required bool isLast}) {
+    final formattedTs = step.timestamp != null
+        ? _formatTs(step.timestamp)
+        : '—';
+
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Left: icon + vertical connector
+          SizedBox(
+            width: 36,
+            child: Column(
+              children: [
+                Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: step.color.withValues(alpha: 0.12),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(step.icon, size: 17, color: step.color),
+                ),
+                if (!isLast)
+                  Expanded(
+                    child: Container(
+                      width: 2,
+                      margin: const EdgeInsets.symmetric(vertical: 4),
+                      decoration: BoxDecoration(
+                        color: _separator,
+                        borderRadius: BorderRadius.circular(1),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 14),
+          // Right: label + timestamp
+          Expanded(
+            child: Padding(
+              padding: EdgeInsets.only(bottom: isLast ? 0 : 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(height: 8),
+                  Text(
+                    step.label,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: step.color,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    formattedTs,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: _inkMuted,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ],
@@ -1122,13 +1937,21 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                       ),
                     ),
                     const SizedBox(height: 4),
-                    // Human-readable address (ZIP inline at end)
-                    Text(
-                      locationDisplay,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: _ink,
+                    // Human-readable address — tap to open in Maps
+                    GestureDetector(
+                      onTap: () {
+                        HapticFeedback.lightImpact();
+                        _openInMaps(photo);
+                      },
+                      child: Text(
+                        locationDisplay,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: _accent,
+                          decoration: TextDecoration.underline,
+                          decorationColor: _accent,
+                        ),
                       ),
                     ),
                     const SizedBox(height: 4),
@@ -1156,13 +1979,13 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                   icon: Icons.map_rounded,
                   label: 'Open in Maps',
                   color: _accent,
-                  onTap: () => _openInMaps(photo.latitude, photo.longitude),
+                  onTap: () => _openInMaps(photo),
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
                 child: _actionBtn(
-                  icon: Icons.copy_rounded,
+                  icon: Icons.content_copy_rounded,
                   label: 'Copy Coords',
                   color: const Color(0xFF0284C7),
                   onTap: () => _copyCoords(photo.latitude, photo.longitude),
@@ -1405,7 +2228,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
             shape: BoxShape.circle,
           ),
           child: Icon(
-            Icons.arrow_back_ios_new_rounded,
+            Icons.chevron_left_rounded,
             size: 16,
             color: dark ? _ink : Colors.white,
           ),
@@ -1512,8 +2335,8 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
           children: [
             Icon(
               isError
-                  ? Icons.error_outline_rounded
-                  : Icons.check_circle_outline_rounded,
+                  ? Icons.error_outline
+                  : Icons.check_circle_outline,
               color: Colors.white,
               size: 18,
             ),
@@ -1709,7 +2532,7 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
             ),
             const SizedBox(height: 10),
             _sourceOption(
-              icon: Icons.photo_library_rounded,
+              icon: Icons.photo_library_outlined,
               label: 'Choose from gallery',
               onTap: () {
                 Navigator.pop(context);
@@ -1835,6 +2658,7 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
                     controller: _noteController,
                     maxLines: 4,
                     textCapitalization: TextCapitalization.sentences,
+                    inputFormatters: const [SentenceCaseInputFormatter()],
                     style: const TextStyle(fontSize: 14, color: _ink),
                     decoration: InputDecoration(
                       hintText: 'Add a note…',
@@ -1887,7 +2711,7 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
                           child: const Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.my_location_rounded,
+                              Icon(Icons.location_on_outlined,
                                   size: 13, color: _accent),
                               SizedBox(width: 4),
                               Text('Auto-fill',
@@ -1910,6 +2734,7 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
                     controller: _addressController,
                     maxLines: 2,
                     textCapitalization: TextCapitalization.words,
+                    inputFormatters: const [TitleCaseInputFormatter()],
                     style: const TextStyle(fontSize: 14, color: _ink),
                     decoration: InputDecoration(
                       hintText: '123 Main St, Dallas, TX 75001',
@@ -2108,4 +2933,24 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
           ),
         ),
       );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Data class for status summary timeline rows
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _SummaryStep {
+  const _SummaryStep({
+    required this.status,
+    required this.label,
+    required this.icon,
+    required this.timestamp,
+    required this.color,
+  });
+
+  final String status;
+  final String label;
+  final IconData icon;
+  final String? timestamp;
+  final Color color;
 }

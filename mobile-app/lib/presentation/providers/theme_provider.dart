@@ -6,22 +6,22 @@ final themeProvider = StateNotifierProvider<ThemeNotifier, ThemeState>(
   (ref) => ThemeNotifier(),
 );
 
-class ThemeState {
-  ThemeState({
-    this.mode = ThemeMode.light,
-    this.accentColor = const Color(0xFF7C3AED),
-  });
-  final ThemeMode mode;
-  final Color accentColor;
+/// Fixed brand accent — the accent-colour picker was removed; the app uses a
+/// single purple throughout so theming stays simple and fast.
+const Color kBrandAccent = Color(0xFF7C3AED);
 
-  ThemeState copyWith({
-    ThemeMode? mode,
-    Color? accentColor,
-  }) =>
-      ThemeState(
-        mode: mode ?? this.mode,
-        accentColor: accentColor ?? this.accentColor,
-      );
+class ThemeState {
+  ThemeState({this.mode = ThemeMode.light});
+  final ThemeMode mode;
+
+  // Kept so existing call sites (`themeState.accentColor`) keep working without
+  // a sweeping rename — it's now a constant, not user-configurable.
+  Color get accentColor => kBrandAccent;
+
+  bool get isDark => mode == ThemeMode.dark;
+
+  ThemeState copyWith({ThemeMode? mode}) =>
+      ThemeState(mode: mode ?? this.mode);
 }
 
 class ThemeNotifier extends StateNotifier<ThemeState> {
@@ -29,55 +29,38 @@ class ThemeNotifier extends StateNotifier<ThemeState> {
     _loadTheme();
   }
 
-  static const Map<String, Color> accentColors = {
-    'purple': Color(0xFF7C3AED),
-    'violet': Color(0xFF8B5CF6),
-    'indigo': Color(0xFF6366F1),
-    'black': Color(0xFF1F1F1F),
-    'plum': Color(0xFFA21CAF),
-    'slate': Color(0xFF475569),
-  };
+  static const _kDarkKey = 'isDarkMode';
 
   Future<void> _loadTheme() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final isDark = prefs.getBool('isDarkMode') ?? false;
-      final accentColorName = prefs.getString('accentColor') ?? 'purple';
-      final accentColor =
-          accentColors[accentColorName] ?? accentColors['purple']!;
-
-      state = ThemeState(
-        mode: isDark ? ThemeMode.dark : ThemeMode.light,
-        accentColor: accentColor,
-      );
+      final isDark = prefs.getBool(_kDarkKey) ?? false;
+      state = ThemeState(mode: isDark ? ThemeMode.dark : ThemeMode.light);
     } on Exception {
-      // Use default theme
+      // Keep the default light theme.
     }
   }
 
-  Future<void> toggleTheme() async {
+  /// Flip light/dark. The UI updates synchronously (instant) and persistence
+  /// happens in the background so the toggle never feels laggy.
+  void toggleTheme() {
+    final nowDark = state.mode != ThemeMode.dark;
+    state = state.copyWith(mode: nowDark ? ThemeMode.dark : ThemeMode.light);
+    _persist(nowDark);
+  }
+
+  void setDark(bool dark) {
+    if (state.isDark == dark) return;
+    state = state.copyWith(mode: dark ? ThemeMode.dark : ThemeMode.light);
+    _persist(dark);
+  }
+
+  Future<void> _persist(bool dark) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final isDark = state.mode == ThemeMode.dark;
-      await prefs.setBool('isDarkMode', !isDark);
-      state = state.copyWith(
-        mode: isDark ? ThemeMode.light : ThemeMode.dark,
-      );
+      await prefs.setBool(_kDarkKey, dark);
     } on Exception {
-      // Ignore errors
-    }
-  }
-
-  Future<void> setAccentColor(String colorName) async {
-    try {
-      final color = accentColors[colorName];
-      if (color != null) {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('accentColor', colorName);
-        state = state.copyWith(accentColor: color);
-      }
-    } on Exception {
-      // Ignore errors
+      // Non-fatal: the in-memory state already reflects the user's choice.
     }
   }
 }

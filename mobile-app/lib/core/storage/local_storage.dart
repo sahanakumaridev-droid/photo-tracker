@@ -70,6 +70,18 @@ class LocalStorage {
   /// Clear the saved pin draft.
   static Future<bool> clearPinDraft() async => _prefs.remove(_draftKey);
 
+  // ─── Permissions ──────────────────────────────────────────────────────────
+  static const String _permissionsRequestedKey = 'permissions_requested';
+
+  /// Whether the one-time permission batch (camera/photos/location) has already
+  /// been requested on this install.
+  static bool getPermissionsRequested() =>
+      _prefs.getBool(_permissionsRequestedKey) ?? false;
+
+  /// Mark the one-time permission batch as requested.
+  static Future<bool> setPermissionsRequested() async =>
+      _prefs.setBool(_permissionsRequestedKey, true);
+
   // ─── General ────────────────────────────────────────────────────────────
 
   /// Clear all data

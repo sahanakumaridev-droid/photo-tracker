@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react'
-import { getLog, exportLogEmail, exportExcel, getRecipients, addRecipient, deleteRecipient, updatePayRate, updateStatus, editTimestamp } from '../api'
+import { getLog, exportLogEmail, exportExcel, exportJobExcel, getProfilePhotos, getRecipients, addRecipient, deleteRecipient, updatePayRate, updateStatus, editTimestamp } from '../api'
 
 // Build a <input type="datetime-local"> value (YYYY-MM-DDTHH:MM) from an ISO string
 function toLocalInput(iso) {
@@ -27,20 +27,86 @@ function toPST(ts) {
   }) + ' PST'
 }
 
-// Build CSV string from rows
+// Shared export helpers — keep in sync with mobile and backend
+function exportSvcLabel(t) {
+  switch ((t || '').toLowerCase()) {
+    case 'rush': case 'asap': return 'ASAP'
+    case 'airport':           return 'Airport'
+    default:                  return 'Standard'
+  }
+}
+function exportDateTime(ts) {
+  if (!ts) return ''
+  const d = new Date(ts)
+  if (isNaN(d)) return ''
+  const pad = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+function exportIdCtrl(r) {
+  const pid  = r.profile_id ?? ''
+  const name = (r.profiles?.length > 0 ? r.profiles[0].name : r.profile_name) ?? ''
+  return pid && name ? `${pid} / ${name}` : String(pid || name || '')
+}
+
+const STATUS_LABEL = { open: 'Open', completed: 'Completed', archived: 'Archived' }
+
+// Build one Service-Record row for an attempt — matches mobile _jobRecord and
+// the backend _EXPORT_COLUMNS_JOB schema (8 columns). attemptNo: #1 = earliest.
+function jobRecord(p, attemptNo, agentName) {
+  let address = p.address || ''
+  const zip = p.zip_code || ''
+  if (!address) address = zip
+  else if (zip && !address.includes(zip)) address = `${address}, ${zip}`
+  const note = (p.note || '').trim()
+  const svc = SERVICE_META[p.category]?.label || exportSvcLabel(p.service_type)
+  const lat = Number(p.latitude), lng = Number(p.longitude)
+  return {
+    id_ctrl:         exportIdCtrl(p),
+    date_time:       exportDateTime(p.taken_at || p.timestamp),
+    service_ordered: svc,
+    address,
+    coordinates:     `${isNaN(lat) ? '' : lat.toFixed(6)}, ${isNaN(lng) ? '' : lng.toFixed(6)}`,
+    job_status:      STATUS_LABEL[p.status || 'open'] || 'Open',
+    agent:           agentName,
+    detailed_notes:  note || `Attempt #${attemptNo}`,
+  }
+}
+
+// Logged-in agent's display name (local-part of email), for the Agent column
+function currentAgentName() {
+  try {
+    const u = JSON.parse(localStorage.getItem('geo_user')) || {}
+    const e = u.email || ''
+    return e.includes('@') ? e.split('@')[0] : (e || u.name || '')
+  } catch { return '' }
+}
+
+// Fetch a photo and return { filename, content_b64, mimetype } for emailing
+async function photoAttachment(p, attemptNo) {
+  try {
+    const res  = await fetch(p.image_url)
+    const blob = await res.blob()
+    const b64  = await new Promise((resolve, reject) => {
+      const fr = new FileReader()
+      fr.onload  = () => resolve(String(fr.result).split(',')[1])
+      fr.onerror = reject
+      fr.readAsDataURL(blob)
+    })
+    return { filename: `attempt_${attemptNo}_${p.id}.jpg`, content_b64: b64, mimetype: blob.type || 'image/jpeg' }
+  } catch { return null }
+}
+
+// Build CSV string from rows — canonical 5-column format
 function buildCSV(rows) {
-  const headers = ['ID', 'Timestamp (PST)', 'Profile(s)', 'Status', 'Address', 'Latitude', 'Longitude', 'Note']
-  const escape = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
+  const headers = ['ID & Cntrl #', 'Date & Time', 'Service Ordered', 'Address', 'Detailed Notes']
+  const escape  = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
   const lines = [
     headers.join(','),
     ...rows.map(r => [
-      r.id,
-      escape(toPST(r.timestamp)),
-      escape((r.profiles?.length > 0 ? r.profiles : [{ name: r.profile_name }]).map(p => p.name).join(' | ')),
-      escape(r.service_type),
-      escape(r.address || ''),
-      r.latitude?.toFixed(6) ?? '',
-      r.longitude?.toFixed(6) ?? '',
+      escape(exportIdCtrl(r)),
+      escape(exportDateTime(r.timestamp)),
+      escape(exportSvcLabel(r.service_type)),
+      escape(r.address || r.zip_code || ''),
       escape(r.note || ''),
     ].join(','))
   ]
@@ -102,6 +168,9 @@ export default function Log() {
   const [editingTs,    setEditingTs]    = useState(false)
   const [tsInput,      setTsInput]      = useState('')
   const [savingTs,     setSavingTs]     = useState(false)
+  // Single-job "Service Record" export (mirrors mobile photo-detail export)
+  const [jobExporting, setJobExporting] = useState(false)
+  const [jobLatestOnly, setJobLatestOnly] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -431,17 +500,11 @@ export default function Log() {
 
   // ── F11: Excel export + saved recipients ────────────────────────────────
   const buildExportRecords = () => exportRows.map(r => ({
-    id: r.id,
-    timestamp: toPST(r.timestamp),
-    profile_name: (r.profiles?.length ? r.profiles.map(p => p.name).join(', ') : r.profile_name),
-    service_type: r.service_type,
-    category: r.category || 'standard',
-    pay_rate: r.pay_rate ?? '',
-    address: r.address || '',
-    zip_code: r.zip_code || '',
-    latitude: r.latitude,
-    longitude: r.longitude,
-    note: r.note || '',
+    id_ctrl:         exportIdCtrl(r),
+    date_time:       exportDateTime(r.timestamp),
+    service_ordered: exportSvcLabel(r.service_type),
+    address:         r.address || r.zip_code || '',
+    detailed_notes:  r.note || '',
   }))
 
   const handleExportExcel = async () => {
@@ -489,6 +552,77 @@ export default function Log() {
   const toggleRecipient = (id) => setSelectedRecipients(prev => {
     const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n
   })
+
+  // Download an .xlsx returned by the server as base64
+  const downloadXlsxB64 = (b64, filename) => {
+    const bin = atob(b64)
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    downloadFile(bytes, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  }
+
+  // Single-job Service Record export (mode: 'email' | 'download').
+  // A "job" = every attempt (photo) for the same profile, newest-first.
+  const handleExportServiceRecord = async (mode) => {
+    if (!detailItem || jobExporting) return
+    if (mode === 'email') {
+      const targets = recipients.filter(r => selectedRecipients.has(r.id)).map(r => r.email)
+      if (targets.length === 0) { showToast('⚠️ Select at least one saved recipient.'); return }
+    }
+    setJobExporting(true)
+    try {
+      // Gather all attempts for this job. Fall back to the single open record.
+      let attempts = [detailItem]
+      if (detailItem.profile_id != null) {
+        try {
+          const photos = await getProfilePhotos(detailItem.profile_id)
+          if (photos && photos.length) attempts = photos
+        } catch { /* offline / no extra attempts — use the open record */ }
+      }
+      attempts = [...attempts].sort((a, b) =>
+        String(b.taken_at || b.timestamp || '').localeCompare(String(a.taken_at || a.timestamp || '')))
+      const selected = jobLatestOnly ? attempts.slice(0, 1) : attempts
+      const total = attempts.length
+      const agent = currentAgentName()
+
+      const records = selected.map(p => jobRecord(p, total - attempts.indexOf(p), agent))
+
+      const safe = (detailItem.profile_name || 'job').replace(/[^A-Za-z0-9_-]+/g, '_')
+      const baseName = `service-record-${safe}`
+
+      if (mode === 'email') {
+        const targets = recipients.filter(r => selectedRecipients.has(r.id)).map(r => r.email)
+        // Attach the watermarked photos (stored image is already stamped at capture)
+        const attachments = []
+        for (const p of selected) {
+          const a = await photoAttachment(p, total - attempts.indexOf(p))
+          if (a) attachments.push(a)
+        }
+        const res = await exportJobExcel({
+          recipients: targets, records, attachments,
+          subject: `Service Record — ${detailItem.profile_name || ''}`,
+          body: `Service record for ${detailItem.profile_name || 'this job'} attached.`,
+          base_name: baseName,
+        })
+        if (res.file_base64) {
+          downloadXlsxB64(res.file_base64, res.filename || `${baseName}.xlsx`)
+          showToast('📥 Email not set up on the server — Service Record downloaded')
+        } else {
+          showToast(`✅ Service record emailed to ${targets.length} recipient${targets.length !== 1 ? 's' : ''}`)
+        }
+      } else {
+        const res = await exportJobExcel({ recipients: [], records, base_name: baseName })
+        if (res.file_base64) {
+          downloadXlsxB64(res.file_base64, res.filename || `${baseName}.xlsx`)
+          showToast(`✅ Service Record downloaded — ${records.length} attempt${records.length !== 1 ? 's' : ''}`)
+        }
+      }
+    } catch (err) {
+      showToast(`❌ Export failed: ${err.response?.data?.detail || err.message || 'Network error'}`)
+    } finally {
+      setJobExporting(false)
+    }
+  }
 
   // 6. Send email via backend SMTP/SendGrid (from export panel)
   const handleSendEmail = () => {
@@ -645,6 +779,60 @@ export default function Log() {
                   {detailItem.note}
                 </div>
               )}
+
+              {/* ── Single-job Service Record export (detailed Excel + photos) ── */}
+              <div style={{ border: '1px solid #e2e8f0', borderRadius: 12, padding: 14, marginTop: 16, background: '#fbfcfe' }}>
+                <div style={{ fontWeight: 800, fontSize: 11, color: '#94a3b8', letterSpacing: '0.05em', marginBottom: 10 }}>📄 SERVICE RECORD</div>
+
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#475569', marginBottom: 10, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={jobLatestOnly} onChange={e => setJobLatestOnly(e.target.checked)} style={{ marginBottom: 0, width: 'auto' }} />
+                  Latest attempt only <span style={{ fontSize: 11, color: '#94a3b8' }}>(otherwise every attempt for this profile)</span>
+                </label>
+
+                {/* Recipient chips (shared with the Excel export panel) */}
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                  {recipients.length === 0 && <span style={{ fontSize: 12, opacity: 0.5 }}>No saved recipients — add one below or just download.</span>}
+                  {recipients.map(r => {
+                    const sel = selectedRecipients.has(r.id)
+                    return (
+                      <span key={r.id} onClick={() => toggleRecipient(r.id)}
+                        style={{
+                          display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer',
+                          fontSize: 12, fontWeight: 600, padding: '4px 9px', borderRadius: 20,
+                          border: '1px solid ' + (sel ? '#16a34a' : '#cbd5e1'),
+                          background: sel ? '#16a34a' : 'transparent', color: sel ? '#fff' : '#64748b',
+                        }}>
+                        {sel ? '✓ ' : ''}{r.label || r.email}
+                      </span>
+                    )
+                  })}
+                </div>
+
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+                  <input type="email" placeholder="add@recipient.com" value={newRecipient}
+                    onChange={e => setNewRecipient(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleAddRecipient()}
+                    style={{ marginBottom: 0, width: 190, fontSize: 12 }} />
+                  <button className="btn btn-outline" style={{ fontSize: 12, padding: '7px 12px' }}
+                    onClick={handleAddRecipient}>+ Add</button>
+                </div>
+
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button className="btn btn-green" style={{ fontSize: 12, padding: '8px 14px' }}
+                    onClick={() => handleExportServiceRecord('email')}
+                    disabled={jobExporting || selectedRecipients.size === 0}>
+                    {jobExporting ? 'Working…' : '✉ Email Service Record'}
+                  </button>
+                  <button className="btn btn-dark" style={{ fontSize: 12, padding: '8px 14px' }}
+                    onClick={() => handleExportServiceRecord('download')}
+                    disabled={jobExporting}>
+                    {jobExporting ? 'Working…' : '⬇ Download .xlsx'}
+                  </button>
+                </div>
+                <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>
+                  Detailed sheet (one row per attempt) with Lat/Long, status &amp; agent. Email also attaches the photo(s).
+                </div>
+              </div>
             </div>
           </div>
         </div>

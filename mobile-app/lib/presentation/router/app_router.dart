@@ -4,6 +4,8 @@ import 'package:go_router/go_router.dart';
 
 import '../../../data/models/profile_model.dart';
 import '../providers/auth_provider.dart';
+import '../providers/photo_provider.dart';
+import '../providers/profile_provider.dart';
 import '../screens/auth/login_screen.dart';
 import '../screens/auth/onboarding_screen.dart';
 import '../screens/auth/splash_screen.dart';
@@ -19,6 +21,7 @@ import '../screens/schedule/schedule_screen.dart';
 import '../screens/settings/profiles_list_screen.dart';
 import '../screens/settings/profiles_management_screen.dart';
 import '../screens/settings/settings_screen_v2.dart';
+import '../screens/profiles/profile_detail_screen.dart';
 import '../screens/upload/upload_screen_v2.dart';
 import '../widgets/common/bottom_nav.dart';
 
@@ -40,8 +43,9 @@ final routerProvider = Provider<GoRouter>((ref) {
       if (location == '/splash') return null;
 
       if (auth.isAuthenticated) {
-        // Logged in — keep the user out of the auth funnel.
-        if (location == '/login' || location == '/onboarding') return '/home';
+        // Logged in — keep the user out of the auth funnel and land on the Map
+        // (the default screen for field work). Home stays available via its tab.
+        if (location == '/login' || location == '/onboarding') return '/map';
         return null;
       }
 
@@ -119,6 +123,13 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state) => const ProfilesListScreen(),
       ),
       GoRoute(
+        path: '/profile/:id',
+        builder: (context, state) {
+          final id = int.tryParse(state.pathParameters['id'] ?? '') ?? 0;
+          return ProfileDetailScreen(profileId: id);
+        },
+      ),
+      GoRoute(
         path: '/photo/:id',
         builder: (context, state) {
           final id = int.tryParse(state.pathParameters['id'] ?? '') ?? 0;
@@ -136,50 +147,52 @@ final routerProvider = Provider<GoRouter>((ref) {
   );
 });
 
-class _ShellScaffold extends StatefulWidget {
-
+class _ShellScaffold extends ConsumerStatefulWidget {
   const _ShellScaffold({required this.child});
   final Widget child;
 
   @override
-  State<_ShellScaffold> createState() => _ShellScaffoldState();
+  ConsumerState<_ShellScaffold> createState() => _ShellScaffoldState();
 }
 
-class _ShellScaffoldState extends State<_ShellScaffold> {
-  int _selectedIndex = 0;
+class _ShellScaffoldState extends ConsumerState<_ShellScaffold> {
+  // Index map (matches BottomNav): 0 Home · 1 Map · 2 Earnings · 3 Log · 4
+  // Upload. The selected tab is derived from the live route so landing on the
+  // Map (the default screen) highlights Map, not Home.
+  int _indexForLocation(String loc) {
+    if (loc.startsWith('/home')) return 0;
+    if (loc.startsWith('/map')) return 1;
+    if (loc.startsWith('/earnings')) return 2;
+    if (loc.startsWith('/log')) return 3;
+    if (loc.startsWith('/upload')) return 4;
+    return -1; // settings/archive/etc — no tab highlighted
+  }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
+  Widget build(BuildContext context) {
+    final location = GoRouterState.of(context).matchedLocation;
+    final currentIndex = _indexForLocation(location);
+    return Scaffold(
       body: widget.child,
       bottomNavigationBar: BottomNav(
-        currentIndex: _selectedIndex,
-        onTap: (index) {
-          setState(() => _selectedIndex = index);
-          _navigateToTab(index);
-        },
+        currentIndex: currentIndex,
+        onTap: (index) => _onTabTap(index, currentIndex),
       ),
     );
+  }
 
-  void _navigateToTab(int index) {
+  void _onTabTap(int index, int currentIndex) {
+    // Tapping the current tab again triggers a data refresh (Home or Map).
+    if (index == currentIndex && (index == 0 || index == 1)) {
+      ref.invalidate(photosProvider);
+      ref.invalidate(profilesProvider);
+    }
     switch (index) {
-      case 0:
-        context.go('/home');
-        break;
-      case 1:
-        context.go('/map');
-        break;
-      case 2:
-        context.go('/earnings');
-        break;
-      case 3:
-        context.go('/log');
-        break;
-      case 4:
-        context.go('/settings');
-        break;
-      case 5:
-        context.go('/upload');
-        break;
+      case 0: context.go('/home'); break;
+      case 1: context.go('/map'); break;
+      case 2: context.go('/earnings'); break;
+      case 3: context.go('/log'); break;
+      case 4: context.go('/upload'); break;
     }
   }
 }

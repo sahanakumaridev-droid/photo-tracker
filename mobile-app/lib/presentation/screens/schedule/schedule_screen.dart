@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../config/theme.dart';
@@ -24,10 +25,10 @@ class _Queue {
 }
 
 const _queues = [
-  _Queue('asap', 'ASAP', Color(0xFFEF4444), Icons.bolt_rounded),
-  _Queue('special', 'Special', Color(0xFFF59E0B), Icons.star_rounded),
-  _Queue('next_day', 'Next Day', Color(0xFFEAB308), Icons.fast_forward_rounded),
-  _Queue('standard', 'Standard', Color(0xFF10B981), Icons.check_circle_rounded),
+  _Queue('asap', 'ASAP', Color(0xFFEF4444), CupertinoIcons.bolt_fill),
+  _Queue('special', 'Special', Color(0xFFF59E0B), CupertinoIcons.star_fill),
+  _Queue('next_day', 'Next Day', Color(0xFFEAB308), CupertinoIcons.forward_end_fill),
+  _Queue('standard', 'Standard', Color(0xFF10B981), CupertinoIcons.checkmark_circle_fill),
 ];
 
 class _ScheduleScreenState extends ConsumerState<ScheduleScreen>
@@ -353,7 +354,7 @@ class _ScheduleScreenState extends ConsumerState<ScheduleScreen>
                     Row(
                       children: [
                         const Icon(
-                          Icons.place_outlined,
+                          CupertinoIcons.map_pin,
                           size: 13,
                           color: Color(0xFF9CA3AF),
                         ),
@@ -386,7 +387,7 @@ class _ScheduleScreenState extends ConsumerState<ScheduleScreen>
                           _chip(
                             distLabel,
                             const Color(0xFF0284C7),
-                            icon: Icons.near_me_rounded,
+                            icon: CupertinoIcons.location_fill,
                           ),
                         ],
                       ],

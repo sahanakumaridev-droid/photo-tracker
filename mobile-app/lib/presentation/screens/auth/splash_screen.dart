@@ -49,7 +49,8 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
     if (!mounted) return;
     final auth = ref.read(authProvider);
     if (auth.isAuthenticated) {
-      context.go('/home');
+      // Default landing is the Map (field-work first); Home stays a tab away.
+      context.go('/map');
     } else {
       context.go(auth.seenOnboarding ? '/login' : '/onboarding');
     }
@@ -82,8 +83,9 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // ── Brand logo — shared SVG used across the app ──
-                  const AppLogo(size: 104, radius: 28, withShadow: true),
+                  // ── Brand logo — white tint so the purple mark reads on
+                  //    the purple splash gradient. ──
+                  const AppLogo(size: 112, tint: Colors.white),
                   const SizedBox(height: 28),
                   // ── App name — same "GeoTag" style as home bar ──
                   RichText(

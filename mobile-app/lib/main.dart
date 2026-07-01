@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 import 'app.dart';
 import 'core/storage/local_storage.dart';
+import 'core/storage/upload_queue.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -15,14 +15,13 @@ void main() async {
   // Initialize local storage
   await LocalStorage.init();
 
-  // ── Request all required permissions on first launch ──────────────────
-  // Camera is the primary feature — request it first so the dialog appears
-  // before the user tries to upload anything.
-  await [
-    Permission.camera,
-    Permission.locationWhenInUse,
-    Permission.photos,
-  ].request();
+  // Offline upload queue — opens its Hive box and starts the auto-retry loop.
+  // The actual network uploader is attached once Riverpod providers are ready
+  // (see _QueueAttacher in app.dart).
+  await UploadQueueService.instance.init();
+
+  // Permissions (camera, photos, location) are requested on the user's first
+  // successful login — see requestAppPermissions() in core/utils/permissions.dart.
 
   runApp(
     const ProviderScope(

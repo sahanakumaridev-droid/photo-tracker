@@ -1,14 +1,13 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 
-/// The GeoTag brand logo, rendered from a single shared SVG so it stays
-/// consistent everywhere (splash, login, home header, etc.).
+/// The GeoTag brand logo — the bare purple ribbon mark, rendered from one
+/// shared asset so it stays consistent everywhere (splash, login, home header,
+/// map header). No tile/background: just the mark.
 ///
-/// The asset is icon-only (brand-purple rounded background + white pin mark +
-/// green accent dot) — the "GeoTag" wordmark is rendered separately by each
-/// screen, so callers only choose a [size]. Use [withShadow] for floating
-/// placements (splash / login) and [borderColor] when the logo sits on a
-/// similarly-coloured surface (the purple header).
+/// The mark is solid purple on transparent, so it reads on light and dark
+/// surfaces as-is. On the purple splash gradient it would disappear, so callers
+/// there pass [tint] (white) to recolour it. Callers choose a [size]; [radius],
+/// [withShadow] and [borderColor] are kept for API compatibility.
 class AppLogo extends StatelessWidget {
   const AppLogo({
     super.key,
@@ -16,52 +15,42 @@ class AppLogo extends StatelessWidget {
     this.radius,
     this.withShadow = false,
     this.borderColor,
+    this.tint,
   });
 
   /// Width & height of the (square) logo in logical pixels.
   final double size;
 
-  /// Corner radius. Defaults to ~26% of [size] for an app-icon look.
+  /// Retained for API compatibility (no longer used — there's no tile).
   final double? radius;
 
-  /// Drop a soft shadow behind the logo (nice on plain backgrounds).
+  /// Retained for API compatibility.
   final bool withShadow;
 
-  /// Optional hairline border — helps the logo read on indigo surfaces.
+  /// Retained for API compatibility.
   final Color? borderColor;
 
-  static const String _asset = 'assets/geotag_logo.svg';
+  /// Recolour the mark (e.g. white on the purple splash gradient). When null
+  /// the mark keeps its native brand purple.
+  final Color? tint;
+
+  static const String _asset = 'assets/geotag_mark.png';
 
   @override
   Widget build(BuildContext context) {
-    final r = radius ?? size * 0.26;
-    return Container(
+    Widget mark = Image.asset(
+      _asset,
       width: size,
       height: size,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(r),
-        border: borderColor != null
-            ? Border.all(color: borderColor!, width: 1.5)
-            : null,
-        boxShadow: withShadow
-            ? [
-                BoxShadow(
-                  color: const Color(0xFF7C3AED).withValues(alpha: 0.35),
-                  blurRadius: 28,
-                  offset: const Offset(0, 12),
-                ),
-              ]
-            : null,
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(r),
-        child: SvgPicture.asset(
-          _asset,
-          width: size,
-          height: size,
-          fit: BoxFit.cover,
-        ),
-      ),
+      fit: BoxFit.contain,
+      filterQuality: FilterQuality.high,
     );
+    if (tint != null) {
+      mark = ColorFiltered(
+        colorFilter: ColorFilter.mode(tint!, BlendMode.srcIn),
+        child: mark,
+      );
+    }
+    return SizedBox(width: size, height: size, child: mark);
   }
 }
