@@ -17,6 +17,10 @@ function MapPicker({ location, onPick }) {
   return location ? <Marker position={[location.lat, location.lng]} icon={pinIcon} /> : null
 }
 
+// Delivery Style — fixed choices, sent to the backend as `completion_type`
+// (kept in sync with the mobile upload screen).
+const DELIVERY_STYLES = ['Personal', 'Sub on 1st', 'Sub on 3rd', 'Posting', 'Stake Out']
+
 // Priority categories — the single source of truth, shared with the Profiles
 // page and mobile (asap / special / next_day / standard).
 const CATEGORIES = [
@@ -120,6 +124,7 @@ export default function Upload({ showToast }) {
   const [address,      setAddress]      = useState('')
   const [addrLoading,  setAddrLoading]  = useState(false)
   const [note,         setNote]         = useState('')
+  const [deliveryStyle, setDeliveryStyle] = useState('')        // stored as completion_type
   const [category,     setCategory]     = useState('standard')  // F2/F4 service level
   const [payRate,      setPayRate]      = useState('')          // F7 pay rate
   const [takenAt,      setTakenAt]      = useState(null)        // F6 capture time (EXIF)
@@ -134,7 +139,6 @@ export default function Upload({ showToast }) {
   // inline new profile
   const [showNewProf,  setShowNewProf]  = useState(false)
   const [newProfName,  setNewProfName]  = useState('')
-  const [newProfSvc,   setNewProfSvc]   = useState('standard')
   const [creatingProf, setCreatingProf] = useState(false)
 
   const fileRef   = useRef()
@@ -171,12 +175,13 @@ export default function Upload({ showToast }) {
     }
   }, [location])
 
-  // F1 — when location changes, look for an existing pin within 100 ft so the
+  // F1 — when location changes, look for an existing pin within 1 mile so the
   // user can append this attempt instead of creating a duplicate pin.
   useEffect(() => {
     if (!location) { setNearbyPins([]); return }
     let alive = true
-    getNearby(location.lat, location.lng, 100)
+    // Proximity for searchable/reusable profiles on upload: 1 mile (5280 ft).
+    getNearby(location.lat, location.lng, 5280)
       .then(pins => {
         if (!alive) return
         setNearbyPins(Array.isArray(pins) ? pins : [])
@@ -203,6 +208,7 @@ export default function Upload({ showToast }) {
       if (!hasContent) return
       if (d.note)     setNote(d.note)
       if (d.category) setCategory(d.category)
+      if (DELIVERY_STYLES.includes(d.deliveryStyle)) setDeliveryStyle(d.deliveryStyle)
       if (d.payRate)  setPayRate(d.payRate)
       if (d.address)  setAddress(d.address)
       if (d.location) setLocation(d.location)
@@ -227,21 +233,21 @@ export default function Upload({ showToast }) {
   useEffect(() => {
     if (!didRestore.current) return
     const draft = {
-      note, category, payRate, address,
+      note, category, deliveryStyle, payRate, address,
       selectedId: selected ? selected.id : null,
       location,
     }
     const empty = !note && !payRate && !address && category === 'standard' &&
-      !selected && !location
+      !deliveryStyle && !selected && !location
     try {
       if (empty) localStorage.removeItem(DRAFT_KEY)
       else localStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
     } catch { /* ignore */ }
-  }, [note, category, payRate, address, selected, location])
+  }, [note, category, deliveryStyle, payRate, address, selected, location])
 
   const clearDraft = () => {
     try { localStorage.removeItem(DRAFT_KEY) } catch {}
-    setNote(''); setCategory('standard'); setPayRate('')
+    setNote(''); setCategory('standard'); setDeliveryStyle(''); setPayRate('')
     setSelected(null); setFile(null); setPreview(null); setTakenAt(null)
     setDraftRestored(false)
   }
@@ -344,14 +350,15 @@ export default function Upload({ showToast }) {
     setCreatingProf(true)
     const fd = new FormData()
     fd.append('name', newProfName)
-    fd.append('service_type', newProfSvc)
+    // Service level is chosen per-photo (the "Category" selector) during upload,
+    // not on the profile — so new profiles start at the default.
+    fd.append('service_type', 'standard')
     try {
       const created = await createProfile(fd)
       await loadProfiles()
       setSelected(created)
       setShowNewProf(false)
       setNewProfName('')
-      setNewProfSvc('standard')
       showToast('Profile created')
     } catch { showToast('Failed to create profile', 'error') }
     setCreatingProf(false)
@@ -367,6 +374,7 @@ export default function Upload({ showToast }) {
     fd.append('longitude',  location.lng)
     fd.append('address',    address)
     fd.append('note',       note)
+    if (deliveryStyle) fd.append('completion_type', deliveryStyle)  // Delivery Style
     fd.append('category',   category)                          // F2/F4 service level
     if (payRate !== '') fd.append('pay_rate', payRate)         // F7 pay rate
     // F6: send the photo's real capture time (EXIF); fall back to now
@@ -452,25 +460,8 @@ export default function Upload({ showToast }) {
                   autoFocus required
                   style={{marginBottom:10}}
                 />
-                <label style={{marginBottom:4}}>Priority category</label>
-                <div style={{display:'flex', gap:6, marginBottom:12, flexWrap:'wrap'}}>
-                  {CATEGORIES.map(c => {
-                    const sel = normalizeCat(newProfSvc) === c.value
-                    return (
-                      <button
-                        key={c.value} type="button"
-                        onClick={() => setNewProfSvc(c.value)}
-                        style={{
-                          flex:'1 1 40%', padding:'7px 10px', borderRadius:8, fontSize:12, fontWeight:700, cursor:'pointer',
-                          border:'1px solid ' + (sel ? c.color : 'rgba(0,0,0,0.12)'),
-                          background: sel ? c.color : 'transparent',
-                          color: sel ? '#fff' : '#64748b',
-                        }}
-                      >
-                        {c.emoji} {c.label}
-                      </button>
-                    )
-                  })}
+                <div style={{fontSize:11.5, color:'rgba(100,100,120,0.7)', marginBottom:12}}>
+                  You'll pick the Category when you upload the photo.
                 </div>
                 <button className="btn btn-dark" type="submit" disabled={creatingProf} style={{width:'100%', justifyContent:'center', fontSize:12}}>
                   {creatingProf ? 'Creating…' : '+ Create & Select'}
@@ -497,6 +488,25 @@ export default function Upload({ showToast }) {
                   </div>
                 ))
             }
+          </div>
+
+          {/* Delivery Style — below the profile, a fixed dropdown (sent as
+              completion_type). Replaces the old free-text "Type". */}
+          <div className="card">
+            <label style={{marginBottom:6, display:'block'}}>Delivery Style</label>
+            <select
+              value={deliveryStyle}
+              onChange={e => setDeliveryStyle(e.target.value)}
+              style={{
+                width:'100%', padding:'10px 13px', background:'rgba(0,0,0,0.04)',
+                border:'1px solid rgba(0,0,0,0.12)', borderRadius:9, fontSize:13.5,
+                color:'inherit', outline:'none', cursor:'pointer',
+                fontFamily:'Geist, sans-serif',
+              }}
+            >
+              <option value="">Select a delivery style…</option>
+              {DELIVERY_STYLES.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
           </div>
         </div>
 
@@ -619,7 +629,7 @@ export default function Upload({ showToast }) {
                 border:'1px solid rgba(202,138,4,0.35)', borderRadius:10, padding:'12px 14px',
               }}>
                 <div style={{fontSize:13, fontWeight:700, marginBottom:6, color:'#92400e'}}>
-                  📍 {nearbyPins.length} existing pin{nearbyPins.length > 1 ? 's' : ''} within 100&nbsp;ft
+                  📍 {nearbyPins.length} existing pin{nearbyPins.length > 1 ? 's' : ''} within 1&nbsp;mile
                 </div>
                 <div style={{fontSize:12, color:'#78716c', marginBottom:10}}>
                   Add this photo as another attempt to an existing pin instead of creating a duplicate?
@@ -699,8 +709,8 @@ export default function Upload({ showToast }) {
               <div className="step-title">Metadata</div>
             </div>
 
-            {/* F2/F4 — Service level */}
-            <label style={{marginBottom:4}}>Service Level</label>
+            {/* F2/F4 — Category (per-photo service level) */}
+            <label style={{marginBottom:4}}>Category</label>
             <div style={{display:'flex', gap:6, marginBottom:12, flexWrap:'wrap'}}>
               {[
                 { k:'asap',     l:'ASAP',     c:'#DC2626' },

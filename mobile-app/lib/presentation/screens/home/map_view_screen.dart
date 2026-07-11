@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -7,6 +10,7 @@ import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../../../core/storage/upload_queue.dart';
+import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../data/models/photo_model.dart';
 import '../../../data/models/profile_model.dart';
@@ -23,11 +27,9 @@ const _kSubtle   = Color(0xFF9CA3AF);
 const _kSep      = Color(0xFFE5E7EB);
 const _kAccent   = Color(0xFF7C3AED);
 
-// Category palette
+// Used for the "enable GPS" hint in the filter sheet. (Category colours now
+// come from categoryOf() in category.dart.)
 const _kAsap     = Color(0xFFEF4444);
-const _kNextDay  = Color(0xFFF59E0B);
-const _kStd      = Color(0xFF10B981);
-const _kSpecial  = Color(0xFF8B5CF6);
 
 // ── Static category definitions ───────────────────────────────────────────────
 const List<List<String>> _kCats = [
@@ -38,32 +40,6 @@ const List<List<String>> _kCats = [
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-Color _svcColor(String? t) {
-  switch ((t ?? '').toLowerCase()) {
-    case 'rush':    return const Color(0xFFEF4444);
-    case 'airport': return const Color(0xFF0EA5E9);
-    default:        return const Color(0xFF10B981);
-  }
-}
-
-Color _catColor(String c) {
-  switch (c) {
-    case 'asap':     return _kAsap;
-    case 'next_day': return _kNextDay;
-    case 'special':  return _kSpecial;
-    default:         return _kStd;
-  }
-}
-
-IconData _catIcon(String c) {
-  switch (c) {
-    case 'asap':     return Icons.bolt_rounded;
-    case 'next_day': return Icons.access_time_rounded;
-    case 'special':  return Icons.star_rounded;
-    default:         return Icons.check_circle_rounded;
-  }
-}
-
 Map<String, List<PhotoModel>> _groupByLocation(List<PhotoModel> photos) {
   final map = <String, List<PhotoModel>>{};
   for (final p in photos) {
@@ -74,13 +50,27 @@ Map<String, List<PhotoModel>> _groupByLocation(List<PhotoModel> photos) {
   return map;
 }
 
+// Breakdown by per-photo priority category (serviceType is legacy and now
+// always 'standard').
 Map<String, int> _countByService(List<PhotoModel> photos) {
   final counts = <String, int>{};
   for (final p in photos) {
-    final s = (p.serviceType ?? 'standard').toLowerCase();
+    final s = categoryOf(p.category).value;
     counts[s] = (counts[s] ?? 0) + 1;
   }
   return counts;
+}
+
+// Highest-priority category among a group of photos (asap > next_day >
+// special > standard), used to colour a multi-photo pin.
+const List<String> _kCategoryPriority = [
+  'asap', 'next_day', 'special', 'standard',
+];
+String _topCategory(List<PhotoModel> photos) {
+  for (final c in _kCategoryPriority) {
+    if (photos.any((p) => categoryOf(p.category).value == c)) return c;
+  }
+  return 'standard';
 }
 
 // ── Screen ────────────────────────────────────────────────────────────────────
@@ -165,11 +155,19 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
 
   void _fitAll(List<PhotoModel> photos) {
     if (photos.isEmpty) return;
-    var minLat = photos.first.latitude;
-    var maxLat = photos.first.latitude;
-    var minLng = photos.first.longitude;
-    var maxLng = photos.first.longitude;
-    for (final p in photos) {
+
+    // Fit to the main cluster, not the raw extent of every pin — a single
+    // wildly-distant outlier (bad GPS fix, a test upload made from another
+    // continent, etc.) would otherwise force the whole view out to a
+    // world-scale zoom. Outlier pins still render as markers; they just
+    // don't drive the camera fit.
+    final core = _mainCluster(photos);
+
+    var minLat = core.first.latitude;
+    var maxLat = core.first.latitude;
+    var minLng = core.first.longitude;
+    var maxLng = core.first.longitude;
+    for (final p in core) {
       if (p.latitude  < minLat) minLat = p.latitude;
       if (p.latitude  > maxLat) maxLat = p.latitude;
       if (p.longitude < minLng) minLng = p.longitude;
@@ -187,6 +185,28 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
         padding: const EdgeInsets.all(80),
       ),
     );
+  }
+
+  // Excludes pins farther than [_outlierThresholdMi] from the median position
+  // of the group, so a single stray outlier can't force "Fit All" out to a
+  // world-scale zoom. Falls back to the full list if that would exclude
+  // everything (e.g. the group is small or evenly spread out).
+  static const double _outlierThresholdMi = 250;
+  List<PhotoModel> _mainCluster(List<PhotoModel> photos) {
+    if (photos.length <= 2) return photos;
+
+    final lats = photos.map((p) => p.latitude).toList()..sort();
+    final lngs = photos.map((p) => p.longitude).toList()..sort();
+    final medianLat = lats[lats.length ~/ 2];
+    final medianLng = lngs[lngs.length ~/ 2];
+
+    final core = photos.where((p) {
+      final km = LocationService.calculateDistance(
+          medianLat, medianLng, p.latitude, p.longitude);
+      return km * 0.621371 <= _outlierThresholdMi;
+    }).toList();
+
+    return core.isEmpty ? photos : core;
   }
 
   @override
@@ -263,12 +283,582 @@ class _MapBody extends ConsumerStatefulWidget {
 class _MapBodyState extends ConsumerState<_MapBody> {
   final Set<String> _levels = {};
   bool _didInitialFit = false;
+  // Distance filter — a radius from the user (0–100 mi) OR a ZIP match. Only
+  // the most recently touched control applies (_distanceMode).
+  double _distanceMi = 100;
+  String _zip = '';
+  String? _distanceMode; // 'distance' | 'zip' | null
+  bool _zipBusy = false;
+  // Debounces the camera fit while the distance slider is being dragged, so
+  // it flies once the user settles instead of on every intermediate tick.
+  Timer? _filterFitDebounce;
 
   @override
-  Widget build(BuildContext context) {
-    final topPad = MediaQuery.of(context).padding.top;
+  void dispose() {
+    _filterFitDebounce?.cancel();
+    super.dispose();
+  }
 
-    // Apply profile filter
+  // Frames the map around whatever the distance/ZIP filter implies:
+  //  - distance mode: the full radius circle around the user's location
+  //  - zip mode (or cleared): the bounding box of the currently visible pins
+  void _fitToActiveFilter() {
+    if (!mounted) return;
+    if (_distanceMode == 'distance' && widget.userPosition != null) {
+      final lat = widget.userPosition!.latitude;
+      final lng = widget.userPosition!.longitude;
+      final radiusMi = _distanceMi < 0.5 ? 0.5 : _distanceMi;
+      final latDelta = radiusMi / 69.0;
+      final cosLat = math.cos(lat * math.pi / 180).abs();
+      final lngDelta = radiusMi / (69.0 * (cosLat < 0.01 ? 0.01 : cosLat));
+      widget.mapController.fitCamera(
+        CameraFit.bounds(
+          bounds: LatLngBounds(
+            LatLng(lat - latDelta, lng - lngDelta),
+            LatLng(lat + latDelta, lng + lngDelta),
+          ),
+          padding: const EdgeInsets.all(60),
+        ),
+      );
+      return;
+    }
+    widget.onFitAll(_visiblePhotos());
+  }
+
+  void _scheduleFilterFit() {
+    _filterFitDebounce?.cancel();
+    _filterFitDebounce =
+        Timer(const Duration(milliseconds: 300), _fitToActiveFilter);
+  }
+
+  bool get _anyFilterActive =>
+      widget.selectedProfile != 'all' ||
+      _levels.isNotEmpty ||
+      _distanceMode != null;
+
+  // Resets every active filter (profile, priority level, distance/ZIP) from
+  // outside the filter sheet — used by the "no pins match" empty state so a
+  // narrow filter never strands the user without a way back.
+  void _clearAllFilters() {
+    setState(() {
+      _levels.clear();
+      _distanceMode = null;
+      _zip = '';
+      _distanceMi = 100;
+    });
+    widget.onProfileChanged('all');
+    _scheduleFilterFit();
+  }
+
+  // A tappable "or"-filter bubble. [color] present → a service-level chip
+  // (soft tint + colour dot); null → a neutral action chip (select all/clear).
+  Widget _bubble(String label, bool active, Color? color, VoidCallback onTap) {
+    final c = color ?? _kAccent;
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        onTap();
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 9),
+        decoration: BoxDecoration(
+          color: active ? c : c.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(99),
+          border: Border.all(
+              color: active ? c : c.withValues(alpha: 0.30), width: 1.2),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (color != null)
+              Container(
+                width: 8,
+                height: 8,
+                margin: const EdgeInsets.only(right: 7),
+                decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: active ? Colors.white : c),
+              ),
+            Text(label,
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: active ? Colors.white : c)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // A soft grouped section container used inside the filter sheet.
+  Widget _sheetCard({required String title, required List<Widget> children}) =>
+      Container(
+        width: double.infinity,
+        margin: const EdgeInsets.only(bottom: 14),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF7F5FF),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title.toUpperCase(),
+                style: const TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.6,
+                    color: _kInkMuted)),
+            const SizedBox(height: 12),
+            ...children,
+          ],
+        ),
+      );
+
+  // Filter popup: Distance (slider 0–100 mi OR ZIP / "my zip", most-recent
+  // wins) + Priority-level bubbles with Select all / Clear selection. Changes
+  // apply live to the map behind the sheet.
+  void _showFilterSheet() {
+    HapticFeedback.lightImpact();
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetCtx) => StatefulBuilder(
+        builder: (sheetCtx, ssheet) {
+          // Runs the mutation exactly once, then rebuilds both the sheet and
+          // the map behind it. Must NOT call fn() twice — toggles like the
+          // priority-level bubbles (add-if-absent / remove-if-present) would
+          // cancel themselves out on the second call.
+          void refresh(VoidCallback fn) {
+            fn();
+            ssheet(() {});
+            setState(() {}); // rebuild the map behind the sheet
+          }
+
+          final hasLoc = widget.userPosition != null;
+          final anyActive = _levels.isNotEmpty || _distanceMode != null;
+          final resultCount = _visiblePhotos().length;
+
+          Widget modeChip(String text, bool on) => Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+                decoration: BoxDecoration(
+                  color: on ? _kAccent : Colors.transparent,
+                  borderRadius: BorderRadius.circular(99),
+                ),
+                child: Text(text,
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                        color: on ? Colors.white : _kInkMuted)),
+              );
+
+          return Container(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(sheetCtx).size.height * 0.88,
+            ),
+            decoration: const BoxDecoration(
+              color: _kSurface,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(height: 10),
+                Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                      color: Colors.black12,
+                      borderRadius: BorderRadius.circular(2)),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 12, 4),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.tune_rounded,
+                          size: 20, color: _kAccent),
+                      const SizedBox(width: 8),
+                      const Text('Filter pins',
+                          style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w800,
+                              color: _kInk)),
+                      const Spacer(),
+                      if (anyActive)
+                        TextButton(
+                          onPressed: () {
+                            refresh(() {
+                              _levels.clear();
+                              _distanceMode = null;
+                              _zip = '';
+                              _distanceMi = 100;
+                            });
+                            _scheduleFilterFit();
+                          },
+                          child: const Text('Reset'),
+                        ),
+                    ],
+                  ),
+                ),
+                Flexible(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(20, 6, 20, 4),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // ── Profile ──
+                        _sheetCard(
+                          title: 'Profile',
+                          children: [
+                            Container(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 12),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: _kSep),
+                              ),
+                              child: DropdownButtonHideUnderline(
+                                child: DropdownButton<String>(
+                                  isExpanded: true,
+                                  value: widget.selectedProfile,
+                                  borderRadius: BorderRadius.circular(12),
+                                  icon: const Icon(Icons.expand_more_rounded,
+                                      color: _kInkMuted),
+                                  style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                      color: _kInk),
+                                  items: [
+                                    const DropdownMenuItem(
+                                      value: 'all',
+                                      child: Text('All profiles'),
+                                    ),
+                                    ...widget.profiles.map(
+                                      (p) => DropdownMenuItem(
+                                        value: p.id.toString(),
+                                        child: Text(p.name,
+                                            overflow: TextOverflow.ellipsis),
+                                      ),
+                                    ),
+                                  ],
+                                  onChanged: (v) {
+                                    if (v == null) return;
+                                    widget.onProfileChanged(v);
+                                    ssheet(() {}); // reflect new selection
+                                  },
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        // ── Distance ──
+                        _sheetCard(
+                          title: 'Distance',
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text('Within my range',
+                                      style: TextStyle(
+                                          fontSize: 13.5,
+                                          fontWeight: FontWeight.w600,
+                                          color: _distanceMode == 'distance'
+                                              ? _kInk
+                                              : _kInkMuted)),
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: _distanceMode == 'distance'
+                                        ? _kAccent
+                                        : _kAccent.withValues(alpha: 0.10),
+                                    borderRadius: BorderRadius.circular(99),
+                                  ),
+                                  child: Text('${_distanceMi.round()} mi',
+                                      style: TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w800,
+                                          color: _distanceMode == 'distance'
+                                              ? Colors.white
+                                              : _kAccent)),
+                                ),
+                              ],
+                            ),
+                            SliderTheme(
+                              data: SliderTheme.of(sheetCtx).copyWith(
+                                trackHeight: 4,
+                                overlayShape: const RoundSliderOverlayShape(
+                                    overlayRadius: 16),
+                              ),
+                              child: Slider(
+                                value: _distanceMi,
+                                min: 0,
+                                max: 100,
+                                divisions: 100,
+                                activeColor: _kAccent,
+                                inactiveColor:
+                                    _kAccent.withValues(alpha: 0.15),
+                                onChanged: hasLoc
+                                    ? (v) {
+                                        refresh(() {
+                                          _distanceMi = v;
+                                          _distanceMode = 'distance';
+                                        });
+                                        _scheduleFilterFit();
+                                      }
+                                    : null,
+                              ),
+                            ),
+                            const Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 2),
+                              child: Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text('0 mi',
+                                      style: TextStyle(
+                                          fontSize: 11, color: _kInkMuted)),
+                                  Text('100 mi',
+                                      style: TextStyle(
+                                          fontSize: 11, color: _kInkMuted)),
+                                ],
+                              ),
+                            ),
+                            if (!hasLoc)
+                              const Padding(
+                                padding: EdgeInsets.only(top: 6),
+                                child: Text(
+                                    'Enable GPS to filter by distance.',
+                                    style: TextStyle(
+                                        fontSize: 12, color: _kAsap)),
+                              ),
+                            const SizedBox(height: 14),
+                            Row(
+                              children: [
+                                Expanded(
+                                    child: Container(
+                                        height: 1, color: _kSep)),
+                                const Padding(
+                                  padding:
+                                      EdgeInsets.symmetric(horizontal: 10),
+                                  child: Text('OR',
+                                      style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w800,
+                                          color: _kInkMuted)),
+                                ),
+                                Expanded(
+                                    child: Container(
+                                        height: 1, color: _kSep)),
+                              ],
+                            ),
+                            const SizedBox(height: 14),
+                            Row(
+                              children: [
+                                const Text('ZIP code',
+                                    style: TextStyle(
+                                        fontSize: 13.5,
+                                        fontWeight: FontWeight.w600,
+                                        color: _kInk)),
+                                const SizedBox(width: 8),
+                                modeChip('Active', _distanceMode == 'zip'),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextFormField(
+                                    initialValue: _zip,
+                                    keyboardType: TextInputType.number,
+                                    style: const TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w600),
+                                    decoration: InputDecoration(
+                                      hintText: 'e.g. 92101',
+                                      isDense: true,
+                                      filled: true,
+                                      fillColor: Colors.white,
+                                      contentPadding:
+                                          const EdgeInsets.symmetric(
+                                              horizontal: 14, vertical: 12),
+                                      enabledBorder: OutlineInputBorder(
+                                          borderRadius:
+                                              BorderRadius.circular(12),
+                                          borderSide: const BorderSide(
+                                              color: _kSep)),
+                                      focusedBorder: OutlineInputBorder(
+                                          borderRadius:
+                                              BorderRadius.circular(12),
+                                          borderSide: const BorderSide(
+                                              color: _kAccent, width: 1.5)),
+                                    ),
+                                    onChanged: (v) {
+                                      refresh(() {
+                                        _zip = v;
+                                        _distanceMode = 'zip';
+                                      });
+                                      _scheduleFilterFit();
+                                    },
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                SizedBox(
+                                  height: 46,
+                                  child: FilledButton.tonalIcon(
+                                    style: FilledButton.styleFrom(
+                                      backgroundColor:
+                                          _kAccent.withValues(alpha: 0.10),
+                                      foregroundColor: _kAccent,
+                                      shape: RoundedRectangleBorder(
+                                          borderRadius:
+                                              BorderRadius.circular(12)),
+                                    ),
+                                    onPressed: (hasLoc && !_zipBusy)
+                                        ? () async {
+                                            ssheet(() => _zipBusy = true);
+                                            final addr = await LocationService
+                                                .reverseGeocode(
+                                                    widget.userPosition!
+                                                        .latitude,
+                                                    widget.userPosition!
+                                                        .longitude);
+                                            final m = RegExp(r'\b\d{5}\b')
+                                                .firstMatch(addr ?? '');
+                                            refresh(() {
+                                              _zipBusy = false;
+                                              if (m != null) {
+                                                _zip = m.group(0)!;
+                                                _distanceMode = 'zip';
+                                              }
+                                            });
+                                            if (m != null) _scheduleFilterFit();
+                                          }
+                                        : null,
+                                    icon: _zipBusy
+                                        ? const SizedBox(
+                                            width: 14,
+                                            height: 14,
+                                            child: CircularProgressIndicator(
+                                                strokeWidth: 2))
+                                        : const Icon(Icons.my_location,
+                                            size: 16),
+                                    label: const Text('My zip'),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            if (_distanceMode != null)
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: TextButton.icon(
+                                  style: TextButton.styleFrom(
+                                      padding: const EdgeInsets.only(top: 8),
+                                      foregroundColor: _kInkMuted,
+                                      minimumSize: Size.zero,
+                                      tapTargetSize:
+                                          MaterialTapTargetSize.shrinkWrap),
+                                  onPressed: () {
+                                    refresh(() {
+                                      _distanceMode = null;
+                                      _zip = '';
+                                    });
+                                    _scheduleFilterFit();
+                                  },
+                                  icon: const Icon(Icons.close_rounded,
+                                      size: 15),
+                                  label: const Text('Clear distance filter'),
+                                ),
+                              ),
+                          ],
+                        ),
+                        // ── Priority level ──
+                        _sheetCard(
+                          title: 'Priority Level',
+                          children: [
+                            Wrap(
+                              spacing: 9,
+                              runSpacing: 9,
+                              children: [
+                                for (final c in _kCats)
+                                  _bubble(c[1], _levels.contains(c[0]),
+                                      categoryOf(c[0]).color, () {
+                                    refresh(() {
+                                      _levels.contains(c[0])
+                                          ? _levels.remove(c[0])
+                                          : _levels.add(c[0]);
+                                    });
+                                  }),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            Row(
+                              children: [
+                                _bubble(
+                                    'Select all',
+                                    _levels.length == _kCats.length,
+                                    null,
+                                    () => refresh(() {
+                                          _levels
+                                            ..clear()
+                                            ..addAll(
+                                                _kCats.map((c) => c[0]));
+                                        })),
+                                const SizedBox(width: 9),
+                                _bubble('Clear', _levels.isEmpty, null,
+                                    () => refresh(_levels.clear)),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                // ── Sticky footer: apply / show results ──
+                Container(
+                  padding: EdgeInsets.fromLTRB(
+                      20, 12, 20, MediaQuery.of(sheetCtx).padding.bottom + 14),
+                  decoration: const BoxDecoration(
+                    border: Border(top: BorderSide(color: _kSep)),
+                  ),
+                  child: SizedBox(
+                    width: double.infinity,
+                    height: 52,
+                    child: FilledButton(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: _kAccent,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14)),
+                      ),
+                      onPressed: () => Navigator.pop(sheetCtx),
+                      child: Text(
+                          resultCount == 0
+                              ? 'No pins match'
+                              : 'Show $resultCount '
+                                  'pin${resultCount == 1 ? '' : 's'}',
+                          style: const TextStyle(
+                              fontSize: 15.5, fontWeight: FontWeight.w800)),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // The photos visible on the map after all active filters (profile, service
+  // level, distance/zip) + a valid geotag. Shared by build() and the filter
+  // sheet's live result count.
+  List<PhotoModel> _visiblePhotos() {
     var filtered = widget.selectedProfile == 'all'
         ? widget.photos
         : widget.photos.where((p) {
@@ -277,16 +867,39 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                 (p.profiles?.any((pr) => pr.id.toString() == pid) ?? false);
           }).toList();
 
-    // Apply category filter (F2)
     if (_levels.isNotEmpty) {
       filtered = filtered
           .where((p) => _levels.contains(p.category ?? 'standard'))
           .toList();
     }
 
-    final geotagged = filtered
+    // Distance / ZIP filter (mutually exclusive; most-recent control wins).
+    if (_distanceMode == 'distance' && widget.userPosition != null) {
+      final ulat = widget.userPosition!.latitude;
+      final ulng = widget.userPosition!.longitude;
+      filtered = filtered.where((p) {
+        final km = LocationService.calculateDistance(
+            ulat, ulng, p.latitude, p.longitude);
+        return km * 0.621371 <= _distanceMi; // km → miles
+      }).toList();
+    } else if (_distanceMode == 'zip' && _zip.trim().isNotEmpty) {
+      final z = _zip.trim();
+      filtered = filtered.where((p) {
+        final pz = (p.zipCode ?? '').trim();
+        return pz.isNotEmpty ? pz == z : (p.address ?? '').contains(z);
+      }).toList();
+    }
+
+    return filtered
         .where((p) => p.latitude != 0 || p.longitude != 0)
         .toList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final topPad = MediaQuery.of(context).padding.top;
+
+    final geotagged = _visiblePhotos();
     final groups    = _groupByLocation(geotagged);
     final svcCounts = _countByService(geotagged);
     final hasData   = geotagged.isNotEmpty;
@@ -335,6 +948,23 @@ class _MapBodyState extends ConsumerState<_MapBody> {
               subdomains: const ['a', 'b', 'c', 'd'],
               userAgentPackageName: 'com.example.photo_tracker',
             ),
+            // Visualize the active radius filter
+            if (_distanceMode == 'distance' && widget.userPosition != null)
+              CircleLayer(
+                circles: [
+                  CircleMarker(
+                    point: LatLng(
+                      widget.userPosition!.latitude,
+                      widget.userPosition!.longitude,
+                    ),
+                    radius: _distanceMi * 1609.34,
+                    useRadiusInMeter: true,
+                    color: _kAccent.withValues(alpha: 0.07),
+                    borderColor: _kAccent,
+                    borderStrokeWidth: 2,
+                  ),
+                ],
+              ),
             // Photo pin markers
             MarkerLayer(
               markers: groups.entries.map((entry) {
@@ -342,8 +972,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                   ..sort((a, b) =>
                       (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
                 final latest  = sorted.first;
-                final hasRush = sorted.any((p) => p.serviceType == 'rush');
-                final color   = _svcColor(hasRush ? 'rush' : latest.serviceType);
+                final color   = categoryOf(_topCategory(sorted)).color;
                 final count   = sorted.length;
 
                 return Marker(
@@ -405,23 +1034,14 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                 pinCount: groups.length,
               ),
               const SizedBox(height: 10),
-              // Search bar
+              // Search bar — the tune icon opens the single filter sheet
+              // (profile + distance/ZIP + service level).
               _SearchBar(
                 controller: widget.searchCtrl,
-                profiles: widget.profiles,
-                selectedProfile: widget.selectedProfile,
-                onProfileChanged: widget.onProfileChanged,
-              ),
-              const SizedBox(height: 8),
-              // Category chips (F2) — leading "All" chip, then the four levels.
-              _CategoryChips(
-                selected: _levels,
-                onToggle: (cat) => setState(() {
-                  _levels.contains(cat)
-                      ? _levels.remove(cat)
-                      : _levels.add(cat);
-                }),
-                onClearAll: () => setState(_levels.clear),
+                activeCount: (widget.selectedProfile != 'all' ? 1 : 0) +
+                    _levels.length +
+                    (_distanceMode != null ? 1 : 0),
+                onFilterTap: _showFilterSheet,
               ),
               const SizedBox(height: 8),
               // Contextual hint
@@ -449,12 +1069,22 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                     : '/log',
               ),
             ),
+          )
+        // A narrow filter can legitimately match zero pins — don't just
+        // vanish the whole bottom card (and Fit All with it). Give the user
+        // a way back instead of stranding them.
+        else if (_anyFilterActive)
+          Positioned(
+            bottom: 16,
+            left: 14,
+            right: 14,
+            child: _EmptyFilterCard(onClearFilters: _clearAllFilters),
           ),
 
         // ── My-location FAB (must be LAST in Stack for highest z-index) ─
         Positioned(
           right: 14,
-          bottom: hasData ? 204 : 28,
+          bottom: (hasData || _anyFilterActive) ? 204 : 28,
           child: Material(
             color: Colors.transparent,
             child: _LocationFab(
@@ -594,18 +1224,16 @@ class _FloatingHeader extends StatelessWidget {
 class _SearchBar extends StatelessWidget {
   const _SearchBar({
     required this.controller,
-    required this.profiles,
-    required this.selectedProfile,
-    required this.onProfileChanged,
+    required this.activeCount,
+    required this.onFilterTap,
   });
   final TextEditingController controller;
-  final List<ProfileModel>    profiles;
-  final String                selectedProfile;
-  final ValueChanged<String>  onProfileChanged;
+  final int                  activeCount;
+  final VoidCallback         onFilterTap;
 
   @override
   Widget build(BuildContext context) {
-    final filtered = selectedProfile != 'all';
+    final filtered = activeCount > 0;
     return Container(
       height: 50,
       decoration: BoxDecoration(
@@ -639,54 +1267,13 @@ class _SearchBar extends StatelessWidget {
               ),
             ),
           ),
-          PopupMenuButton<String>(
-            onSelected: onProfileChanged,
-            color: _kSurface,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(14),
-            ),
-            itemBuilder: (_) => [
-              const PopupMenuItem(
-                value: 'all',
-                child: Row(
-                  children: [
-                    Icon(Icons.grid_view_rounded, size: 16, color: _kInkMuted),
-                    SizedBox(width: 8),
-                    Text(
-                      'All Profiles',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const PopupMenuDivider(),
-              ...profiles.map((p) => PopupMenuItem(
-                    value: p.id.toString(),
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 10,
-                          height: 10,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: _svcColor(p.serviceType),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          p.name,
-                          style: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ],
-                    ),
-                  )),
-            ],
+          // Single filter entry point — opens the filter sheet (profile +
+          // distance/ZIP + service level).
+          GestureDetector(
+            onTap: () {
+              HapticFeedback.lightImpact();
+              onFilterTap();
+            },
             child: Container(
               margin: const EdgeInsets.only(right: 8),
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
@@ -705,22 +1292,20 @@ class _SearchBar extends StatelessWidget {
                     color: filtered ? _kAccent : _kInkMuted,
                   ),
                   if (filtered) ...[
-                    const SizedBox(width: 4),
+                    const SizedBox(width: 5),
                     Container(
-                      width: 16,
-                      height: 16,
-                      decoration: const BoxDecoration(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 5, vertical: 1),
+                      decoration: BoxDecoration(
                         color: _kAccent,
-                        shape: BoxShape.circle,
+                        borderRadius: BorderRadius.circular(99),
                       ),
-                      child: const Center(
-                        child: Text(
-                          '1',
-                          style: TextStyle(
-                            fontSize: 9,
-                            color: Colors.white,
-                            fontWeight: FontWeight.w800,
-                          ),
+                      child: Text(
+                        '$activeCount',
+                        style: const TextStyle(
+                          fontSize: 10,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w800,
                         ),
                       ),
                     ),
@@ -730,92 +1315,6 @@ class _SearchBar extends StatelessWidget {
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-// ── Category chips (F2) ───────────────────────────────────────────────────────
-class _CategoryChips extends StatelessWidget {
-  const _CategoryChips({
-    required this.selected,
-    required this.onToggle,
-    required this.onClearAll,
-  });
-  final Set<String>          selected;
-  final ValueChanged<String> onToggle;
-  final VoidCallback         onClearAll;
-
-  @override
-  Widget build(BuildContext context) {
-    // All five chips share the row width so they're visible at once (no
-    // horizontal scroll). Each chip's content auto-scales to fit its cell.
-    final chips = <Widget>[];
-    for (int i = 0; i <= _kCats.length; i++) {
-      if (i > 0) chips.add(const SizedBox(width: 6));
-      chips.add(Expanded(child: _chip(i)));
-    }
-    return SizedBox(height: 34, child: Row(children: chips));
-  }
-
-  // i == 0 is the leading "All" chip; i >= 1 maps to _kCats[i - 1].
-  Widget _chip(int i) {
-    final bool isAll = i == 0;
-    final String cat = isAll ? '' : _kCats[i - 1][0];
-    // Shorten "Next Day" -> "NEXT" so the chip stays compact.
-    final String label = isAll
-        ? 'All'
-        : (cat == 'next_day' ? 'NEXT' : _kCats[i - 1][1]);
-    final bool sel = isAll ? selected.isEmpty : selected.contains(cat);
-    final Color color = isAll ? _kAccent : _catColor(cat);
-    final IconData icon = isAll ? Icons.apps_rounded : _catIcon(cat);
-    return GestureDetector(
-      onTap: () {
-        HapticFeedback.lightImpact();
-        isAll ? onClearAll() : onToggle(cat);
-      },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        decoration: BoxDecoration(
-          color: sel ? color : _kSurface,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-            color: sel ? color : _kSep,
-            width: 1.5,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: sel
-                  ? color.withValues(alpha: 0.25)
-                  : Colors.black.withValues(alpha: 0.06),
-              blurRadius: sel ? 8 : 4,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 6),
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(icon, size: 12, color: sel ? Colors.white : color),
-                  const SizedBox(width: 5),
-                  Text(
-                    label,
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                      color: sel ? Colors.white : _kInk,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
       ),
     );
   }
@@ -967,6 +1466,65 @@ class _LocationFab extends StatelessWidget {
   );
 }
 
+// ── Empty state shown when the active filter matches zero pins ───────────────
+class _EmptyFilterCard extends StatelessWidget {
+  const _EmptyFilterCard({required this.onClearFilters});
+  final VoidCallback onClearFilters;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.fromLTRB(20, 20, 20, 18),
+    decoration: BoxDecoration(
+      color: _kSurface,
+      borderRadius: BorderRadius.circular(22),
+      boxShadow: [
+        BoxShadow(
+          color: Colors.black.withValues(alpha: 0.11),
+          blurRadius: 22,
+          offset: const Offset(0, 8),
+        ),
+      ],
+    ),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: _kAccent.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(11),
+          ),
+          child: const Icon(Icons.filter_alt_off_rounded,
+              size: 20, color: _kAccent),
+        ),
+        const SizedBox(height: 10),
+        const Text(
+          'No pins match your filters',
+          style: TextStyle(
+              fontSize: 15, fontWeight: FontWeight.w700, color: _kInk),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'Try widening the distance or picking a different priority level.',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 12.5, color: _kInkMuted),
+        ),
+        const SizedBox(height: 14),
+        SizedBox(
+          width: double.infinity,
+          child: _CardBtn(
+            icon: Icons.filter_alt_off_rounded,
+            label: 'Clear Filters',
+            onTap: onClearFilters,
+            filled: true,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
 // ── Bottom stats card ─────────────────────────────────────────────────────────
 class _BottomCard extends StatelessWidget {
   const _BottomCard({
@@ -1070,12 +1628,8 @@ class _BottomCard extends StatelessWidget {
                   const SizedBox(height: 14),
                   Row(
                     children: svcEntries.map((e) {
-                      final color = _svcColor(e.key);
-                      final label = e.key == 'rush'
-                          ? 'ASAP'
-                          : e.key == 'airport'
-                              ? 'Airport'
-                              : 'Standard';
+                      final color = categoryOf(e.key).color;
+                      final label = categoryOf(e.key).label;
                       return Padding(
                         padding: const EdgeInsets.only(right: 14),
                         child: Row(
@@ -1114,7 +1668,7 @@ class _BottomCard extends StatelessWidget {
                             .map((e) => Expanded(
                                   flex: e.value,
                                   child: Container(
-                                      color: _svcColor(e.key)),
+                                      color: categoryOf(e.key).color),
                                 ))
                             .toList(),
                       ),

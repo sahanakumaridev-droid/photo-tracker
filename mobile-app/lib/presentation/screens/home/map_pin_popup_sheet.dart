@@ -258,7 +258,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
               width: 36,
               height: 4,
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.2),
+                color: Colors.white.withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
@@ -307,7 +307,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                       ),
                       decoration: BoxDecoration(
                         color: isActive
-                            ? Colors.white.withOpacity(0.06)
+                            ? Colors.white.withValues(alpha: 0.06)
                             : Colors.transparent,
                         border: Border(
                           bottom: BorderSide(
@@ -327,8 +327,8 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                               shape: BoxShape.circle,
                               gradient: LinearGradient(
                                 colors: [
-                                  color.withOpacity(0.8),
-                                  color.withOpacity(0.4),
+                                  color.withValues(alpha: 0.8),
+                                  color.withValues(alpha: 0.4),
                                 ],
                                 begin: Alignment.topLeft,
                                 end: Alignment.bottomRight,
@@ -361,7 +361,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                                 fontWeight: FontWeight.w700,
                                 color: isActive
                                     ? Colors.white
-                                    : Colors.white.withOpacity(0.4),
+                                    : Colors.white.withValues(alpha: 0.4),
                               ),
                             ),
                           ),
@@ -375,7 +375,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                             decoration: BoxDecoration(
                               color: isActive
                                   ? color
-                                  : Colors.white.withOpacity(0.1),
+                                  : Colors.white.withValues(alpha: 0.1),
                               borderRadius: BorderRadius.circular(99),
                             ),
                             child: Text(
@@ -385,7 +385,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                                 fontWeight: FontWeight.w800,
                                 color: isActive
                                     ? Colors.white
-                                    : Colors.white.withOpacity(0.4),
+                                    : Colors.white.withValues(alpha: 0.4),
                               ),
                             ),
                           ),
@@ -405,7 +405,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                 '$totalPhotos total',
                 style: TextStyle(
                   fontSize: 9,
-                  color: Colors.white.withOpacity(0.3),
+                  color: Colors.white.withValues(alpha: 0.3),
                   fontFamily: 'monospace',
                 ),
               ),
@@ -462,7 +462,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                       width: 28,
                       height: 28,
                       decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.6),
+                        color: Colors.black.withValues(alpha: 0.6),
                         shape: BoxShape.circle,
                       ),
                       child: const Icon(
@@ -487,7 +487,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                       width: 28,
                       height: 28,
                       decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.6),
+                        color: Colors.black.withValues(alpha: 0.6),
                         shape: BoxShape.circle,
                       ),
                       child: const Icon(
@@ -514,7 +514,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                       decoration: BoxDecoration(
                         color: _photoIdx == i
                             ? Colors.white
-                            : Colors.white.withOpacity(0.4),
+                            : Colors.white.withValues(alpha: 0.4),
                         borderRadius: BorderRadius.circular(99),
                       ),
                     )),
@@ -530,7 +530,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                     vertical: 3,
                   ),
                   decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.65),
+                    color: Colors.black.withValues(alpha: 0.65),
                     borderRadius: BorderRadius.circular(99),
                   ),
                   child: Text(
@@ -563,8 +563,8 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                   ),
                   decoration: BoxDecoration(
                     color: _addingPhoto
-                        ? Colors.red.withOpacity(0.85)
-                        : _accent.withOpacity(0.85),
+                        ? Colors.red.withValues(alpha: 0.85)
+                        : _accent.withValues(alpha: 0.85),
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
@@ -599,7 +599,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
             '📍 Adding photo at this pin location',
             style: TextStyle(
               fontSize: 11,
-              color: Colors.white.withOpacity(0.4),
+              color: Colors.white.withValues(alpha: 0.4),
             ),
           ),
           const SizedBox(height: 10),
@@ -614,7 +614,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
               style: const TextStyle(color: _textPrimary, fontSize: 13),
               decoration: InputDecoration(
                 filled: true,
-                fillColor: Colors.white.withOpacity(0.06),
+                fillColor: Colors.white.withValues(alpha: 0.06),
                 contentPadding: const EdgeInsets.symmetric(
                   horizontal: 12,
                   vertical: 10,
@@ -622,13 +622,13 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(8),
                   borderSide: BorderSide(
-                    color: Colors.white.withOpacity(0.1),
+                    color: Colors.white.withValues(alpha: 0.1),
                   ),
                 ),
                 enabledBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(8),
                   borderSide: BorderSide(
-                    color: Colors.white.withOpacity(0.1),
+                    color: Colors.white.withValues(alpha: 0.1),
                   ),
                 ),
               ),
@@ -702,7 +702,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                     child: Container(
                       padding: const EdgeInsets.all(4),
                       decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.7),
+                        color: Colors.black.withValues(alpha: 0.7),
                         borderRadius: BorderRadius.circular(4),
                       ),
                       child: const Icon(
@@ -727,11 +727,11 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
             decoration: InputDecoration(
               hintText: 'Add a note… (optional)',
               hintStyle: TextStyle(
-                color: Colors.white.withOpacity(0.3),
+                color: Colors.white.withValues(alpha: 0.3),
                 fontSize: 13,
               ),
               filled: true,
-              fillColor: Colors.white.withOpacity(0.06),
+              fillColor: Colors.white.withValues(alpha: 0.06),
               contentPadding: const EdgeInsets.symmetric(
                 horizontal: 12,
                 vertical: 10,
@@ -739,13 +739,13 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(8),
                 borderSide: BorderSide(
-                  color: Colors.white.withOpacity(0.1),
+                  color: Colors.white.withValues(alpha: 0.1),
                 ),
               ),
               enabledBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(8),
                 borderSide: BorderSide(
-                  color: Colors.white.withOpacity(0.1),
+                  color: Colors.white.withValues(alpha: 0.1),
                 ),
               ),
             ),
@@ -797,9 +797,9 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 10),
           decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.06),
+            color: Colors.white.withValues(alpha: 0.06),
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.white.withOpacity(0.1)),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
           ),
           child: Center(
             child: Text(
@@ -827,7 +827,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
             style: TextStyle(
               fontSize: 10,
               fontWeight: FontWeight.w600,
-              color: Colors.white.withOpacity(0.35),
+              color: Colors.white.withValues(alpha: 0.35),
               letterSpacing: 0.5,
             ),
           ),
@@ -849,7 +849,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                   vertical: 8,
                 ),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.04),
+                  color: Colors.white.withValues(alpha: 0.04),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Row(
@@ -861,7 +861,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                         color: c,
                         shape: BoxShape.circle,
                         boxShadow: [
-                          BoxShadow(color: c.withOpacity(0.5), blurRadius: 4),
+                          BoxShadow(color: c.withValues(alpha: 0.5), blurRadius: 4),
                         ],
                       ),
                     ),
@@ -882,7 +882,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                         vertical: 2,
                       ),
                       decoration: BoxDecoration(
-                        color: c.withOpacity(0.15),
+                        color: c.withValues(alpha: 0.15),
                         borderRadius: BorderRadius.circular(6),
                       ),
                       child: Text(
@@ -898,7 +898,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                     Icon(
                       Icons.chevron_right_rounded,
                       size: 14,
-                      color: Colors.white.withOpacity(0.3),
+                      color: Colors.white.withValues(alpha: 0.3),
                     ),
                   ],
                 ),

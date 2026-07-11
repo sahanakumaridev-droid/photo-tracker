@@ -47,6 +47,16 @@ function exportIdCtrl(r) {
   const name = (r.profiles?.length > 0 ? r.profiles[0].name : r.profile_name) ?? ''
   return pid && name ? `${pid} / ${name}` : String(pid || name || '')
 }
+// Address for the profile export: street number + name, plus ZIP. The stored
+// address is "street, city, state, zip" — take the street line and append the
+// ZIP (from zip_code, else the first 5-digit token in the address).
+function exportStreetZip(r) {
+  const full   = (r.address || '').trim()
+  const street = full ? full.split(',')[0].trim() : ''
+  let zip = (r.zip_code || '').trim()
+  if (!zip) { const m = full.match(/\b\d{5}(?:-\d{4})?\b/); zip = m ? m[0] : '' }
+  return [street, zip].filter(Boolean).join(', ')
+}
 
 const STATUS_LABEL = { open: 'Open', completed: 'Completed', archived: 'Archived' }
 
@@ -125,7 +135,8 @@ function downloadFile(content, filename, mime) {
 // Build plain-text email body for mailto
 function buildEmailBody(rows) {
   if (rows.length === 0) return 'No records found for the selected filters.'
-  return rows.map((r, i) => {
+  const agent = currentAgentName()
+  const body = rows.map((r, i) => {
     const profiles = (r.profiles?.length > 0 ? r.profiles : [{ name: r.profile_name }]).map(p => p.name).join(', ')
     return [
       `--- Record ${i + 1} ---`,
@@ -136,6 +147,10 @@ function buildEmailBody(rows) {
       `Note:     ${r.note || '—'}`,
     ].join('\n')
   }).join('\n\n')
+  // Wrap the records in a professional greeting + sign-off (from/regards).
+  const intro = `Hello,\n\nPlease find the GeoTagging CRM activity log you requested below, containing ${rows.length} record${rows.length !== 1 ? 's' : ''}. All times are shown in PST.`
+  const outro = `If you have any questions or need anything further, feel free to reply to this email.\n\nBest regards,\n${agent || 'The GeoTagging CRM Team'}`
+  return `${intro}\n\n${body}\n\n${outro}`
 }
 
 export default function Log() {
@@ -499,21 +514,42 @@ export default function Log() {
   }
 
   // ── F11: Excel export + saved recipients ────────────────────────────────
-  const buildExportRecords = () => exportRows.map(r => ({
-    id_ctrl:         exportIdCtrl(r),
-    date_time:       exportDateTime(r.timestamp),
-    service_ordered: exportSvcLabel(r.service_type),
-    address:         r.address || r.zip_code || '',
-    detailed_notes:  r.note || '',
-  }))
+  // Manual selection → one row per selected profile, with that profile's most
+  // recent photo embedded (watermarked). Full list → one row per profile, no
+  // photo. Both share the same profile-centric column set.
+  const buildProfileRecords = (includePhoto) => {
+    // Group the export rows by profile, keeping each profile's latest photo.
+    const byProfile = new Map()
+    for (const r of exportRows) {
+      const pid  = r.profile_id ?? r.profiles?.[0]?.id
+      const key  = pid ?? `row-${r.id}`
+      const when = new Date(r.taken_at || r.timestamp || 0).getTime()
+      const cur  = byProfile.get(key)
+      if (!cur || when > cur._when) byProfile.set(key, { ...r, _pid: pid, _when: when })
+    }
+    return [...byProfile.values()].map(r => {
+      const name = r.profiles?.[0]?.name ?? r.profile_name ?? ''
+      const rec = {
+        file_number:    r._pid ?? '',
+        name,
+        date_time:      exportDateTime(r.taken_at || r.timestamp),
+        priority_level: SERVICE_META[r.category]?.label || exportSvcLabel(r.service_type),
+        address:        exportStreetZip(r),
+        notes:          r.note || '',
+      }
+      if (includePhoto) rec.photo_id = r.id   // backend embeds this photo, watermarked
+      return rec
+    })
+  }
 
   const handleExportExcel = async () => {
     if (exportRows.length === 0) { showToast('⚠️ No records to export — adjust your filters first.'); return }
     const targets = recipients.filter(r => selectedRecipients.has(r.id)).map(r => r.email)
     if (targets.length === 0) { showToast('⚠️ Select at least one saved recipient.'); return }
+    const manual = selectedIds.size > 0   // manual selection embeds latest photo per profile
     setExportingExcel(true)
     try {
-      const result = await exportExcel(targets, buildExportRecords())
+      const result = await exportExcel(targets, buildProfileRecords(manual), manual)
       if (result.file_base64) {
         // email not configured — download the file the server returned
         const bin = atob(result.file_base64)

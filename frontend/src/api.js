@@ -121,7 +121,9 @@ export const getRecipients     = (user_id)   => api.get('/recipients', { params:
 export const addRecipient      = (data)      => api.post('/recipients', data).then(r => r.data)
 export const editRecipient     = (id, data)  => api.patch(`/recipients/${id}`, data).then(r => r.data)
 export const deleteRecipient   = (id)        => api.delete(`/recipients/${id}`).then(r => r.data)
-export const exportExcel       = (recipients, records) => api.post('/export/excel', { recipients, records }).then(r => r.data)
+// include_photo=true → manual (selected) export: one row per profile with the
+// most recent photo embedded (watermarked). false → full-list export, no photo.
+export const exportExcel       = (recipients, records, include_photo = false) => api.post('/export/excel', { recipients, records, include_photo }).then(r => r.data)
 
 // Single-job "Service Record": detailed Excel (one row per attempt: ID, Date,
 // Service, Address, Lat/Long, Status, Agent, Notes) + the photo(s) attached.

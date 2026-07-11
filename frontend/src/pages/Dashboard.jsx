@@ -1,10 +1,11 @@
 import React, { useEffect, useState, useCallback, useContext } from 'react'
-import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from 'react-leaflet'
+import { MapContainer, TileLayer, Marker, Popup, Circle, useMap, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { getPhotos, getProfiles, getPhotosLive, getProfilesLive, deletePhoto, updatePhotoNote, replacePhotoImage, uploadPhoto } from '../api'
 import EditLocationModal from '../components/EditLocationModal'
 import MapUploadModal from '../components/MapUploadModal'
+import MapFilterModal from '../components/MapFilterModal'
 import { useTheme } from '../context/ThemeContext'
 import { GeoContext } from '../context/GeoContext'
 
@@ -60,12 +61,32 @@ function MapClickHandler({ onMapClick }) {
   return null
 }
 
-function FlyToFilter({ photos }) {
+// Fits/flies the map to whatever the active filter implies:
+//  - distance mode: the full radius circle around the user's location
+//  - zip mode (or no filter): the bounding box of the matching pins
+// Debounced slightly so dragging the distance slider doesn't fire a flight
+// on every intermediate tick.
+function MapAutoFit({ photos, geo, distanceMode, distanceMi }) {
   const map = useMap()
   useEffect(() => {
-    const valid = photos.filter(p => p.latitude && p.longitude)
-    if (valid.length > 0) map.flyTo([valid[0].latitude, valid[0].longitude], 13, { duration: 1 })
-  }, [photos, map])
+    const timer = setTimeout(() => {
+      if (distanceMode === 'distance' && geo.location) {
+        const center = L.latLng(geo.location.lat, geo.location.lng)
+        const radiusMeters = Math.max(distanceMi, 0.5) * 1609.34
+        map.flyToBounds(center.toBounds(radiusMeters * 2), { duration: 0.8, padding: [40, 40] })
+        return
+      }
+      const valid = photos.filter(p => p.latitude && p.longitude)
+      if (valid.length === 0) return
+      if (valid.length === 1) {
+        map.flyTo([valid[0].latitude, valid[0].longitude], 13, { duration: 0.8 })
+        return
+      }
+      const bounds = L.latLngBounds(valid.map(p => [p.latitude, p.longitude]))
+      map.flyToBounds(bounds, { duration: 0.8, padding: [40, 40] })
+    }, 250)
+    return () => clearTimeout(timer)
+  }, [photos, geo.location, distanceMode, distanceMi, map])
   return null
 }
 
@@ -88,6 +109,12 @@ export default function Dashboard() {
   const [mapUpload,     setMapUpload]     = useState(null)
   const [search,        setSearch]        = useState('')
   const [svcLevels,     setSvcLevels]     = useState(() => new Set())  // F2/F3 service-level filter (empty = all)
+  // Map filter popup — distance (slider) OR zip; only one applies at a time,
+  // whichever was touched most recently (distanceMode).
+  const [showFilters,   setShowFilters]   = useState(false)
+  const [distanceMi,    setDistanceMi]    = useState(100)          // 0–100 mi radius
+  const [zipFilter,     setZipFilter]     = useState('')
+  const [distanceMode,  setDistanceMode]  = useState(null)         // 'distance' | 'zip' | null
 
   const { accentPreset, setSettings } = useTheme()
   const geo = useContext(GeoContext)
@@ -136,21 +163,36 @@ export default function Dashboard() {
     ? [geo.location.lat, geo.location.lng]
     : [32.7157, -117.1611]
 
-  // F2/F3 — service-level filter (empty set = show all)
+  // F2/F3 — service-level filter (empty set = show all); toggled from the
+  // filter popup. Empty = show all levels.
   const matchLevel = (p) => svcLevels.size === 0 || svcLevels.has(p.category || 'standard')
-  const toggleLevel = (k) => setSvcLevels(prev => {
-    const next = new Set(prev)
-    next.has(k) ? next.delete(k) : next.add(k)
-    return next
-  })
+
+  // Distance filter — radius from current location OR a ZIP match. Only the
+  // most recently touched control (distanceMode) applies; the other is ignored.
+  const matchDistance = (p) => {
+    if (distanceMode === 'distance') {
+      if (!geo.location || p.latitude == null || p.longitude == null) return true
+      return distanceMiles(geo.location.lat, geo.location.lng, p.latitude, p.longitude) <= distanceMi
+    }
+    if (distanceMode === 'zip') {
+      const z = String(zipFilter).trim()
+      if (!z) return true
+      const pz = (p.zip_code || '').trim()
+      return pz ? pz === z : (p.address || '').includes(z)
+    }
+    return true
+  }
+
+  // Count of active filters (for the toolbar button badge).
+  const activeFilterCount = svcLevels.size + (distanceMode ? 1 : 0)
 
   const mapPhotos = (filterProfile === 'all'
     ? photos
     : photos.filter(p => String(p.profile_id) === String(filterProfile))
-  ).filter(matchLevel)
+  ).filter(matchLevel).filter(matchDistance)
 
   const filteredPhotos = photos.filter(p =>
-    (!search || p.profile_name?.toLowerCase().includes(search.toLowerCase())) && matchLevel(p)
+    (!search || p.profile_name?.toLowerCase().includes(search.toLowerCase())) && matchLevel(p) && matchDistance(p)
   )
 
   const STATS = [
@@ -261,45 +303,25 @@ export default function Dashboard() {
           setFilterProfile={setFilterProfile}
         />
 
-        {/* F2/F3 — service-level filter (map + grid/list) */}
-        <div className="dk-filter-pills" style={{display:'flex', gap:6, flexWrap:'wrap'}}>
-          {[
-            { k:'asap',     l:'ASAP',     c:'#DC2626' },
-            { k:'next_day', l:'Next Day', c:'#CA8A04' },
-            { k:'standard', l:'Standard', c:'#059669' },
-            { k:'special',  l:'Special',  c:'#EA580C' },
-          ].map(s => {
-            const active = svcLevels.has(s.k)
-            const count  = photos.filter(p => (p.category || 'standard') === s.k).length
-            return (
-              <button key={s.k} type="button" onClick={() => toggleLevel(s.k)}
-                title={`Filter ${s.l}`}
-                style={{
-                  display:'inline-flex', alignItems:'center', gap:6, cursor:'pointer',
-                  fontSize:12, fontWeight:700, padding:'5px 11px', borderRadius:99,
-                  border:'1px solid ' + (active ? s.c : 'rgba(0,0,0,0.14)'),
-                  background: active ? s.c : 'transparent',
-                  color: active ? '#fff' : '#64748b',
-                  transition:'all .15s ease',
-                }}>
-                <span style={{width:7, height:7, borderRadius:'50%',
-                  background: active ? '#fff' : s.c}}/>
-                {s.l}
-                <span style={{
-                  fontSize:10, fontWeight:800, padding:'0 6px', borderRadius:99,
-                  background: active ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.06)',
-                }}>{count}</span>
-              </button>
-            )
-          })}
-          {svcLevels.size > 0 && (
-            <button type="button" onClick={() => setSvcLevels(new Set())}
-              style={{ fontSize:12, fontWeight:600, padding:'5px 10px', borderRadius:99,
-                border:'none', background:'transparent', color:'#94a3b8', cursor:'pointer' }}>
-              ✕ Clear
-            </button>
+        {/* Filter pins — opens the distance + service-level popup */}
+        <button type="button" onClick={() => setShowFilters(true)} title="Filter pins"
+          style={{
+            display:'inline-flex', alignItems:'center', gap:7, cursor:'pointer',
+            fontSize:12.5, fontWeight:700, padding:'7px 14px', borderRadius:99,
+            border:'1px solid ' + (activeFilterCount > 0 ? '#7C3AED' : 'rgba(0,0,0,0.14)'),
+            background: activeFilterCount > 0 ? 'rgba(124,58,237,0.08)' : 'transparent',
+            color: activeFilterCount > 0 ? '#7C3AED' : '#64748b',
+            transition:'all .15s ease',
+          }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+            <path d="M4 5h16M7 12h10M10 19h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+          </svg>
+          Filters
+          {activeFilterCount > 0 && (
+            <span style={{ fontSize:10, fontWeight:800, minWidth:16, textAlign:'center', padding:'1px 5px',
+              borderRadius:99, background:'#7C3AED', color:'#fff' }}>{activeFilterCount}</span>
           )}
-        </div>
+        </button>
       </div>
 
       {/* ── Main content ── */}
@@ -308,6 +330,19 @@ export default function Dashboard() {
           <MapUploadModal lat={mapUpload.lat} lng={mapUpload.lng}
             onClose={() => setMapUpload(null)}
             onUploaded={() => { setMapUpload(null); load(true) }}/>
+        )}
+
+        {showFilters && (
+          <MapFilterModal
+            onClose={() => setShowFilters(false)}
+            geo={geo}
+            photos={photos}
+            svcLevels={svcLevels}       setSvcLevels={setSvcLevels}
+            distanceMi={distanceMi}     setDistanceMi={setDistanceMi}
+            zipFilter={zipFilter}       setZipFilter={setZipFilter}
+            distanceMode={distanceMode} setDistanceMode={setDistanceMode}
+            distanceMiles={distanceMiles}
+          />
         )}
 
         {loading ? (
@@ -329,8 +364,16 @@ export default function Dashboard() {
                     url={MAP_TILE}
                     attribution={MAP_ATTR}
                   />
-                  <FlyToFilter photos={mapPhotos}/>
+                  <MapAutoFit photos={mapPhotos} geo={geo} distanceMode={distanceMode} distanceMi={distanceMi}/>
                   <MapClickHandler onMapClick={(lat, lng) => setMapUpload({ lat, lng })}/>
+                  {/* Visualize the active radius filter */}
+                  {distanceMode === 'distance' && geo.location && (
+                    <Circle
+                      center={[geo.location.lat, geo.location.lng]}
+                      radius={distanceMi * 1609.34}
+                      pathOptions={{ color: '#7C3AED', weight: 2, fillColor: '#7C3AED', fillOpacity: 0.07 }}
+                    />
+                  )}
                   {/* Group photos by lat/lng, then sub-group by profile */}
                   {Object.values(
                     mapPhotos

@@ -196,7 +196,7 @@ class _EditLocationScreenState extends ConsumerState<EditLocationScreen> {
                               ),
                               boxShadow: [
                                 BoxShadow(
-                                  color: _accent.withOpacity(0.4),
+                                  color: _accent.withValues(alpha: 0.4),
                                   blurRadius: 10,
                                   spreadRadius: 2,
                                 ),
@@ -275,7 +275,7 @@ class _EditLocationScreenState extends ConsumerState<EditLocationScreen> {
           borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.08),
+              color: Colors.black.withValues(alpha: 0.08),
               blurRadius: 16,
               offset: const Offset(0, -4),
             ),

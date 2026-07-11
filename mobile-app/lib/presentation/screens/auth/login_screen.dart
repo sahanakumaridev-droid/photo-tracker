@@ -3,6 +3,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../config/theme.dart';
 import '../../../core/utils/constants.dart';
 import '../../../core/utils/permissions.dart';
 import '../../providers/auth_provider.dart';
@@ -88,7 +89,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               Center(
                 child: Column(
                   children: [
-                    const AppLogo(size: 84, radius: 20, withShadow: true),
+                    const AppLogo(
+                      size: 84,
+                      radius: 20,
+                      withShadow: true,
+                      tint: AppTheme.primary,
+                    ),
                     const SizedBox(height: 16),
                     RichText(
                       text: const TextSpan(

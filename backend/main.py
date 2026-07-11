@@ -23,7 +23,7 @@ except ImportError:
 # F11: Excel generation (graceful fallback to CSV if openpyxl missing)
 try:
     from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill
+    from openpyxl.styles import Font, PatternFill, Alignment
 except ImportError:
     Workbook = None
 
@@ -66,6 +66,11 @@ Base = declarative_base()
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
+# Public base URL for absolute links (e.g. the "View photo" hyperlinks in Excel
+# exports). Overridable via env for other hosts.
+PUBLIC_BASE_URL = os.environ.get(
+    "PUBLIC_BASE_URL", "https://159-198-79-219.nip.io")
 
 
 # ── Many-to-many: Pin (Photo) <-> Profile ──
@@ -413,6 +418,28 @@ def get_profile_photos(profile_id: int):
     }
     db.close()
     return result
+
+
+@app.get("/photos/{photo_id}/watermarked")
+def watermarked_photo(photo_id: int):
+    """Return the photo with its timestamp + geotag watermark burned in. Used by
+    the 'View photo' hyperlinks in the Excel exports (so the sheet stays compact
+    while the linked image is still stamped)."""
+    from fastapi.responses import Response
+    db = SessionLocal()
+    ph = db.query(Photo).filter(Photo.id == photo_id).first()
+    db.close()
+    if not ph or not ph.image_url:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    path = ph.image_url.lstrip("/")
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Image file missing")
+    stamped = _watermark_photo_png(path, _photo_caption(ph), max_w=1600,
+                                   max_h=1600)
+    if stamped:
+        return Response(content=stamped[0], media_type="image/png")
+    with open(path, "rb") as f:                       # fallback: raw image
+        return Response(content=f.read(), media_type="image/jpeg")
 
 
 # ─── PHOTO ROUTES ─────────────────────────────────────────────────────────────
@@ -862,10 +889,7 @@ async def export_log_email(request: Request):
           <td>{r.get('note','—')}</td>
         </tr>"""
 
-    html = f"""
-    <html><body style="font-family:sans-serif;color:#0f172a;">
-    <h2 style="color:#6366f1;">GeoTagging — Activity Log Export</h2>
-    <p>Exported {len(records_list)} record(s) · All times in PST</p>
+    table_html = f"""
     <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:13px;">
       <thead style="background:#f1f5f9;">
         <tr>
@@ -874,9 +898,14 @@ async def export_log_email(request: Request):
         </tr>
       </thead>
       <tbody>{rows_html}</tbody>
-    </table>
-    <p style="margin-top:20px;color:#94a3b8;font-size:11px;">GeoTagging CRM · Exported {datetime.now(PST).strftime('%b %d, %Y %I:%M %p PST')}</p>
-    </body></html>"""
+    </table>"""
+    html = _pro_email_html(
+        f"Please find the GeoTagging CRM activity log you requested below, "
+        f"containing {len(records_list)} record(s). All times are shown in PST.",
+        table_html=table_html, count=len(records_list),
+        closing="A summary of the exported records is included above. If you "
+                "have any questions or need anything further, simply reply to "
+                "this email.")
 
     smtp_host = os.environ.get("SMTP_HOST")
     smtp_port = int(os.environ.get("SMTP_PORT", "587"))
@@ -1523,7 +1552,35 @@ _COL_WIDTHS = {
     "ID & Cntrl #": 24, "Date & Time": 22, "Service Ordered": 18,
     "Address": 32, "Lat / Long": 24, "Job Status": 16, "Agent": 18,
     "Detailed Notes": 36,
+    # Profile-list export (manual selection vs full list)
+    "File Number": 14, "Name": 22, "Priority Level": 16, "Notes": 36,
+    "Photo": 16,
 }
+
+# Profile-list export — the full-list (unselected) variant. One row per profile,
+# built from that profile's most recent photo. No embedded photo.
+_EXPORT_COLUMNS_LIST = [
+    ("file_number",    "File Number"),
+    ("name",           "Name"),
+    ("date_time",      "Date & Time"),
+    ("priority_level", "Priority Level"),
+    ("address",        "Address"),
+    ("notes",          "Notes"),
+]
+
+# Manual-selection variant — same fields plus the most recent photo for each
+# profile, watermarked with its timestamp + geotag and embedded into the sheet.
+_EXPORT_COLUMNS_MANUAL = _EXPORT_COLUMNS_LIST + [("photo", "Photo")]
+
+# Map a stored priority category to the label shown in exports/watermarks.
+_PRIORITY_LABELS = {
+    "asap": "ASAP", "rush": "ASAP", "next_day": "Next Day",
+    "standard": "Standard", "special": "Special", "airport": "Airport",
+}
+
+
+def _priority_label(category):
+    return _PRIORITY_LABELS.get((category or "standard").lower(), "Standard")
 
 
 def _build_xlsx(records, columns=_EXPORT_COLUMNS, sheet_title="Activity Log",
@@ -1557,6 +1614,179 @@ def _build_xlsx(records, columns=_EXPORT_COLUMNS, sheet_title="Activity Log",
     return bio.getvalue(), f"{base_name}.xlsx"
 
 
+# Common DejaVu/Liberation locations on Linux servers + macOS, so the caption
+# renders at a real size instead of Pillow's tiny bitmap default font.
+_FONT_PATHS = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+    "/Library/Fonts/Arial.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "DejaVuSans.ttf",
+]
+
+
+def _load_font(size):
+    from PIL import ImageFont
+    for p in _FONT_PATHS:
+        try:
+            return ImageFont.truetype(p, size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def _watermark_photo_png(image_path, caption_lines, max_w=300, max_h=400):
+    """Return (png_bytes, width_px, height_px): the photo scaled to fit
+    (max_w × max_h) with `caption_lines` (timestamp + geotag) burned into a
+    translucent bar along the bottom. Font size scales with the output width so
+    the caption is legible on both thumbnail (xlsx) and full-size (service
+    record) exports. Returns None if Pillow is unavailable or the file can't be
+    read. Doing this server-side (Pillow) is reliable for any JPEG/PNG,
+    regardless of the client device's image codec."""
+    try:
+        from PIL import Image as PILImage, ImageDraw, ImageOps, ImageFile
+        # Phone photos (e.g. Samsung) sometimes arrive a few bytes short; without
+        # this Pillow raises "image file is truncated" and the photo drops out.
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
+    except Exception:
+        return None
+    try:
+        img = PILImage.open(image_path)
+        img = ImageOps.exif_transpose(img).convert("RGB")
+    except Exception:
+        return None
+    # Scale to fit the target box, preserving aspect ratio (never upscale).
+    ratio = min(max_w / img.width, max_h / img.height, 1.0)
+    if ratio < 1.0:
+        img = img.resize((max(1, int(img.width * ratio)),
+                          max(1, int(img.height * ratio))))
+    draw = ImageDraw.Draw(img, "RGBA")
+    fsize = max(12, min(40, img.width // 34))   # ~legible at any width
+    font = _load_font(fsize)
+    lines = [ln for ln in caption_lines if ln]
+    if lines:
+        pad = max(6, fsize // 2)
+        line_h = fsize + max(4, fsize // 3)
+        box_h = pad * 2 + line_h * len(lines)
+        draw.rectangle([0, img.height - box_h, img.width, img.height],
+                       fill=(0, 0, 0, 160))
+        y = img.height - box_h + pad
+        for ln in lines:
+            # 2px shadow keeps white text legible on bright photos.
+            draw.text((pad + 2, y + 2), ln, fill=(0, 0, 0, 200), font=font)
+            draw.text((pad, y), ln, fill=(255, 255, 255, 255), font=font)
+            y += line_h
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue(), img.width, img.height
+
+
+def _photo_caption(ph):
+    """Timestamp + geotag caption lines burned into an exported photo."""
+    ts = _to_pst_iso(ph.taken_at or ph.timestamp)
+    when = ""
+    if ts:
+        # 2025-07-03T14:30:45-07:00 → "2025-07-03 14:30 PST"
+        when = ts.replace("T", " ")[:16] + " PST"
+    lines = [when]
+    if ph.latitude is not None and ph.longitude is not None:
+        lines.append(f"{ph.latitude:.6f}, {ph.longitude:.6f}")
+    if ph.address:
+        lines.append(str(ph.address)[:48])
+    return lines
+
+
+def _photo_link_cell(ws, row, col, photo_id, wrap):
+    """Write a 'View photo' hyperlink (to the server-watermarked image) into a
+    cell. Linking instead of embedding keeps the rows a normal height — no big
+    blank space in the text columns."""
+    cell = ws.cell(row=row, column=col)
+    if photo_id is not None:
+        cell.value = "View photo"
+        cell.hyperlink = f"{PUBLIC_BASE_URL}/api/photos/{photo_id}/watermarked"
+        cell.font = Font(color="0563C1", underline="single")
+    else:
+        cell.value = "(no photo)"
+    cell.alignment = wrap
+
+
+def _build_xlsx_with_photos(records):
+    """Build the manual-selection .xlsx: the profile-list columns plus a Photo
+    column that LINKS to each profile's most recent (watermarked) photo. Rows
+    stay a normal height — no embedded image blowing up the row. `records` carry
+    a `photo_id`. Falls back to the plain builder if openpyxl is missing."""
+    if Workbook is None:
+        return _build_xlsx(records, _EXPORT_COLUMNS_LIST,
+                           sheet_title="Profiles Export",
+                           base_name="profiles_export")
+
+    columns = _EXPORT_COLUMNS_MANUAL
+    photo_col = len(columns)  # Photo is the last column (1-indexed)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Profiles Export"
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="6366F1")
+    for col, (_, label) in enumerate(columns, start=1):
+        c = ws.cell(row=1, column=col, value=label)
+        c.font = header_font
+        c.fill = header_fill
+        ws.column_dimensions[chr(64 + col)].width = _COL_WIDTHS.get(label, 20)
+
+    _wrap = Alignment(wrap_text=True, vertical="top")
+    for ri, r in enumerate(records, start=2):
+        for ci, (key, _) in enumerate(columns, start=1):
+            if key == "photo":
+                continue
+            cell = ws.cell(row=ri, column=ci, value=r.get(key, ""))
+            cell.alignment = _wrap
+        _photo_link_cell(ws, ri, photo_col, r.get("photo_id"), _wrap)
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    return bio.getvalue(), "profiles_export.xlsx"
+
+
+_SENDER_NAME = os.environ.get("EMAIL_SENDER_NAME", "The GeoTagging CRM Team")
+
+
+def _pro_email_html(intro, *, sender=None, table_html="", count=None,
+                    closing=None):
+    """Wrap an export email in a professional layout: greeting, intro, optional
+    table, a courteous closing and a 'Best regards' signature (from), plus a
+    branded footer. Keeps every export email consistent and presentable."""
+    when = datetime.now(PST).strftime('%b %d, %Y %I:%M %p PST')
+    sign = _esc(sender) if sender else _SENDER_NAME
+    meta = f"{count} record(s) &middot; " if count is not None else ""
+    closing = closing or ("Please find the file attached. If you have any "
+                          "questions or need anything further, simply reply "
+                          "to this email.")
+    return f"""<html><body style="font-family:Arial,Helvetica,sans-serif;color:#0f172a;font-size:14px;line-height:1.6;max-width:660px;margin:0 auto;">
+  <p style="margin:0 0 14px;">Hello,</p>
+  <p style="margin:0 0 14px;">{intro}</p>
+  {table_html}
+  <p style="margin:16px 0 14px;">{closing}</p>
+  <p style="margin:0;">Best regards,</p>
+  <p style="margin:2px 0 0;font-weight:700;">{sign}</p>
+  <hr style="border:none;border-top:1px solid #e2e8f0;margin:20px 0 8px;">
+  <p style="margin:0;color:#94a3b8;font-size:11px;">{meta}Generated by GeoTagging CRM &middot; {when}</p>
+</body></html>"""
+
+
+def _pro_email_text(intro, *, sender=None, count=None, closing=None):
+    """Plain-text sibling of :func:`_pro_email_html` for text/plain parts."""
+    sign = sender or _SENDER_NAME
+    meta = f"{count} record(s)\n" if count is not None else ""
+    closing = closing or ("Please find the file attached. If you have any "
+                          "questions or need anything further, simply reply "
+                          "to this email.")
+    return (f"Hello,\n\n{intro}\n\n{closing}\n\n"
+            f"Best regards,\n{sign}\n\n"
+            f"{meta}Generated by GeoTagging CRM")
+
+
 @app.post("/export/excel")
 async def export_excel(request: Request):
     """Generate an Excel file and email it to one or more recipients."""
@@ -1565,6 +1795,7 @@ async def export_excel(request: Request):
         data = await request.json()
         recipients = data.get("recipients") or ([data["to"]] if data.get("to") else [])
         records = data.get("records", [])
+        include_photo = bool(data.get("include_photo"))
     else:
         form = await request.form()
         recipients = json.loads(form.get("recipients", "[]")) or (
@@ -1573,12 +1804,20 @@ async def export_excel(request: Request):
             records = json.loads(form.get("records", "[]"))
         except Exception:
             records = []
+        include_photo = str(form.get("include_photo", "")).lower() in ("1", "true", "yes")
 
     recipients = [e.strip() for e in recipients if e and "@" in e]
     if not recipients:
         raise HTTPException(status_code=422, detail="At least one recipient email required")
 
-    file_bytes, fname = _build_xlsx(records)
+    # Manual selection → one row per profile with a link to its latest
+    # (watermarked) photo. Full list → the same fields minus the Photo column.
+    if include_photo:
+        file_bytes, fname = _build_xlsx_with_photos(records)
+    else:
+        file_bytes, fname = _build_xlsx(
+            records, _EXPORT_COLUMNS_LIST, sheet_title="Profiles Export",
+            base_name="profiles_export")
     b64 = base64.b64encode(file_bytes).decode()
 
     smtp_host = os.environ.get("SMTP_HOST")
@@ -1593,13 +1832,22 @@ async def export_excel(request: Request):
         return {"ok": True, "message": "Email not configured — file returned",
                 "filename": fname, "file_base64": b64, "count": len(records)}
 
-    subject = f"GeoTagging Excel Export — {len(records)} records"
+    noun = "profiles" if include_photo else "profile records"
+    subject = f"GeoTagging CRM — Profiles Export ({len(records)} records)"
+    intro = (f"Please find attached the profiles export you requested from "
+             f"GeoTagging CRM, containing {len(records)} {noun}"
+             + (" with the most recent photo for each profile."
+                if include_photo else "."))
+    body_html = _pro_email_html(intro, sender=sg_sender or smtp_user,
+                                count=len(records))
+    body_text = _pro_email_text(intro, sender=sg_sender or smtp_user,
+                                count=len(records))
     try:
         if sg_api_key and SendGridAPIClient and Mail:
             from sendgrid.helpers.mail import Attachment, FileContent, FileName, FileType, Disposition
             message = Mail(from_email=sg_sender, to_emails=recipients,
                            subject=subject,
-                           html_content=f"<p>{len(records)} record(s) attached.</p>")
+                           html_content=body_html)
             message.attachment = Attachment(
                 FileContent(b64), FileName(fname),
                 FileType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
@@ -1609,11 +1857,14 @@ async def export_excel(request: Request):
                     "count": len(records)}
         else:
             from email.mime.application import MIMEApplication
-            msg = MIMEMultipart()
+            msg = MIMEMultipart("mixed")
             msg["Subject"] = subject
             msg["From"] = smtp_user
             msg["To"] = ", ".join(recipients)
-            msg.attach(MIMEText(f"{len(records)} record(s) attached.", "plain"))
+            alt = MIMEMultipart("alternative")
+            alt.attach(MIMEText(body_text, "plain"))
+            alt.attach(MIMEText(body_html, "html"))
+            msg.attach(alt)
             part = MIMEApplication(file_bytes, _subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             part.add_header("Content-Disposition", "attachment", filename=fname)
             msg.attach(part)
@@ -1718,6 +1969,63 @@ def _build_service_record_html(records, header=None, latest_only=False):
 </div>"""
 
 
+def _job_photo_caption(rec):
+    """Caption lines burned into a service-record photo, from the matching
+    export record (already formatted by the client)."""
+    lines = []
+    if rec.get("date_time"):
+        lines.append(str(rec["date_time"]))
+    if rec.get("address"):
+        lines.append(str(rec["address"]))
+    if rec.get("coordinates"):
+        lines.append(str(rec["coordinates"]))
+    meta = []
+    if rec.get("service_ordered"):
+        meta.append(str(rec["service_ordered"]))
+    if rec.get("agent"):
+        meta.append(f"Agent: {rec['agent']}")
+    if meta:
+        lines.append("  -  ".join(meta))
+    return [ln for ln in lines if ln]
+
+
+def _build_job_xlsx_with_photos(records, photo_ids, base_name="service-record"):
+    """Service Record .xlsx with a trailing Photo column that LINKS to each
+    attempt's (watermarked) photo. Linking keeps rows a normal height (no huge
+    blank gap from an embedded image). `photo_ids` runs parallel to `records`."""
+    if Workbook is None:
+        return _build_xlsx(records, _EXPORT_COLUMNS_JOB,
+                           sheet_title="Service Record", base_name=base_name)
+
+    columns = _EXPORT_COLUMNS_JOB + [("photo", "Photo")]
+    photo_col = len(columns)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Service Record"
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="6366F1")
+    for col, (_, label) in enumerate(columns, start=1):
+        c = ws.cell(row=1, column=col, value=label)
+        c.font = header_font
+        c.fill = header_fill
+        ws.column_dimensions[chr(64 + col)].width = _COL_WIDTHS.get(label, 20)
+
+    _wrap = Alignment(wrap_text=True, vertical="top")
+    for ri, r in enumerate(records, start=2):
+        for ci, (key, _) in enumerate(columns, start=1):
+            if key == "photo":
+                continue
+            cell = ws.cell(row=ri, column=ci, value=r.get(key, ""))
+            cell.alignment = _wrap
+        pid = photo_ids[ri - 2] if (ri - 2) < len(photo_ids) else None
+        _photo_link_cell(ws, ri, photo_col, pid, _wrap)
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    return bio.getvalue(), f"{base_name}.xlsx"
+
+
 @app.post("/export/job")
 async def export_job(request: Request):
     """Single-job export: a detailed one-sheet Excel (one row per attempt, with
@@ -1733,16 +2041,27 @@ async def export_job(request: Request):
     recipients = data.get("recipients") or ([data["to"]] if data.get("to") else [])
     recipients = [e.strip() for e in recipients if e and "@" in e]
     records = data.get("records", [])
-    # attachments: [{"filename", "content_b64", "mimetype"}] — the watermarked photos
+    # attachments: [{"filename", "content_b64", "mimetype"}] — legacy client photos.
     attachments = data.get("attachments", [])
+    # Preferred path: the client sends photo_ids (parallel to records) and the
+    # server watermarks + EMBEDS each photo directly in the .xlsx (Photo column),
+    # so the picture shows inside the spreadsheet. No separate photo attachments
+    # are needed in that case.
+    photo_ids = data.get("photo_ids") or []
     subject = (data.get("subject") or "Service Record").strip()
     latest_only = bool(data.get("latest_only"))
     html_body = _build_service_record_html(
         records, data.get("header"), latest_only)
 
-    file_bytes, fname = _build_xlsx(
-        records, _EXPORT_COLUMNS_JOB, sheet_title="Service Record",
-        base_name=data.get("base_name") or "service-record")
+    base_name = data.get("base_name") or "service-record"
+    if photo_ids:
+        file_bytes, fname = _build_job_xlsx_with_photos(
+            records, photo_ids, base_name=base_name)
+        attachments = []  # photos are embedded in the sheet
+    else:
+        file_bytes, fname = _build_xlsx(
+            records, _EXPORT_COLUMNS_JOB, sheet_title="Service Record",
+            base_name=base_name)
     xlsx_b64 = base64.b64encode(file_bytes).decode()
 
     smtp_host = os.environ.get("SMTP_HOST")
@@ -1752,12 +2071,14 @@ async def export_job(request: Request):
     sg_api_key = os.environ.get("SENDGRID_API_KEY")
     sg_sender = os.environ.get("SENDGRID_SENDER_EMAIL")
 
-    # Share flow (no recipients) or email not configured → return the file.
+    # Share flow (no recipients) or email not configured → return the file, plus
+    # the server-watermarked photos so the client can share/save them too.
     if not recipients or (not sg_api_key and (not smtp_host or not smtp_user)):
         return {"ok": True,
                 "message": ("File generated" if not recipients
                             else "Email not configured — file returned"),
-                "filename": fname, "file_base64": xlsx_b64, "count": len(records)}
+                "filename": fname, "file_base64": xlsx_b64,
+                "photos": attachments, "count": len(records)}
 
     _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     try:

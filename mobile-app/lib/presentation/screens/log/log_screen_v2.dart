@@ -48,9 +48,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
   static const Color _rushRed = Color(0xFFDC2626);
   static const Color _rushRedSoft = Color(0xFFFEF2F2);
   static const Color _standardGreen = Color(0xFF10B981);
-  static const Color _standardGreenSoft = Color(0xFFD1FAE5);
   static const Color _airportBlue = Color(0xFF0284C7);
-  static const Color _airportBlueSoft = Color(0xFFEFF6FF);
   // Filter bar — noticeably darker than the page canvas
   static const Color _filterBar = Color(0xFFD8DCE6);
 
@@ -299,17 +297,6 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
         return _airportBlue;
       default:
         return _standardGreen;
-    }
-  }
-
-  Color _svcSoftColor(String? t) {
-    switch ((t ?? '').toLowerCase()) {
-      case 'rush':
-        return _rushRedSoft;
-      case 'airport':
-        return _airportBlueSoft;
-      default:
-        return _standardGreenSoft;
     }
   }
 
@@ -604,7 +591,9 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                             setState(() => _selectedExportProfileIds =
                                 tempSelected);
                             Navigator.pop(ctx);
-                            _exportExcel(exportLogs);
+                            // Hand-picked profiles → include the latest photo.
+                            _exportExcel(exportLogs,
+                                manual: tempSelected.isNotEmpty);
                           },
                     icon: const Icon(CupertinoIcons.square_grid_2x2_fill, size: 16),
                     label: const Text('Export Excel → Email'),
@@ -633,7 +622,10 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
   }
 
   // ── F11: Excel export with saved recipients ───────────────────────────────
-  Future<void> _exportExcel(List<LogEntryModel> logs) async {
+  // [manual] = the user hand-picked profiles (embed the latest photo per
+  // profile); false = full-list export (no photo).
+  Future<void> _exportExcel(List<LogEntryModel> logs,
+      {bool manual = false}) async {
     if (logs.isEmpty) {
       _showSnack('No records to export — adjust your filters first.');
       return;
@@ -745,33 +737,40 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
 
     _showSnack('Generating Excel…');
     try {
-      // Canonical multi-job export schema (matches backend _EXPORT_COLUMNS):
-      // id_ctrl | date_time | service_ordered | address | coordinates |
-      // detailed_notes
-      final records = logs.map((log) {
-        final profileId = log.profileId?.toString() ?? '';
-        final profileName = log.profileName ?? '';
-        final idCtrl = profileId.isNotEmpty && profileName.isNotEmpty
-            ? '$profileId / $profileName'
-            : profileId.isNotEmpty
-                ? profileId
-                : profileName;
+      // Profile-list export schema (matches backend _EXPORT_COLUMNS_LIST):
+      // file_number | name | date_time | priority_level | address | notes
+      // Manual selection additionally embeds each profile's most recent photo
+      // (watermarked) via `photo_id` + include_photo.
+      // One row per profile, keeping that profile's most recent record.
+      final byProfile = <String, LogEntryModel>{};
+      for (final log in logs) {
+        final key = (log.profileId ?? 'p${log.id}').toString();
+        final cur = byProfile[key];
+        if (cur == null ||
+            (log.timestamp ?? '').compareTo(cur.timestamp ?? '') > 0) {
+          byProfile[key] = log;
+        }
+      }
+      final records = byProfile.values.map((log) {
         final dateTime = log.timestamp != null
             ? DateFormat('yyyy-MM-dd HH:mm:ss')
                 .format(DateTime.parse(log.timestamp!).toLocal())
             : '';
-        return {
-          'id_ctrl': idCtrl,
+        final rec = <String, dynamic>{
+          'file_number': log.profileId?.toString() ?? '',
+          'name': log.profileName ?? '',
           'date_time': dateTime,
-          'service_ordered': _svcLabel(log.serviceType),
-          'address': _addressWithZip(log),
-          'coordinates': '${log.latitude.toStringAsFixed(6)}, '
-              '${log.longitude.toStringAsFixed(6)}',
-          'detailed_notes': log.note ?? '',
+          'priority_level': categoryLabel(log.category),
+          'address': _streetZip(log),
+          'notes': log.note ?? '',
         };
+        if (manual) rec['photo_id'] = log.id; // latest photo for this profile
+        return rec;
       }).toList();
       final result = await api.exportExcel(
-          recipients: selected.toList(), records: records);
+          recipients: selected.toList(),
+          records: records,
+          includePhoto: manual);
       if (!mounted) return;
       _showSnack(result['file_base64'] != null
           ? 'Email not configured — Excel generated on server'
@@ -781,12 +780,16 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     }
   }
 
-  String _addressWithZip(LogEntryModel log) {
-    final address = log.address ?? '';
-    final zip = log.zipCode ?? '';
-    if (address.isEmpty) return zip;
-    if (zip.isNotEmpty && !address.contains(zip)) return '$address, $zip';
-    return address;
+  // Address for the profile export: street number + name, plus ZIP. Falls back
+  // to any 5-digit token in the address when zip_code isn't set.
+  String _streetZip(LogEntryModel log) {
+    final full = (log.address ?? '').trim();
+    final street = full.isEmpty ? '' : full.split(',').first.trim();
+    var zip = (log.zipCode ?? '').trim();
+    if (zip.isEmpty) {
+      zip = RegExp(r'\b\d{5}(?:-\d{4})?\b').firstMatch(full)?.group(0) ?? '';
+    }
+    return [street, zip].where((s) => s.isNotEmpty).join(', ');
   }
 
   // ── Filter sheet ──────────────────────────────────────────────────────────
@@ -1671,10 +1674,10 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
 
   // ── Log card ──────────────────────────────────────────────────────────────
   Widget _buildLogCard(LogEntryModel log, int index, [dynamic userPos]) {
-    final svcColor = _svcColor(log.serviceType);
-    final svcSoft = _svcSoftColor(log.serviceType);
-    final svcLabel = _svcLabel(log.serviceType);
-    final isRush = (log.serviceType ?? '').toLowerCase() == 'rush';
+    // Priority reflects the per-photo category (the profile serviceType is a
+    // legacy field and is now always 'standard' — see the Category badge).
+    final cat = categoryOf(log.category);
+    final isAsap = cat.value == 'asap';
 
     // Distance badge — only shown when GPS is available and pin is within 25 mi
     String? distLabel;
@@ -1721,8 +1724,8 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
           ],
           border: selected
               ? Border.all(color: _accent, width: 2)
-              : isRush
-                  ? const Border(left: BorderSide(color: _rushRed, width: 3))
+              : isAsap
+                  ? Border(left: BorderSide(color: cat.color, width: 3))
                   : null,
         ),
         child: ClipRRect(
@@ -1792,31 +1795,10 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
-                              const SizedBox(width: 8),
-                              // Service badge
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 9,
-                                  vertical: 4,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: svcSoft,
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Text(
-                                  svcLabel,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w700,
-                                    color: svcColor,
-                                    letterSpacing: 0.1,
-                                  ),
-                                ),
-                              ),
                             ],
                           ),
                           const SizedBox(height: 6),
-                          // Category badge + distance badge
+                          // Priority (category) badge + distance badge
                           Row(
                             children: [
                               Builder(builder: (_) {

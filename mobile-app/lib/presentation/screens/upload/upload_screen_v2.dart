@@ -48,6 +48,8 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   static const Color _successGreen = Color(0xFF10B981);
   static const Color _errorRed = Color(0xFFEF4444);
   static const Color _stepInactive = Color(0xFFE5E7EB);
+  // Radius used to surface "Nearby" profiles first in the profile picker.
+  static const double _kProfileProximityMi = 1;
   static const LinearGradient _btnGradient = LinearGradient(
     begin: Alignment.centerLeft,
     end: Alignment.centerRight,
@@ -83,7 +85,16 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   final _addressController = TextEditingController();
   final _payRateController = TextEditingController();   // F7
   final _servedToController = TextEditingController();
-  final _completionTypeController = TextEditingController();
+  // Delivery Style — a fixed set of choices (replaces the free-text "Type").
+  // Stored/sent as `completionType` to keep the backend field unchanged.
+  static const List<String> _kDeliveryStyles = [
+    'Personal',
+    'Sub on 1st',
+    'Sub on 3rd',
+    'Posting',
+    'Stake Out',
+  ];
+  String? _deliveryStyle;
   final _imagePicker = ImagePicker();
 
   @override
@@ -101,7 +112,6 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     _addressController.addListener(_saveDraft);
     _payRateController.addListener(_saveDraft);
     _servedToController.addListener(_saveDraft);
-    _completionTypeController.addListener(_saveDraft);
   }
 
   @override
@@ -110,7 +120,6 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     _addressController.dispose();
     _payRateController.dispose();
     _servedToController.dispose();
-    _completionTypeController.dispose();
     super.dispose();
   }
 
@@ -123,7 +132,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       'category': _selectedCategory,
       'payRate': _payRateController.text,
       'servedTo': _servedToController.text,
-      'completionType': _completionTypeController.text,
+      'completionType': _deliveryStyle,
       'profileId': _selectedProfile?.id,
       'photoPaths': _selectedImages.map((f) => f.path).toList(),
       'latitude': _latitude,
@@ -202,8 +211,9 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       _addressController.text = (draft['address'] ?? '') as String;
       _payRateController.text = (draft['payRate'] ?? '') as String;
       _servedToController.text = (draft['servedTo'] ?? '') as String;
-      _completionTypeController.text =
-          (draft['completionType'] ?? '') as String;
+      final savedStyle = draft['completionType'] as String?;
+      _deliveryStyle =
+          _kDeliveryStyles.contains(savedStyle) ? savedStyle : null;
       _selectedCategory =
           (draft['category'] ?? kDefaultCategory) as String;
       _selectedImages
@@ -700,9 +710,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     final servedTo = _servedToController.text.trim().isEmpty
         ? null
         : _servedToController.text.trim();
-    final completionType = _completionTypeController.text.trim().isEmpty
-        ? null
-        : _completionTypeController.text.trim();
+    final completionType = _deliveryStyle;
 
     // The watermark caption is now drawn as a live display overlay
     // (WatermarkCaption) in the feed + detail screens — from each photo's
@@ -806,10 +814,17 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       final nearby = await ref.read(apiServiceProvider).getNearby(
             latitude: _latitude!,
             longitude: _longitude!,
+            radiusFt: 5280, // searchable/reusable profiles: 1 mile
           );
       if (nearby.isEmpty || !mounted) return;
       final nearest = nearby.first;
-      final dist = (nearest['distance_ft'] as num?)?.toStringAsFixed(0) ?? '?';
+      final distFt = (nearest['distance_ft'] as num?)?.toDouble();
+      // Friendlier distance now that the search radius is 1 mile.
+      final dist = distFt == null
+          ? '?'
+          : distFt >= 1000
+              ? '${(distFt / 5280).toStringAsFixed(1)} mi'
+              : '${distFt.toStringAsFixed(0)} ft';
       final count = nearest['attempt_count'] ?? 0;
       final useExisting = await showDialog<bool>(
         context: context,
@@ -819,7 +834,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
               borderRadius: BorderRadius.circular(20)),
           title: const Text('Nearby pin found'),
           content: Text(
-              'A pin exists ~$dist ft away with $count logged attempt(s).\n\n'
+              'A pin exists ~$dist away with $count logged attempt(s).\n\n'
               'Add your photo, timestamp and note to that pin, or start a new one?'),
           actions: [
             TextButton(
@@ -869,9 +884,11 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                   const SizedBox(height: 14),
                   _buildProfileSection(profilesAsync),
                   const SizedBox(height: 14),
-                  _buildLocationSection(),
-                  const SizedBox(height: 14),
                   _buildCategorySection(),
+                  const SizedBox(height: 14),
+                  _buildDeliveryStyleSection(),
+                  const SizedBox(height: 14),
+                  _buildLocationSection(),
                   const SizedBox(height: 14),
                   _buildDetailsSection(),
                   const SizedBox(height: 8),
@@ -1662,6 +1679,65 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       );
 
   // ── Category section ──────────────────────────────────────────────────────
+  // ── Delivery Style ────────────────────────────────────────────────────────
+  // Replaces the old free-text "Type" field with a fixed dropdown. The value is
+  // sent to the backend as `completionType` (unchanged wire format).
+  Widget _buildDeliveryStyleSection() => _card(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _sectionLabel(
+                'Delivery Style', Icons.assignment_turned_in_outlined),
+            const SizedBox(height: 6),
+            const Text(
+              'How this delivery was completed.',
+              style: TextStyle(fontSize: 13, color: _inkSubtle),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              decoration: BoxDecoration(
+                color: _canvas,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: _deliveryStyle,
+                  isExpanded: true,
+                  icon: const Icon(Icons.expand_more_rounded,
+                      color: _inkSubtle),
+                  hint: const Row(
+                    children: [
+                      Icon(Icons.assignment_turned_in_outlined,
+                          size: 18, color: _inkSubtle),
+                      SizedBox(width: 8),
+                      Text('Select a delivery style…',
+                          style:
+                              TextStyle(fontSize: 14, color: _inkSubtle)),
+                    ],
+                  ),
+                  style: const TextStyle(fontSize: 14, color: _ink),
+                  borderRadius: BorderRadius.circular(12),
+                  items: _kDeliveryStyles
+                      .map((s) => DropdownMenuItem<String>(
+                            value: s,
+                            child: Text(s,
+                                style: const TextStyle(
+                                    fontSize: 14, color: _ink)),
+                          ))
+                      .toList(),
+                  onChanged: (value) {
+                    HapticFeedback.selectionClick();
+                    setState(() => _deliveryStyle = value);
+                    _saveDraft();
+                  },
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+
   Widget _buildCategorySection() => _card(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1732,142 +1808,250 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
         ),
       );
 
+  // Profile IDs with a photo within _kProfileProximityMi of the current
+  // upload location — surfaced first in the picker so the right profile is
+  // easy to find without scrolling/searching a long roster.
+  Set<int> _nearbyProfileIds() {
+    if (_latitude == null || _longitude == null) return {};
+    final photos = ref.read(photosProvider).valueOrNull ?? const [];
+    final ids = <int>{};
+    for (final p in photos) {
+      if (p.profileId == null) continue;
+      final km = LocationService.calculateDistance(
+          _latitude!, _longitude!, p.latitude, p.longitude);
+      if (km * 0.621371 <= _kProfileProximityMi) ids.add(p.profileId!);
+    }
+    return ids;
+  }
+
+  Widget _pickerSectionLabel(String text) => Padding(
+        padding: const EdgeInsets.fromLTRB(2, 4, 2, 8),
+        child: Text(
+          text.toUpperCase(),
+          style: const TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 0.5,
+            color: _inkSubtle,
+          ),
+        ),
+      );
+
+  Widget _profilePickerTile(
+    ProfileModel p, {
+    required bool nearby,
+    required VoidCallback onSelect,
+  }) {
+    final sel = _selectedProfile?.id == p.id;
+    return GestureDetector(
+      onTap: onSelect,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+        decoration: BoxDecoration(
+          color: sel ? _accentSoft : _canvas,
+          borderRadius: BorderRadius.circular(14),
+          border: sel ? Border.all(color: _accent, width: 1.5) : null,
+        ),
+        child: Row(
+          children: [
+            if (nearby) ...[
+              const Icon(Icons.location_on_rounded,
+                  size: 15, color: _accent),
+              const SizedBox(width: 8),
+            ],
+            Expanded(
+              child: Text(p.name,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: sel ? FontWeight.w600 : FontWeight.w400,
+                    color: sel ? _accent : _ink,
+                  )),
+            ),
+            if (sel)
+              const Icon(Icons.check_circle_rounded,
+                  color: _accent, size: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _showProfilePicker(List<ProfileModel> profiles) {
     HapticFeedback.lightImpact();
+    final searchCtrl = TextEditingController();
+    final nearbyIds = _nearbyProfileIds();
+
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
-      builder: (_) => Container(
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.of(context).size.height * 0.65,
-        ),
-        decoration: const BoxDecoration(
-          color: _surface,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 12),
-            Center(
-              child: Container(
-                width: 36,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: _separator,
-                  borderRadius: BorderRadius.circular(2),
+      builder: (sheetCtx) => StatefulBuilder(
+        builder: (sheetCtx, setSheetState) {
+          final query = searchCtrl.text.trim().toLowerCase();
+          final filtered = query.isEmpty
+              ? profiles
+              : profiles
+                  .where((p) => p.name.toLowerCase().contains(query))
+                  .toList();
+          final nearby =
+              filtered.where((p) => nearbyIds.contains(p.id)).toList();
+          final others =
+              filtered.where((p) => !nearbyIds.contains(p.id)).toList();
+
+          void select(ProfileModel p) {
+            HapticFeedback.selectionClick();
+            setState(() => _selectedProfile = p);
+            _saveDraft();
+            Navigator.pop(sheetCtx);
+          }
+
+          return Container(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.75,
+            ),
+            decoration: const BoxDecoration(
+              color: _surface,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(height: 12),
+                Center(
+                  child: Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: _separator,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
                 ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: Row(
-                children: [
-                  const Text(
-                    'Select Profile',
-                    style: TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700,
-                      color: _ink,
-                      letterSpacing: -0.3,
-                    ),
-                  ),
-                  const Spacer(),
-                  Text(
-                    '${profiles.length} profiles',
-                    style: const TextStyle(
-                      fontSize: 13,
-                      color: _inkSubtle,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            // ── New profile shortcut ─────────────────────────────────────
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: GestureDetector(
-                onTap: () {
-                  Navigator.pop(context);
-                  _showCreateProfileDialog();
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 14, vertical: 13),
-                  decoration: BoxDecoration(
-                    color: _accentSoft,
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                        color: _accent.withValues(alpha: 0.35), width: 1.5),
-                  ),
-                  child: const Row(
+                const SizedBox(height: 16),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: Row(
                     children: [
-                      Icon(Icons.add_circle_outline_rounded,
-                          size: 18, color: _accent),
-                      SizedBox(width: 10),
-                      Text('New Profile',
-                          style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: _accent)),
+                      const Text(
+                        'Select Profile',
+                        style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w700,
+                          color: _ink,
+                          letterSpacing: -0.3,
+                        ),
+                      ),
+                      const Spacer(),
+                      Text(
+                        '${profiles.length} profiles',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: _inkSubtle,
+                        ),
+                      ),
                     ],
                   ),
                 ),
-              ),
-            ),
-            Flexible(
-              child: ListView.builder(
-                shrinkWrap: true,
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-                itemCount: profiles.length,
-                itemBuilder: (_, i) {
-                  final p = profiles[i];
-                  final sel = _selectedProfile?.id == p.id;
-                  return GestureDetector(
+                const SizedBox(height: 12),
+                // ── Search ────────────────────────────────────────────────
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: TextField(
+                    controller: searchCtrl,
+                    onChanged: (_) => setSheetState(() {}),
+                    style: const TextStyle(fontSize: 14, color: _ink),
+                    decoration: InputDecoration(
+                      hintText: 'Search profiles…',
+                      hintStyle: const TextStyle(color: _inkSubtle),
+                      prefixIcon: const Icon(Icons.search_rounded,
+                          size: 20, color: _inkSubtle),
+                      filled: true,
+                      fillColor: _canvas,
+                      isDense: true,
+                      contentPadding:
+                          const EdgeInsets.symmetric(vertical: 12),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                  ),
+                ),
+                // ── New profile shortcut ─────────────────────────────────────
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: GestureDetector(
                     onTap: () {
-                      HapticFeedback.selectionClick();
-                      setState(() => _selectedProfile = p);
-                      _saveDraft();
-                      Navigator.pop(context);
+                      Navigator.pop(sheetCtx);
+                      _showCreateProfileDialog();
                     },
                     child: Container(
-                      margin: const EdgeInsets.only(bottom: 8),
                       padding: const EdgeInsets.symmetric(
                           horizontal: 14, vertical: 13),
                       decoration: BoxDecoration(
-                        color: sel ? _accentSoft : _canvas,
+                        color: _accentSoft,
                         borderRadius: BorderRadius.circular(14),
-                        border: sel
-                            ? Border.all(color: _accent, width: 1.5)
-                            : null,
+                        border: Border.all(
+                            color: _accent.withValues(alpha: 0.35),
+                            width: 1.5),
                       ),
-                      child: Row(
+                      child: const Row(
                         children: [
-                          Expanded(
-                            child: Text(p.name,
-                                style: TextStyle(
+                          Icon(Icons.add_circle_outline_rounded,
+                              size: 18, color: _accent),
+                          SizedBox(width: 10),
+                          Text('New Profile',
+                              style: TextStyle(
                                   fontSize: 14,
-                                  fontWeight: sel
-                                      ? FontWeight.w600
-                                      : FontWeight.w400,
-                                  color: sel ? _accent : _ink,
-                                )),
-                          ),
-                          if (sel)
-                            const Icon(Icons.check_circle_rounded,
-                                color: _accent, size: 20),
+                                  fontWeight: FontWeight.w600,
+                                  color: _accent)),
                         ],
                       ),
                     ),
-                  );
-                },
-              ),
+                  ),
+                ),
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                    children: [
+                      if (nearby.isNotEmpty) ...[
+                        _pickerSectionLabel(
+                            'Nearby · within $_kProfileProximityMi mi'),
+                        ...nearby.map((p) => _profilePickerTile(
+                              p,
+                              nearby: true,
+                              onSelect: () => select(p),
+                            )),
+                        if (others.isNotEmpty) const SizedBox(height: 10),
+                      ],
+                      if (others.isNotEmpty) ...[
+                        if (nearby.isNotEmpty)
+                          _pickerSectionLabel('All profiles'),
+                        ...others.map((p) => _profilePickerTile(
+                              p,
+                              nearby: false,
+                              onSelect: () => select(p),
+                            )),
+                      ],
+                      if (filtered.isEmpty)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 24),
+                          child: Text(
+                            'No profiles match "${searchCtrl.text.trim()}"',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                                color: _inkSubtle, fontSize: 13),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
@@ -2184,16 +2368,6 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
               maxLines: 3,
               textCapitalization: TextCapitalization.sentences,
               inputFormatters: const [SentenceCaseInputFormatter()],
-            ),
-            const SizedBox(height: 16),
-            // Completion detail — Type (e.g. Substitute / Personal / Posted)
-            _fieldLabel('Type', optional: true),
-            const SizedBox(height: 6),
-            _inputField(
-              controller: _completionTypeController,
-              hint: 'e.g. Substitute, Personal, Posted',
-              icon: Icons.assignment_turned_in_outlined,
-              textCapitalization: TextCapitalization.words,
             ),
             const SizedBox(height: 16),
             // Completion detail — Served To

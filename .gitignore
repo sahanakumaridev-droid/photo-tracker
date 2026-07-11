@@ -2,6 +2,7 @@
 backend/__pycache__/
 backend/*.pyc
 backend/photo_tracker.db
+backend/venv/
 backend/uploads/*.jpg
 backend/uploads/*.png
 backend/uploads/*.webp

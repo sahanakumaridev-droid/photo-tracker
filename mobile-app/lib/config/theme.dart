@@ -90,6 +90,8 @@ class AppTheme {
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
           fillColor: lightSurface,
+          prefixIconColor: lightTextSecondary,
+          suffixIconColor: lightTextSecondary,
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(10),
             borderSide: const BorderSide(color: lightBorder),
@@ -202,6 +204,8 @@ class AppTheme {
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
           fillColor: darkSurface,
+          prefixIconColor: darkTextSecondary,
+          suffixIconColor: darkTextSecondary,
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(10),
             borderSide: const BorderSide(color: darkBorder),

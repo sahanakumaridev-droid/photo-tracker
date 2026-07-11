@@ -415,7 +415,7 @@ class WatermarkCaption extends StatelessWidget {
               end: Alignment.topCenter,
               colors: [
                 Colors.black.withValues(alpha: 0.66),
-                Colors.black.withValues(alpha: 0.0),
+                Colors.black.withValues(alpha: 0),
               ],
             ),
           ),

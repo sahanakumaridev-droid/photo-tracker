@@ -1,14 +1,11 @@
 import 'dart:convert';
-import 'dart:io';
 
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -96,28 +93,6 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
         return _airportBlue;
       default:
         return _standardGreen;
-    }
-  }
-
-  String _svcLabel(String? t) {
-    switch ((t ?? '').toLowerCase()) {
-      case 'rush':
-        return 'ASAP';
-      case 'airport':
-        return 'Airport';
-      default:
-        return 'Standard';
-    }
-  }
-
-  IconData _svcIcon(String? t) {
-    switch ((t ?? '').toLowerCase()) {
-      case 'rush':
-        return Icons.local_fire_department_rounded;
-      case 'airport':
-        return Icons.flight_rounded;
-      default:
-        return Icons.check_circle_rounded;
     }
   }
 
@@ -359,52 +334,22 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
       ));
 
     try {
-      final dio = ref.read(dioProvider);
       final agentEmail = ref.read(authProvider).email;
       final agentName = (agentEmail != null && agentEmail.contains('@'))
           ? agentEmail.split('@').first
           : (agentEmail ?? '');
 
       final records = <Map<String, dynamic>>[];
-      // {filename, content_b64, mimetype} — the watermarked photos.
-      final attachments = <Map<String, String>>[];
+      // Photo ids (parallel to records) — the SERVER watermarks these reliably
+      // (device image codecs can't decompress some photos). No client fetch or
+      // baking here.
+      final photoIds = <int>[];
 
       for (final p in selected) {
         // Chronological attempt number (#1 = earliest) within the full job.
         final attemptNo = total - attempts.indexOf(p);
         records.add(_jobRecord(p, attemptNo, agentName));
-
-        if (opts.includeImages) {
-          try {
-            final resp = await dio.get<List<int>>(
-              p.imageUrl,
-              options: Options(responseType: ResponseType.bytes),
-            );
-            if (resp.data != null) {
-              // Uploads store the RAW photo (the app shows the watermark as a
-              // live overlay). For export we bake the caption into the file so
-              // the downloaded/emailed photo carries a permanent stamp.
-              final tmp = await getTemporaryDirectory();
-              final raw = File('${tmp.path}/exp_${p.id}_$attemptNo.img');
-              await raw.writeAsBytes(resp.data!);
-              final stamped = await applyWatermark(
-                raw,
-                p.takenAt ?? p.timestamp ?? '',
-                p.address ?? p.zipCode ?? '',
-                latitude: p.latitude,
-                longitude: p.longitude,
-                serviceLabel: categoryLabel(p.category ?? p.serviceType),
-                attemptNumber: attemptNo,
-                agentName: agentName,
-              );
-              attachments.add({
-                'filename': 'attempt_${attemptNo}_${p.id}.png',
-                'content_b64': base64Encode(await stamped.readAsBytes()),
-                'mimetype': 'image/png',
-              });
-            }
-          } catch (_) {/* skip image on fetch failure */}
-        }
+        if (opts.includeImages) photoIds.add(p.id);
       }
 
       final safeName = (photo.profileName ?? 'job')
@@ -413,10 +358,10 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
 
       if (!mounted) return;
       if (choice.email) {
-        await _emailJobRecord(photo, records, attachments, baseName,
+        await _emailJobRecord(photo, records, photoIds, baseName,
             _jobHeader(photo, agentName), opts.latestOnly);
       } else {
-        await _shareJobRecord(photo, records, attachments, baseName);
+        await _shareJobRecord(photo, records, photoIds, baseName);
       }
     } catch (e) {
       if (!mounted) return;
@@ -501,7 +446,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
   Future<void> _emailJobRecord(
     PhotoModel photo,
     List<Map<String, dynamic>> records,
-    List<Map<String, String>> attachments,
+    List<int> photoIds,
     String baseName,
     Map<String, dynamic> header,
     bool latestOnly,
@@ -526,7 +471,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
       final res = await api.exportJobExcel(
         recipients: recipients,
         records: records,
-        attachments: attachments,
+        photoIds: photoIds,
         subject: 'Service Record — ${photo.profileName ?? ''}',
         body: 'Service record for ${photo.profileName ?? 'this job'} attached.',
         baseName: baseName,
@@ -559,17 +504,19 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
   }
 
   /// Builds the Excel server-side (no recipients) and hands it to the OS share
-  /// sheet together with the watermarked photos the app already fetched.
+  /// sheet together with the server-watermarked photos it returns under
+  /// `photos`.
   Future<void> _shareJobRecord(
     PhotoModel photo,
     List<Map<String, dynamic>> records,
-    List<Map<String, String>> attachments,
+    List<int> photoIds,
     String baseName,
   ) async {
     final api = ref.read(apiServiceProvider);
     final res = await api.exportJobExcel(
       recipients: const [],
       records: records,
+      photoIds: photoIds,
       baseName: baseName,
     );
     if (!mounted) return;
@@ -584,11 +531,16 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       ));
     }
-    for (final a in attachments) {
+    // Server-watermarked photos returned for the share flow.
+    final photos = (res['photos'] as List?) ?? const [];
+    for (final a in photos) {
+      final m = (a as Map).cast<String, dynamic>();
+      final content = m['content_b64'] as String?;
+      if (content == null) continue;
       files.add(XFile.fromData(
-        base64Decode(a['content_b64']!),
-        name: a['filename'],
-        mimeType: a['mimetype'],
+        base64Decode(content),
+        name: m['filename'] as String? ?? 'photo.png',
+        mimeType: m['mimetype'] as String? ?? 'image/png',
       ));
     }
     if (files.isEmpty) return;
@@ -1038,7 +990,9 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
 
   // ── Main detail scaffold ──────────────────────────────────────────────────
   Widget _buildDetailScaffold(PhotoModel photo) {
-    final svcColor = _svcColor(photo.serviceType);
+    // Priority reflects the per-photo category (serviceType is the legacy
+    // profile field and is no longer the source of truth for priority).
+    final svcColor = categoryOf(photo.category).color;
     final url = _fullUrl(photo.imageUrl);
 
     return Scaffold(
@@ -1230,6 +1184,31 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                     const SizedBox(height: 10),
                   ],
 
+                  // Delivery Style — captured on upload (completion_type)
+                  if (photo.completionType != null &&
+                      photo.completionType!.isNotEmpty) ...[
+                    _buildInfoCard(
+                      icon: Icons.assignment_turned_in_outlined,
+                      label: 'Delivery Style',
+                      value: photo.completionType!,
+                      iconColor: const Color(0xFF7C3AED),
+                    ),
+                    const SizedBox(height: 10),
+                  ],
+
+                  // Served To — captured on upload (served_to). Always shown so
+                  // the field is visibly part of every service record.
+                  _buildInfoCard(
+                    icon: Icons.person_outline,
+                    label: 'Served To',
+                    value: (photo.servedTo != null &&
+                            photo.servedTo!.trim().isNotEmpty)
+                        ? photo.servedTo!
+                        : '—',
+                    iconColor: const Color(0xFF0891B2),
+                  ),
+                  const SizedBox(height: 10),
+
                   // Profiles tags (if multiple)
                   if (photo.profiles != null && photo.profiles!.isNotEmpty)
                     _buildProfileTags(photo),
@@ -1300,13 +1279,13 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                   Row(
                     children: [
                       Icon(
-                        _svcIcon(photo.serviceType),
+                        categoryOf(photo.category).icon,
                         size: 13,
                         color: svcColor,
                       ),
                       const SizedBox(width: 4),
                       Text(
-                        _svcLabel(photo.serviceType),
+                        categoryOf(photo.category).label,
                         style: TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w500,

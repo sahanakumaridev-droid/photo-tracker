@@ -57,7 +57,7 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
   static const _errorRed = Color(0xFFDC2626);
 
   ProfileModel? _selectedProfile;
-  // Service level is chosen per-upload here (not stored on the profile).
+  // Priority level is chosen per-upload here (not stored on the profile).
   String _selectedCategory = kDefaultCategory;
   File? _pickedFile;
   // Capture time read from the photo's EXIF (falls back to now). Shown live
@@ -308,7 +308,7 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
                                     decoration: BoxDecoration(
                                       color: selected
                                           ? _accent
-                                          : _accent.withOpacity(0.12),
+                                          : _accent.withValues(alpha: 0.12),
                                       shape: BoxShape.circle,
                                     ),
                                     child: Center(
@@ -360,10 +360,10 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
 
                   const SizedBox(height: 16),
 
-                  // Service level — chosen per-upload (same as the full upload
+                  // Priority level — chosen per-upload (same as the full upload
                   // screen); not stored on the profile.
                   const Text(
-                    'Service Level',
+                    'Priority Level',
                     style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
@@ -440,7 +440,7 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
                             child: Container(
                               padding: const EdgeInsets.all(5),
                               decoration: BoxDecoration(
-                                color: Colors.black.withOpacity(0.65),
+                                color: Colors.black.withValues(alpha: 0.65),
                                 borderRadius: BorderRadius.circular(6),
                               ),
                               child: const Icon(
@@ -644,7 +644,7 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
         decoration: BoxDecoration(
           color: _accentSoft,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: _accent.withOpacity(0.35), width: 1),
+          border: Border.all(color: _accent.withValues(alpha: 0.35), width: 1),
         ),
         child: const Row(
           mainAxisAlignment: MainAxisAlignment.center,

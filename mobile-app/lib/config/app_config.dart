@@ -6,6 +6,8 @@ class AppConfig {
   // Nginx proxies /api/ -> backend. The nip.io host auto-resolves to
   // 159.198.79.219 and has a valid Let's Encrypt cert.
   static const String apiBaseUrl = 'https://159-198-79-219.nip.io';
+  // Local dev: iOS simulator shares the host network, so localhost works.
+  // static const String apiBaseUrl = 'http://localhost:8000';
   static const int apiTimeout = 30; // seconds
   static const int apiRetryCount = 3;
 
@@ -40,5 +42,5 @@ class AppConfig {
   static String getApiBaseUrl() => apiBaseUrl;
 
   /// Check if running in debug mode
-  static bool isDebugMode() => true; // Set to false in production
+  static bool isDebugMode() => false; // Set to false in production
 }

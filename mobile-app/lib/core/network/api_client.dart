@@ -504,12 +504,19 @@ class ApiService {
   }
 
   /// F11: generate an Excel file server-side and email to recipients.
+  /// Profile-list export. When [includePhoto] is true (manual selection) the
+  /// server embeds each profile's most recent photo (watermarked) and adds a
+  /// Photo column; false (full list) returns the same fields without the photo.
   Future<Map<String, dynamic>> exportExcel({
     required List<String> recipients,
     required List<Map<String, dynamic>> records,
+    bool includePhoto = false,
   }) async {
-    final response = await _dio.post('/api/export/excel',
-        data: {'recipients': recipients, 'records': records});
+    final response = await _dio.post('/api/export/excel', data: {
+      'recipients': recipients,
+      'records': records,
+      'include_photo': includePhoto,
+    });
     return response.data as Map<String, dynamic>;
   }
 
@@ -522,10 +529,15 @@ class ApiService {
   /// [header] carries the Rockstar service-record header fields (service_name,
   /// status, agent, address, completion_type, served_to). [latestOnly] tells
   /// the server to render just the most recent note vs the full attempt log.
+  /// [photoIds] (parallel to [records]) → the server watermarks those photos
+  /// itself (reliable on any device) and either attaches them to the email or
+  /// returns them under `photos` for the share flow. Prefer this over
+  /// [attachments] (kept for backward compatibility).
   Future<Map<String, dynamic>> exportJobExcel({
     required List<String> recipients,
     required List<Map<String, dynamic>> records,
     List<Map<String, String>> attachments = const [],
+    List<int> photoIds = const [],
     String subject = 'Service Record',
     String body = 'Service record attached.',
     String? baseName,
@@ -536,6 +548,7 @@ class ApiService {
       'recipients': recipients,
       'records': records,
       'attachments': attachments,
+      if (photoIds.isNotEmpty) 'photo_ids': photoIds,
       'subject': subject,
       'body': body,
       'latest_only': latestOnly,
