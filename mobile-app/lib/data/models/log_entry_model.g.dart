@@ -20,6 +20,7 @@ LogEntryModel _$LogEntryModelFromJson(Map<String, dynamic> json) =>
       profileName: json['profile_name'] as String?,
       serviceType: json['service_type'] as String?,
       category: json['category'] as String?,
+      fileNumber: json['file_number'] as String?,
       profiles: (json['profiles'] as List<dynamic>?)
           ?.map((e) => ProfileModel.fromJson(e as Map<String, dynamic>))
           .toList(),
@@ -39,5 +40,6 @@ Map<String, dynamic> _$LogEntryModelToJson(LogEntryModel instance) =>
       'profile_name': instance.profileName,
       'service_type': instance.serviceType,
       'category': instance.category,
+      'file_number': instance.fileNumber,
       'profiles': instance.profiles,
     };

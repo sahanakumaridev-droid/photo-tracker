@@ -211,6 +211,48 @@ class LocationService {
     }
   }
 
+  /// Reverse geocode [latitude]/[longitude] into discrete Street/City/State/
+  /// ZIP fields, for callers with their own structured address form (e.g. a
+  /// Profile Location card) rather than a single joined display string.
+  /// Returns all-null fields if the lookup fails.
+  static Future<({String? street, String? city, String? state, String? zip})>
+      reverseGeocodeDetailed(double latitude, double longitude) async {
+    final dio = Dio();
+    try {
+      final response = await dio.get(
+        '${AppConstants.nominatimBaseUrl}/reverse',
+        queryParameters: {
+          'lat': latitude,
+          'lon': longitude,
+          'format': 'jsonv2',
+          'addressdetails': 1,
+          'zoom': 18,
+          'accept-language': 'en',
+          '_t': DateTime.now().millisecondsSinceEpoch,
+        },
+        options: Options(
+          headers: {
+            'User-Agent':
+                'GeoTaggingApp/1.0 (contact: support@photo-tracker.app)',
+            'Cache-Control': 'no-cache, no-store',
+            'Pragma': 'no-cache',
+          },
+          receiveTimeout: const Duration(seconds: 15),
+          sendTimeout: const Duration(seconds: 15),
+        ),
+      );
+      if (response.statusCode == 200 && response.data is Map) {
+        final data = response.data as Map<String, dynamic>;
+        final addr = data['address'] as Map<String, dynamic>?;
+        if (addr != null) return _addressComponents(addr);
+      }
+    } catch (_) {
+      // Fall through to the all-null result below — caller keeps whatever
+      // it already had (e.g. lat/lng from the map pick still apply).
+    }
+    return (street: null, city: null, state: null, zip: null);
+  }
+
   /// Build a clean, consistently formatted address string.
   /// Format: "123 Main St, San Diego, CA 92101"
   ///
@@ -224,45 +266,43 @@ class LocationService {
   ///   - No duplicates: if a field duplicates the city, skip it
   ///   - No empty/null segments, no trailing commas
   static String? _buildAddress(Map<String, dynamic> addr) {
+    final c = _addressComponents(addr);
     final seen = <String>{};
     final parts = <String>[];
-
-    final houseNumber = addr['house_number'] as String?;
-    final road = addr['road'] as String?;
-    if (road != null && road.isNotEmpty) {
-      final street =
-          houseNumber != null ? '$houseNumber $road' : road;
-      parts.add(street);
-      seen.add(street.toLowerCase());
+    for (final part in [c.street, c.city, c.state, c.zip]) {
+      if (part == null || part.isEmpty) continue;
+      if (seen.contains(part.toLowerCase())) continue;
+      parts.add(part);
+      seen.add(part.toLowerCase());
     }
-
-    final city = (addr['city'] ??
-            addr['town'] ??
-            addr['village'] ??
-            addr['municipality'])
-        as String?;
-
-    if (city != null && city.isNotEmpty && !seen.contains(city.toLowerCase())) {
-      parts.add(city);
-      seen.add(city.toLowerCase());
-    }
-
-    final stateCode = addr['state_code'] as String?;
-    final stateName = addr['state'] as String?;
-    // Prefer abbreviation for compact inline addresses
-    final st = stateCode ?? stateName;
-    if (st != null && st.isNotEmpty && !seen.contains(st.toLowerCase())) {
-      parts.add(st);
-      seen.add(st.toLowerCase());
-    }
-
-    final zip = addr['postcode'] as String?;
-    if (zip != null && zip.isNotEmpty) {
-      parts.add(zip);
-    }
-
     if (parts.isEmpty) return null;
     return parts.join(', ').replaceAll(RegExp(r',\s*,'), ',').trim();
+  }
+
+  /// Extracts street/city/state(abbreviation)/zip from a Nominatim
+  /// `address` map — the same fields/priority `_buildAddress` joins into a
+  /// single line, kept separate here for callers that need discrete fields
+  /// (e.g. a Profile Location form with its own Address/City/State/ZIP
+  /// inputs).
+  static ({String? street, String? city, String? state, String? zip})
+      _addressComponents(Map<String, dynamic> addr) {
+    final houseNumber = addr['house_number'] as String?;
+    final road = addr['road'] as String?;
+    final street = (road != null && road.isNotEmpty)
+        ? (houseNumber != null ? '$houseNumber $road' : road)
+        : null;
+
+    final city = (addr['city'] ??
+        addr['town'] ??
+        addr['village'] ??
+        addr['municipality']) as String?;
+
+    // Prefer abbreviation for compact inline addresses.
+    final state = (addr['state_code'] ?? addr['state']) as String?;
+
+    final zip = addr['postcode'] as String?;
+
+    return (street: street, city: city, state: state, zip: zip);
   }
 
   // ── Debug logging ────────────────────────────────────────────────────────

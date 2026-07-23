@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -941,23 +942,21 @@ class _PhotoCarouselState extends State<_PhotoCarousel> {
               itemBuilder: (_, i) => Stack(
                 fit: StackFit.expand,
                 children: [
-                  Image.network(
-                    widget.images[i],
+                  CachedNetworkImage(
+                    imageUrl: widget.images[i],
                     fit: BoxFit.cover,
-                    loadingBuilder: (_, child, prog) => prog == null
-                        ? child
-                        : Container(
-                            color: const Color(0xFFF3F4F6),
-                            child: const Center(
-                              child: SizedBox(
-                                width: 24,
-                                height: 24,
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2, color: _muted),
-                              ),
-                            ),
-                          ),
-                    errorBuilder: (_, __, ___) => Container(
+                    placeholder: (_, __) => Container(
+                      color: const Color(0xFFF3F4F6),
+                      child: const Center(
+                        child: SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: _muted),
+                        ),
+                      ),
+                    ),
+                    errorWidget: (_, __, ___) => Container(
                       color: const Color(0xFFF3F4F6),
                       child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,

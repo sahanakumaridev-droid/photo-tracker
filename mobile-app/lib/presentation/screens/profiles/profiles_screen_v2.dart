@@ -197,6 +197,7 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
 
   void _showCreateProfileDialog(BuildContext context) {
     final nameController = TextEditingController();
+    final payRateController = TextEditingController();
 
     showDialog(
       context: context,
@@ -221,6 +222,15 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
               "You'll choose the service level when you upload a photo.",
               style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: payRateController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Pay Rate (Optional)',
+                prefixText: r'$',
+              ),
+            ),
           ],
         ),
         actions: [
@@ -237,9 +247,18 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
                 return;
               }
               try {
-                await ref.read(createProfileProvider(
-                  (nameController.text, kDefaultCategory),
-                ).future);
+                await ref.read(createProfileProvider((
+                  name: nameController.text,
+                  serviceType: kDefaultCategory,
+                  payRate: int.tryParse(payRateController.text.trim()),
+                  status: null,
+                  address: null,
+                  city: null,
+                  state: null,
+                  postalCode: null,
+                  latitude: null,
+                  longitude: null,
+                )).future);
                 if (context.mounted) {
                   Navigator.pop(context);
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -264,6 +283,8 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
   void _showEditProfileDialog(BuildContext context, ProfileModel profile) {
     final nameController = TextEditingController(text: profile.name);
     final noteController = TextEditingController(text: profile.note ?? '');
+    final payRateController =
+        TextEditingController(text: profile.payRate?.toString() ?? '');
 
     showDialog(
       context: context,
@@ -286,6 +307,13 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
               decoration: const InputDecoration(labelText: 'Note'),
               maxLines: 2,
             ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: payRateController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                  labelText: 'Pay Rate', prefixText: r'$'),
+            ),
           ],
         ),
         actions: [
@@ -297,12 +325,23 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
             onPressed: () async {
               try {
                 await ref.read(updateProfileProvider((
-                  profile.id,
-                  nameController.text,
+                  profileId: profile.id,
+                  name: nameController.text,
                   // Service level is no longer a profile property; preserve
                   // whatever was stored so the update is a no-op for it.
-                  profile.serviceType,
-                  noteController.text.isEmpty ? null : noteController.text,
+                  serviceType: profile.serviceType,
+                  note: noteController.text.isEmpty ? null : noteController.text,
+                  payRate: int.tryParse(payRateController.text.trim()),
+                  // This dialog only edits name/note/pay rate — preserve
+                  // whatever Status/Profile Location was already stored so
+                  // saving here can't silently wipe them.
+                  status: profile.status,
+                  address: profile.address,
+                  city: profile.city,
+                  state: profile.state,
+                  postalCode: profile.postalCode,
+                  latitude: profile.latitude,
+                  longitude: profile.longitude,
                 )).future);
                 ref.invalidate(profilesProvider);
                 if (context.mounted) {

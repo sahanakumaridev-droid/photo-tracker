@@ -21,6 +21,9 @@ class PhotoModel {
     this.category,
     this.completionType,
     this.servedTo,
+    this.relationTo,
+    this.fileNumber,
+    this.successful = true,
     this.profiles,
     this.isFavorited = false,
     this.payRate,
@@ -64,6 +67,15 @@ class PhotoModel {
   /// Who the service was served to.
   @JsonKey(name: 'served_to')
   final String? servedTo;
+  /// servedTo's relation to the profile (mandatory when servedTo is a name).
+  @JsonKey(name: 'relation_to')
+  final String? relationTo;
+  /// Dispatcher-assigned file number for this job.
+  @JsonKey(name: 'file_number')
+  final String? fileNumber;
+  /// Whether the attempt was successful. Defaults true.
+  @JsonKey(name: 'successful', defaultValue: true)
+  final bool successful;
   final List<ProfileModel>? profiles;
   @JsonKey(name: 'is_favorited', defaultValue: false)
   final bool isFavorited;
@@ -100,6 +112,9 @@ class PhotoModel {
     String? category,
     String? completionType,
     String? servedTo,
+    String? relationTo,
+    String? fileNumber,
+    bool? successful,
     List<ProfileModel>? profiles,
     bool? isFavorited,
     int? payRate,
@@ -125,6 +140,9 @@ class PhotoModel {
         category: category ?? this.category,
         completionType: completionType ?? this.completionType,
         servedTo: servedTo ?? this.servedTo,
+        relationTo: relationTo ?? this.relationTo,
+        fileNumber: fileNumber ?? this.fileNumber,
+        successful: successful ?? this.successful,
         profiles: profiles ?? this.profiles,
         isFavorited: isFavorited ?? this.isFavorited,
         payRate: payRate ?? this.payRate,

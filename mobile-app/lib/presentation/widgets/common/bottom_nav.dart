@@ -5,9 +5,9 @@ import 'package:flutter/services.dart';
 /// margin above the bottom edge, with a centered, elevated Upload button.
 ///
 /// Index map (matches the router shell):
-///   0 Home · 1 Map · 2 Earnings · 3 Log · 4 Capture/Upload
-/// Settings lives behind the top-bar avatar. The app launches on the Map but
-/// Home stays available as its own tab.
+///   0 Home (map) · 1 Earnings · 2 Log · 3 Capture/Upload
+/// Settings lives behind the top-bar avatar. "Home" now IS the map view; the
+/// old feed screen is reachable via the "View List" button on the map.
 class BottomNav extends StatelessWidget {
   const BottomNav({
     required this.currentIndex,
@@ -50,10 +50,9 @@ class BottomNav extends StatelessWidget {
           child: Row(
             children: [
               _tab(0, Icons.home_outlined, Icons.home_rounded, 'Home', accent),
-              _tab(1, Icons.map_outlined, Icons.map_rounded, 'Map', accent),
-              _tab(2, Icons.attach_money, Icons.monetization_on, 'Earnings',
+              _tab(1, Icons.attach_money, Icons.monetization_on, 'Earnings',
                   accent),
-              _tab(3, Icons.article_outlined, Icons.description_rounded, 'Log',
+              _tab(2, Icons.article_outlined, Icons.description_rounded, 'Log',
                   accent),
               // End gap — hosts the floating Upload button above its own cell.
               Expanded(
@@ -66,9 +65,9 @@ class BottomNav extends StatelessWidget {
                       Positioned(
                         top: -22,
                         child: _UploadButton(
-                          active: currentIndex == 4,
+                          active: currentIndex == 3,
                           accent: accent,
-                          onTap: () => _go(4),
+                          onTap: () => _go(3),
                         ),
                       ),
                       Padding(
@@ -77,10 +76,10 @@ class BottomNav extends StatelessWidget {
                           duration: const Duration(milliseconds: 180),
                           style: TextStyle(
                             fontSize: 10,
-                            fontWeight: currentIndex == 4
+                            fontWeight: currentIndex == 3
                                 ? FontWeight.w700
                                 : FontWeight.w600,
-                            color: currentIndex == 4 ? accent : _muted,
+                            color: currentIndex == 3 ? accent : _muted,
                           ),
                           child: const Text('Upload'),
                         ),

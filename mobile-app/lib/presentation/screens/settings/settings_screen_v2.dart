@@ -252,6 +252,7 @@ class SettingsScreenV2 extends ConsumerWidget {
   // profile block fades out as the user scrolls up.
   Widget _hero(
       double t, String name, String? email, String initial, Color accent) {
+    // Both args are non-null, so lerp can never actually return null here.
     final dark = Color.lerp(accent, Colors.black, 0.34)!;
     final fade = Curves.easeOut.transform(t);
     return Container(

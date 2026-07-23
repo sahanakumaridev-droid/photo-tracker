@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -94,6 +95,9 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
   static const _textPrimary = Color(0xFFE2E8F0);
   static const _textMuted = Color(0xFF94A3B8);
   static const _accent = Color(0xFF6366F1);
+  // Radius used to surface nearby profiles first in the profile dropdown —
+  // matches the main Upload tab's profile picker.
+  static const double _kProfileProximityFt = 200;
 
   int _activeTab = 0;
   int _photoIdx = 0;
@@ -109,6 +113,10 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
   // a watermark and baked into the image on upload.
   String? _takenAt;
   final _noteCtrl = TextEditingController();
+  // Only used as a fallback when this job has no file number yet (legacy pins
+  // predating the required-file-number change) — normally it's carried
+  // forward from the job's existing photos, below.
+  final _fileNumberCtrl = TextEditingController();
   int? _addProfileId;
   bool _uploading = false;
   final _picker = ImagePicker();
@@ -117,8 +125,27 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
   void initState() {
     super.initState();
     _addProfileId = widget.groups.isNotEmpty ? widget.groups[0].profileId : null;
+    // File Number's fallback field affects the submit button's enabled
+    // state, so it needs to rebuild live as the user types.
+    _fileNumberCtrl.addListener(() => setState(() {}));
     // Auto reverse-geocode the pin location
     WidgetsBinding.instance.addPostFrameCallback((_) => _fetchPinAddress());
+  }
+
+  /// The dispatcher-assigned file number already on record for [profileId]
+  /// (carried over from any of its existing photos, at this pin or
+  /// elsewhere), so adding another attempt never asks the user to retype it.
+  /// Falls back to null for a profile with no prior file number (legacy data
+  /// predating the required-file-number change).
+  String? _existingFileNumberFor(int? profileId) {
+    if (profileId == null) return null;
+    final photos = ref.read(photosProvider).valueOrNull ?? const [];
+    for (final p in photos) {
+      if (p.profileId != profileId) continue;
+      final fn = p.fileNumber;
+      if (fn != null && fn.isNotEmpty) return fn;
+    }
+    return null;
   }
 
   Future<void> _fetchPinAddress() async {
@@ -139,7 +166,22 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
   @override
   void dispose() {
     _noteCtrl.dispose();
+    _fileNumberCtrl.dispose();
     super.dispose();
+  }
+
+  // Profile IDs with a photo within _kProfileProximityMi of this pin —
+  // surfaced first in the profile dropdown, matching the main Upload tab.
+  Set<int> _nearbyProfileIds() {
+    final photos = ref.read(photosProvider).valueOrNull ?? const [];
+    final ids = <int>{};
+    for (final p in photos) {
+      if (p.profileId == null) continue;
+      final km = LocationService.calculateDistance(
+          widget.lat, widget.lng, p.latitude, p.longitude);
+      if (km * 3280.84 <= _kProfileProximityFt) ids.add(p.profileId!);
+    }
+    return ids;
   }
 
   void _switchTab(int i) {
@@ -150,6 +192,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
       _pickedFile = null;
       _takenAt = null;
       _noteCtrl.clear();
+      _fileNumberCtrl.clear();
       _addProfileId = widget.groups[i].profileId;
     });
   }
@@ -197,6 +240,9 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
 
   Future<void> _uploadPhoto() async {
     if (_pickedFile == null || _addProfileId == null) return;
+    final fileNumber = _existingFileNumberFor(_addProfileId) ??
+        _fileNumberCtrl.text.trim();
+    if (fileNumber.isEmpty) return;
     setState(() => _uploading = true);
     try {
       final takenAt = _takenAt ?? DateTime.now().toUtc().toIso8601String();
@@ -210,6 +256,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
         'longitude': widget.lng,
         'note': _noteCtrl.text.trim().isEmpty ? null : _noteCtrl.text.trim(),
         'takenAt': takenAt,
+        'fileNumber': fileNumber,
       }).future);
       if (mounted) {
         setState(() {
@@ -217,6 +264,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
           _pickedFile = null;
           _takenAt = null;
           _noteCtrl.clear();
+          _fileNumberCtrl.clear();
         });
         widget.onUpdated();
         Navigator.pop(context);
@@ -433,10 +481,16 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
           fit: StackFit.expand,
           children: [
             // Photo
-            Image.network(
-              ph.imageUrl,
+            CachedNetworkImage(
+              imageUrl: ph.imageUrl,
               fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => Container(
+              placeholder: (_, __) => Container(
+                color: _surface,
+                child: const Center(
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+              errorWidget: (_, __, ___) => Container(
                 color: _surface,
                 child: const Icon(
                   Icons.photo_library_outlined,
@@ -632,14 +686,22 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                   ),
                 ),
               ),
-              items: profiles
-                  .map(
-                    (p) => DropdownMenuItem(
-                      value: p.id,
-                      child: Text('${p.name} (${p.serviceType})'),
-                    ),
-                  )
-                  .toList(),
+              items: () {
+                final nearbyIds = _nearbyProfileIds();
+                // Only profiles within _kProfileProximityFt of this pin are
+                // selectable — matches the proximity filter used elsewhere
+                // in the upload flow.
+                final nearby =
+                    profiles.where((p) => nearbyIds.contains(p.id)).toList();
+                return nearby
+                    .map(
+                      (p) => DropdownMenuItem(
+                        value: p.id,
+                        child: Text('📍 ${p.name} (${p.serviceType})'),
+                      ),
+                    )
+                    .toList();
+              }(),
               onChanged: (v) => setState(() => _addProfileId = v),
             ),
           ),
@@ -752,12 +814,52 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
           ),
           const SizedBox(height: 10),
 
+          // File Number — only asked for when this profile has no file
+          // number on record yet (legacy pins predating this requirement).
+          // Otherwise it's silently carried forward from the existing photo.
+          if (_existingFileNumberFor(_addProfileId) == null) ...[
+            TextField(
+              controller: _fileNumberCtrl,
+              style: const TextStyle(fontSize: 13, color: _textPrimary),
+              decoration: InputDecoration(
+                hintText: 'File number (required) — e.g. 24-00123',
+                hintStyle: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.3),
+                  fontSize: 13,
+                ),
+                filled: true,
+                fillColor: Colors.white.withValues(alpha: 0.06),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide(
+                    color: Colors.white.withValues(alpha: 0.1),
+                  ),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide(
+                    color: Colors.white.withValues(alpha: 0.1),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+
           // Upload button
           SizedBox(
             width: double.infinity,
             child: ElevatedButton(
-              onPressed:
-                  (_pickedFile != null && !_uploading) ? _uploadPhoto : null,
+              onPressed: (_pickedFile != null &&
+                      !_uploading &&
+                      (_existingFileNumberFor(_addProfileId) != null ||
+                          _fileNumberCtrl.text.trim().isNotEmpty))
+                  ? _uploadPhoto
+                  : null,
               style: ElevatedButton.styleFrom(
                 backgroundColor:
                     _pickedFile != null ? _accent : Colors.white12,

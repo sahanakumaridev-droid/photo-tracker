@@ -1,23 +1,37 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:dio/dio.dart';
 
+import '../../core/storage/api_cache.dart';
 import '../models/photo_model.dart';
 
 class PhotoRepository {
 
   PhotoRepository(this._dio);
   final Dio _dio;
+  static const _cacheKey = 'photos';
 
-  /// Get all photos
+  /// Get all photos. On a poor/dropped connection, falls back to the last
+  /// successfully cached list instead of surfacing a network error.
   Future<List<PhotoModel>> getPhotos() async {
     try {
       final response = await _dio.get('/api/photos');
       if (response.data is List) {
-        return (response.data as List)
+        final list = response.data as List;
+        unawaited(ApiCache.write(_cacheKey, jsonEncode(list)));
+        return list
             .map((p) => PhotoModel.fromJson(p as Map<String, dynamic>))
             .toList();
       }
       return [];
     } on DioException catch (e) {
+      final cached = ApiCache.read(_cacheKey);
+      if (cached != null) {
+        return (jsonDecode(cached) as List)
+            .map((p) => PhotoModel.fromJson(p as Map<String, dynamic>))
+            .toList();
+      }
       throw _handleError(e);
     }
   }
@@ -34,6 +48,9 @@ class PhotoRepository {
     String? category,
     String? completionType,    // e.g. Substitute | Personal
     String? servedTo,          // who service was served to
+    String? relationTo,        // servedTo's relation to the profile
+    String? fileNumber,        // dispatcher-assigned file number
+    bool? successful,          // whether the attempt was successful
     int? payRate,              // F7
     String? takenAt,           // F6 device capture time (ISO)
     int? locationGroupId,      // F1 append to existing master pin
@@ -52,6 +69,11 @@ class PhotoRepository {
         if (completionType != null && completionType.isNotEmpty)
           'completion_type': completionType,
         if (servedTo != null && servedTo.isNotEmpty) 'served_to': servedTo,
+        if (relationTo != null && relationTo.isNotEmpty)
+          'relation_to': relationTo,
+        if (fileNumber != null && fileNumber.isNotEmpty)
+          'file_number': fileNumber,
+        if (successful != null) 'successful': successful,
         if (payRate != null) 'pay_rate': payRate,
         // F6: lock timestamp to device capture time
         'taken_at': takenAt ?? DateTime.now().toUtc().toIso8601String(),

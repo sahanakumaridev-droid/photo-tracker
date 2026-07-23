@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -310,14 +311,19 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(10),
                 child: img != null
-                    ? Image.network(
-                        img.startsWith('http')
+                    ? CachedNetworkImage(
+                        imageUrl: img.startsWith('http')
                             ? img
                             : '${AppConfig.apiBaseUrl}$img',
                         width: 52,
                         height: 52,
                         fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => _imgFallback(),
+                        placeholder: (_, __) => Container(
+                          width: 52,
+                          height: 52,
+                          color: const Color(0xFFF3F4F6),
+                        ),
+                        errorWidget: (_, __, ___) => _imgFallback(),
                       )
                     : _imgFallback(),
               ),

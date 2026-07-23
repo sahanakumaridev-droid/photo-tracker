@@ -22,13 +22,18 @@ import '../../../core/utils/text_formatters.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
-import '../../widgets/common/create_profile_dialog.dart';
 import 'location_picker_map.dart';
 
 enum _UploadState { idle, uploading, processing, success, failed }
 
 class UploadScreenV2 extends ConsumerStatefulWidget {
-  const UploadScreenV2({super.key});
+  const UploadScreenV2({super.key, this.initialProfileId});
+
+  /// "Start Attempt" from an existing Profile — pre-selects that profile so
+  /// the user lands straight on photo/GPS capture. The Profile's own stored
+  /// location is never copied into the attempt; GPS is still captured fresh
+  /// (see `_fetchLocation`), keeping Attempt Location independently sourced.
+  final int? initialProfileId;
 
   @override
   ConsumerState<UploadScreenV2> createState() => _UploadScreenV2State();
@@ -49,7 +54,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   static const Color _errorRed = Color(0xFFEF4444);
   static const Color _stepInactive = Color(0xFFE5E7EB);
   // Radius used to surface "Nearby" profiles first in the profile picker.
-  static const double _kProfileProximityMi = 1;
+  static const double _kProfileProximityFt = 200;
   static const LinearGradient _btnGradient = LinearGradient(
     begin: Alignment.centerLeft,
     end: Alignment.centerRight,
@@ -85,6 +90,19 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
   final _addressController = TextEditingController();
   final _payRateController = TextEditingController();   // F7
   final _servedToController = TextEditingController();
+  final _relationToController = TextEditingController();
+  final _fileNumberController = TextEditingController();
+  // Defaults to true; the user must explicitly flip it off. When false the
+  // Served To / Relation To fields don't apply and are hidden.
+  bool _successfulAttempt = true;
+  static const List<String> _kServedToPresets = [
+    'Same as profile',
+    'John Doe',
+    'Jane Doe',
+  ];
+  // Names the user has typed via "New name" — remembered across uploads so
+  // they show up as quick-select options next time, not just a one-off entry.
+  List<String> _customServedToNames = LocalStorage.getServedToCustomNames();
   // Delivery Style — a fixed set of choices (replaces the free-text "Type").
   // Stored/sent as `completionType` to keep the backend field unchanged.
   static const List<String> _kDeliveryStyles = [
@@ -105,6 +123,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     // two concurrent root dialogs make buttons appear broken to the user.
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _maybeRestoreDraft(); // fully resolved before GPS starts
+      await _maybeApplyInitialProfile();
       unawaited(_fetchLocation());
     });
     // F5: auto-save the draft whenever the text fields change.
@@ -112,6 +131,15 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     _addressController.addListener(_saveDraft);
     _payRateController.addListener(_saveDraft);
     _servedToController.addListener(_saveDraft);
+    _relationToController.addListener(_saveDraft);
+    // File Number is required, so its "done" checkmark + the submit button's
+    // enabled state must update live as the user types, not just on save.
+    _fileNumberController.addListener(_onFileNumberChanged);
+  }
+
+  void _onFileNumberChanged() {
+    setState(() {});
+    _saveDraft();
   }
 
   @override
@@ -120,6 +148,8 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     _addressController.dispose();
     _payRateController.dispose();
     _servedToController.dispose();
+    _relationToController.dispose();
+    _fileNumberController.dispose();
     super.dispose();
   }
 
@@ -132,6 +162,9 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       'category': _selectedCategory,
       'payRate': _payRateController.text,
       'servedTo': _servedToController.text,
+      'relationTo': _relationToController.text,
+      'fileNumber': _fileNumberController.text,
+      'successful': _successfulAttempt,
       'completionType': _deliveryStyle,
       'profileId': _selectedProfile?.id,
       'photoPaths': _selectedImages.map((f) => f.path).toList(),
@@ -211,6 +244,9 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       _addressController.text = (draft['address'] ?? '') as String;
       _payRateController.text = (draft['payRate'] ?? '') as String;
       _servedToController.text = (draft['servedTo'] ?? '') as String;
+      _relationToController.text = (draft['relationTo'] ?? '') as String;
+      _fileNumberController.text = (draft['fileNumber'] ?? '') as String;
+      _successfulAttempt = (draft['successful'] ?? true) as bool;
       final savedStyle = draft['completionType'] as String?;
       _deliveryStyle =
           _kDeliveryStyles.contains(savedStyle) ? savedStyle : null;
@@ -228,6 +264,24 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       _locationGroupId = draft['locationGroupId'] as int?;
       if (restoredProfile != null) _selectedProfile = restoredProfile;
     });
+  }
+
+  /// "Start Attempt" from an existing Profile (see [UploadScreenV2.
+  /// initialProfileId]) pre-selects that profile so the user lands straight
+  /// on photo/GPS capture. Skipped if a resumed draft already selected one —
+  /// the user's explicit "Resume" choice above takes precedence.
+  Future<void> _maybeApplyInitialProfile() async {
+    final id = widget.initialProfileId;
+    if (id == null || _selectedProfile != null) return;
+    try {
+      final profiles = await ref.read(profilesProvider.future);
+      for (final p in profiles) {
+        if (p.id == id) {
+          if (mounted) setState(() => _selectedProfile = p);
+          break;
+        }
+      }
+    } catch (_) {/* keep going without a pre-selected profile */}
   }
 
   // ── Location ──────────────────────────────────────────────────────────────
@@ -684,8 +738,21 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       _showSnack('Please select a profile', isError: true);
       return;
     }
+    if (_fileNumberController.text.trim().isEmpty) {
+      _showSnack('Please enter a file number', isError: true);
+      return;
+    }
     if (_latitude == null || _longitude == null) {
       _showSnack('Location required. Tap Refresh to retry.', isError: true);
+      return;
+    }
+    final servedToValue = _servedToController.text.trim();
+    if (_successfulAttempt &&
+        servedToValue.isNotEmpty &&
+        servedToValue != 'Same as profile' &&
+        _relationToController.text.trim().isEmpty) {
+      _showSnack('Please enter a relation for the person served',
+          isError: true);
       return;
     }
 
@@ -707,9 +774,17 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     final note = _noteController.text.trim().isEmpty
         ? null
         : _noteController.text.trim();
-    final servedTo = _servedToController.text.trim().isEmpty
+    // Served To / Relation To only apply to successful attempts.
+    final servedTo = (_successfulAttempt && servedToValue.isNotEmpty)
+        ? servedToValue
+        : null;
+    final relationTo = (_successfulAttempt &&
+            _relationToController.text.trim().isNotEmpty)
+        ? _relationToController.text.trim()
+        : null;
+    final fileNumber = _fileNumberController.text.trim().isEmpty
         ? null
-        : _servedToController.text.trim();
+        : _fileNumberController.text.trim();
     final completionType = _deliveryStyle;
 
     // The watermark caption is now drawn as a live display overlay
@@ -738,6 +813,9 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
         category: _selectedCategory,
         completionType: completionType,
         servedTo: servedTo,
+        relationTo: relationTo,
+        fileNumber: fileNumber,
+        successful: _successfulAttempt,
         payRate: payRate,
         locationGroupId: _locationGroupId,
         profileName: _selectedProfile!.name,
@@ -761,6 +839,9 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
           'longitude': _longitude,
           'address': address,
           'servedTo': servedTo,
+          'relationTo': relationTo,
+          'fileNumber': fileNumber,
+          'successful': _successfulAttempt,
           'completionType': completionType,
           'note': note,
           'category': _selectedCategory,
@@ -814,12 +895,11 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       final nearby = await ref.read(apiServiceProvider).getNearby(
             latitude: _latitude!,
             longitude: _longitude!,
-            radiusFt: 5280, // searchable/reusable profiles: 1 mile
+            radiusFt: 200, // duplicate-pin detection radius
           );
       if (nearby.isEmpty || !mounted) return;
       final nearest = nearby.first;
       final distFt = (nearest['distance_ft'] as num?)?.toDouble();
-      // Friendlier distance now that the search radius is 1 mile.
       final dist = distFt == null
           ? '?'
           : distFt >= 1000
@@ -867,6 +947,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     final canUpload = _selectedImages.isNotEmpty &&
         _selectedProfile != null &&
         _latitude != null &&
+        _fileNumberController.text.trim().isNotEmpty &&
         _uploadState == _UploadState.idle;
 
     return Scaffold(
@@ -882,11 +963,15 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                 children: [
                   _buildPhotoSection(),
                   const SizedBox(height: 14),
+                  _buildFileNumberSection(),
+                  const SizedBox(height: 14),
                   _buildProfileSection(profilesAsync),
                   const SizedBox(height: 14),
                   _buildCategorySection(),
                   const SizedBox(height: 14),
                   _buildDeliveryStyleSection(),
+                  const SizedBox(height: 14),
+                  _buildPayRateSection(),
                   const SizedBox(height: 14),
                   _buildLocationSection(),
                   const SizedBox(height: 14),
@@ -1556,6 +1641,32 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
         ),
       );
 
+  // ── File Number section ───────────────────────────────────────────────────
+  Widget _buildFileNumberSection() => _card(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _sectionLabel(
+              'File Number',
+              Icons.tag_rounded,
+              required: true,
+              done: _fileNumberController.text.trim().isNotEmpty,
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Dispatcher-assigned file number for this job.',
+              style: TextStyle(fontSize: 13, color: _inkSubtle),
+            ),
+            const SizedBox(height: 12),
+            _inputField(
+              controller: _fileNumberController,
+              hint: 'e.g. 24-00123',
+              icon: Icons.tag_rounded,
+            ),
+          ],
+        ),
+      );
+
   // ── Profile section ───────────────────────────────────────────────────────
   Widget _buildProfileSection(AsyncValue<List<ProfileModel>> profilesAsync) =>
       _card(
@@ -1743,7 +1854,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _sectionLabel(
-              'Category',
+              'Priority Level',
               Icons.label_rounded,
               done: true,
             ),
@@ -1808,7 +1919,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
         ),
       );
 
-  // Profile IDs with a photo within _kProfileProximityMi of the current
+  // Profile IDs with a photo within _kProfileProximityFt of the current
   // upload location — surfaced first in the picker so the right profile is
   // easy to find without scrolling/searching a long roster.
   Set<int> _nearbyProfileIds() {
@@ -1819,7 +1930,7 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       if (p.profileId == null) continue;
       final km = LocationService.calculateDistance(
           _latitude!, _longitude!, p.latitude, p.longitude);
-      if (km * 0.621371 <= _kProfileProximityMi) ids.add(p.profileId!);
+      if (km * 3280.84 <= _kProfileProximityFt) ids.add(p.profileId!);
     }
     return ids;
   }
@@ -1881,6 +1992,12 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     HapticFeedback.lightImpact();
     final searchCtrl = TextEditingController();
     final nearbyIds = _nearbyProfileIds();
+    // Strictly enforce the proximity filter: only profiles with a photo
+    // within _kProfileProximityFt of this upload's location are selectable
+    // here. No fallback to the full roster — if nothing is nearby, the
+    // empty state below prompts creating a new profile at this location.
+    final nearbyProfiles =
+        profiles.where((p) => nearbyIds.contains(p.id)).toList();
 
     showModalBottomSheet<void>(
       context: context,
@@ -1889,15 +2006,12 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
       builder: (sheetCtx) => StatefulBuilder(
         builder: (sheetCtx, setSheetState) {
           final query = searchCtrl.text.trim().toLowerCase();
-          final filtered = query.isEmpty
-              ? profiles
-              : profiles
+          final nearby = query.isEmpty
+              ? nearbyProfiles
+              : nearbyProfiles
                   .where((p) => p.name.toLowerCase().contains(query))
                   .toList();
-          final nearby =
-              filtered.where((p) => nearbyIds.contains(p.id)).toList();
-          final others =
-              filtered.where((p) => !nearbyIds.contains(p.id)).toList();
+          final filtered = nearby;
 
           void select(ProfileModel p) {
             HapticFeedback.selectionClick();
@@ -1944,7 +2058,8 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                       ),
                       const Spacer(),
                       Text(
-                        '${profiles.length} profiles',
+                        '${nearbyProfiles.length} within '
+                        '${_kProfileProximityFt.toInt()} ft',
                         style: const TextStyle(
                           fontSize: 13,
                           color: _inkSubtle,
@@ -2018,20 +2133,10 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                     children: [
                       if (nearby.isNotEmpty) ...[
                         _pickerSectionLabel(
-                            'Nearby · within $_kProfileProximityMi mi'),
+                            'Nearby · within ${_kProfileProximityFt.toInt()} ft'),
                         ...nearby.map((p) => _profilePickerTile(
                               p,
                               nearby: true,
-                              onSelect: () => select(p),
-                            )),
-                        if (others.isNotEmpty) const SizedBox(height: 10),
-                      ],
-                      if (others.isNotEmpty) ...[
-                        if (nearby.isNotEmpty)
-                          _pickerSectionLabel('All profiles'),
-                        ...others.map((p) => _profilePickerTile(
-                              p,
-                              nearby: false,
                               onSelect: () => select(p),
                             )),
                       ],
@@ -2039,7 +2144,12 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
                         Padding(
                           padding: const EdgeInsets.symmetric(vertical: 24),
                           child: Text(
-                            'No profiles match "${searchCtrl.text.trim()}"',
+                            searchCtrl.text.trim().isEmpty
+                                ? 'No profiles within '
+                                    '${_kProfileProximityFt.toInt()} ft of '
+                                    'this location. Create one above.'
+                                : 'No nearby profiles match '
+                                    '"${searchCtrl.text.trim()}"',
                             textAlign: TextAlign.center,
                             style: const TextStyle(
                                 color: _inkSubtle, fontSize: 13),
@@ -2056,9 +2166,15 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
     );
   }
 
-  // ── Profile creation (shared dialog) ──────────────────────────────────────
+  // ── Profile creation — full screen (Profile Location + Awaiting Attempt) ──
+  // Opens the same Create/Edit Profile screen reachable from Settings, so a
+  // profile created mid-upload can also get its own Profile Location and be
+  // marked Awaiting Attempt — independent of this (or any) attempt. Saving
+  // there never completes THIS upload; the user returns here with the new
+  // profile pre-selected and can still back out without uploading anything.
   Future<void> _showCreateProfileDialog() async {
-    final created = await showCreateProfileDialog(context);
+    final created =
+        await context.push<ProfileModel>('/profiles-management');
     if (created != null && mounted) {
       setState(() => _selectedProfile = created);
       _saveDraft();
@@ -2354,6 +2470,26 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
         ),
       );
 
+  // ── Pay Rate section ──────────────────────────────────────────────────────
+  Widget _buildPayRateSection() => _card(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _sectionLabel('Pay Rate', Icons.attach_money),
+            const SizedBox(height: 12),
+            _fieldLabel('Pay Rate (\$)', optional: true),
+            const SizedBox(height: 6),
+            _inputField(
+              controller: _payRateController,
+              hint: 'e.g. 30',
+              icon: Icons.attach_money,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            ),
+          ],
+        ),
+      );
+
   // ── Details section ───────────────────────────────────────────────────────
   Widget _buildDetailsSection() => _card(
         child: Column(
@@ -2370,36 +2506,261 @@ class _UploadScreenV2State extends ConsumerState<UploadScreenV2> {
               inputFormatters: const [SentenceCaseInputFormatter()],
             ),
             const SizedBox(height: 16),
-            // Completion detail — Served To
-            _fieldLabel('Served To', optional: true),
-            const SizedBox(height: 6),
-            _inputField(
-              controller: _servedToController,
-              hint: 'Name of person served',
-              icon: Icons.person_outline,
-              textCapitalization: TextCapitalization.words,
-              inputFormatters: const [TitleCaseInputFormatter()],
+            // Successful Attempt — defaults to true; the user must explicitly
+            // flip it off. When false, Served To / Relation To don't apply.
+            Row(
+              children: [
+                Expanded(child: _fieldLabel('Successful Attempt')),
+                Switch(
+                  value: _successfulAttempt,
+                  activeThumbColor: _accent,
+                  onChanged: (value) {
+                    HapticFeedback.selectionClick();
+                    setState(() => _successfulAttempt = value);
+                    _saveDraft();
+                  },
+                ),
+              ],
             ),
-            const SizedBox(height: 16),
-            // F7 — Pay rate
-            _fieldLabel('Pay Rate (\$)', optional: true),
-            const SizedBox(height: 6),
-            _inputField(
-              controller: _payRateController,
-              hint: 'e.g. 30',
-              icon: Icons.attach_money,
-              keyboardType: TextInputType.number,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            if (_successfulAttempt) ...[
+              const SizedBox(height: 4),
+              // Completion detail — Served To
+              _fieldLabel('Served To', optional: true),
+              const SizedBox(height: 6),
+              _buildServedToField(),
+              if (_servedToController.text.trim().isNotEmpty &&
+                  _servedToController.text.trim() != 'Same as profile') ...[
+                const SizedBox(height: 16),
+                _fieldLabel('Relation To'),
+                const SizedBox(height: 6),
+                _inputField(
+                  controller: _relationToController,
+                  hint: 'e.g. Spouse, Coworker, Roommate',
+                  icon: Icons.groups_outlined,
+                  textCapitalization: TextCapitalization.words,
+                ),
+              ],
+            ],
+          ],
+        ),
+      );
+
+  // ── Served To picker field ────────────────────────────────────────────────
+  Widget _buildServedToField() {
+    final hasValue = _servedToController.text.trim().isNotEmpty;
+    return GestureDetector(
+      onTap: _showServedToPicker,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+        decoration: BoxDecoration(
+          color: hasValue ? _accentSoft : _canvas,
+          borderRadius: BorderRadius.circular(12),
+          border: hasValue ? Border.all(color: _accent, width: 1.5) : null,
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.person_outline,
+                size: 18, color: hasValue ? _accent : _inkSubtle),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                hasValue ? _servedToController.text : 'Select who was served',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: hasValue ? FontWeight.w600 : FontWeight.w400,
+                  color: hasValue ? _accent : _inkSubtle,
+                ),
+              ),
+            ),
+            Icon(Icons.keyboard_arrow_down_rounded,
+                color: hasValue ? _accent : _inkSubtle, size: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showServedToPicker() {
+    HapticFeedback.lightImpact();
+
+    void select(String value) {
+      HapticFeedback.selectionClick();
+      setState(() {
+        _servedToController.text = value;
+        if (value == 'Same as profile') _relationToController.clear();
+      });
+      _saveDraft();
+      Navigator.pop(context);
+    }
+
+    Future<void> createCustom() async {
+      final nameCtrl = TextEditingController();
+      final name = await showDialog<String>(
+        context: context,
+        useRootNavigator: true,
+        builder: (dialogCtx) => AlertDialog(
+          title: const Text('Served To'),
+          content: TextField(
+            controller: nameCtrl,
+            autofocus: true,
+            textCapitalization: TextCapitalization.words,
+            inputFormatters: const [TitleCaseInputFormatter()],
+            decoration: const InputDecoration(hintText: 'Full name'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogCtx),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () =>
+                  Navigator.pop(dialogCtx, nameCtrl.text.trim()),
+              child: const Text('Save'),
             ),
           ],
         ),
       );
+      if (name != null && name.isNotEmpty) {
+        await LocalStorage.addServedToCustomName(name);
+        if (mounted) {
+          setState(() =>
+              _customServedToNames = LocalStorage.getServedToCustomNames());
+        }
+        select(name);
+      }
+    }
+
+    // Presets first, then remembered custom names (most-recent first),
+    // skipping any that duplicate a preset.
+    final servedToOptions = [
+      ..._kServedToPresets,
+      ..._customServedToNames.where((n) => !_kServedToPresets.contains(n)),
+    ];
+
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetCtx) => Container(
+        decoration: const BoxDecoration(
+          color: _surface,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 12),
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: _separator,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 20),
+              child: Text(
+                'Served To',
+                style: TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w700,
+                  color: _ink,
+                  letterSpacing: -0.3,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Column(
+                children: servedToOptions
+                    .map((p) => _servedToPickerTile(
+                          label: p,
+                          onSelect: () => select(p),
+                        ))
+                    .toList(),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+              child: GestureDetector(
+                onTap: createCustom,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 13),
+                  decoration: BoxDecoration(
+                    color: _accentSoft,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                        color: _accent.withValues(alpha: 0.35), width: 1.5),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.add_circle_outline_rounded,
+                          size: 18, color: _accent),
+                      SizedBox(width: 10),
+                      Text('New name',
+                          style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: _accent)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _servedToPickerTile(
+      {required String label, required VoidCallback onSelect}) {
+    final selected = _servedToController.text.trim() == label;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: GestureDetector(
+        onTap: onSelect,
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+          decoration: BoxDecoration(
+            color: selected ? _accentSoft : _canvas,
+            borderRadius: BorderRadius.circular(12),
+            border: selected ? Border.all(color: _accent, width: 1.5) : null,
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                    color: selected ? _accent : _ink,
+                  ),
+                ),
+              ),
+              if (selected)
+                const Icon(Icons.check_rounded, color: _accent, size: 18),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   /// Returns a hint about what's still needed.
   String _missingFieldsHint() {
     final missing = <String>[];
     if (_selectedImages.isEmpty) missing.add('photo');
     if (_selectedProfile == null) missing.add('profile');
+    if (_fileNumberController.text.trim().isEmpty) missing.add('file number');
     if (_latitude == null && !_isLoadingLocation) missing.add('location');
     if (_isLoadingLocation) return 'Waiting for GPS…';
     if (missing.isEmpty) return '';

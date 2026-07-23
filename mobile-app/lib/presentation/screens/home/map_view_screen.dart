@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter_map_marker_cluster/flutter_map_marker_cluster.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
@@ -13,7 +15,6 @@ import '../../../core/storage/upload_queue.dart';
 import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../data/models/photo_model.dart';
-import '../../../data/models/profile_model.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
 import 'map_pin_popup_sheet.dart';
@@ -83,7 +84,6 @@ class MapViewScreen extends ConsumerStatefulWidget {
 
 class _MapViewScreenState extends ConsumerState<MapViewScreen> {
   late final MapController _mapController;
-  String   _selectedProfile   = 'all';
   bool     _fetchingLocation  = false;
   bool     _locationAttemptDone = false;
   Position? _userPosition;
@@ -173,16 +173,41 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
       if (p.longitude < minLng) minLng = p.longitude;
       if (p.longitude > maxLng) maxLng = p.longitude;
     }
+
+    // Guard against _mainCluster's fallback still producing a world-scale
+    // box (e.g. every pin gets excluded as an outlier of every other pin,
+    // or several bad GPS fixes skew the median). Centre on the most recent
+    // pin instead of zooming out to show everything — this is the actual
+    // "shows the entire Milky Way" failure mode.
+    final spanMi = LocationService.calculateDistance(
+            minLat, minLng, maxLat, maxLng) *
+        0.621371;
+    if (spanMi > 500) {
+      final mostRecent = photos.reduce((a, b) =>
+          (a.timestamp ?? '').compareTo(b.timestamp ?? '') >= 0 ? a : b);
+      _mapController.move(
+          LatLng(mostRecent.latitude, mostRecent.longitude), 12);
+      return;
+    }
+
     // All pins at (nearly) the same spot → bounds have ~zero area and
     // fitCamera would slam to maxZoom. Just centre on it at a sane zoom.
     if ((maxLat - minLat).abs() < 1e-4 && (maxLng - minLng).abs() < 1e-4) {
       _mapController.move(LatLng(minLat, minLng), 14);
       return;
     }
+    // A uniform padding isn't enough here: the floating header + filter
+    // pills + search bar + hint pill overlay the top of the screen, the
+    // stats card overlays the bottom, and the zoom/locate button column
+    // (46px wide, 14px from the edge) overlays the right — all far
+    // exceeding a small uniform inset. Without accounting for them, pins
+    // near the edge of the fitted bounds land at the correct geo-coordinate
+    // but render UNDER that UI instead of in the visible map area.
+    final topInset = MediaQuery.of(context).padding.top;
     _mapController.fitCamera(
       CameraFit.bounds(
         bounds: LatLngBounds(LatLng(minLat, minLng), LatLng(maxLat, maxLng)),
-        padding: const EdgeInsets.all(80),
+        padding: EdgeInsets.fromLTRB(40, topInset + 230, 90, 220),
       ),
     );
   }
@@ -191,22 +216,34 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
   // of the group, so a single stray outlier can't force "Fit All" out to a
   // world-scale zoom. Falls back to the full list if that would exclude
   // everything (e.g. the group is small or evenly spread out).
-  static const double _outlierThresholdMi = 250;
-  List<PhotoModel> _mainCluster(List<PhotoModel> photos) {
-    if (photos.length <= 2) return photos;
+  static const double _outlierThresholdMi = 50;
 
-    final lats = photos.map((p) => p.latitude).toList()..sort();
-    final lngs = photos.map((p) => p.longitude).toList()..sort();
+  // (0,0) "null island" or out-of-range values from a bad GPS fix — dropped
+  // before computing the median/bounds so a handful of them can't skew the
+  // median enough to defeat the outlier filter below.
+  bool _isValidCoord(PhotoModel p) =>
+      p.latitude.abs() > 0.0001 &&
+      p.longitude.abs() > 0.0001 &&
+      p.latitude.abs() <= 90 &&
+      p.longitude.abs() <= 180;
+
+  List<PhotoModel> _mainCluster(List<PhotoModel> photos) {
+    final valid = photos.where(_isValidCoord).toList();
+    final base = valid.isEmpty ? photos : valid;
+    if (base.length <= 2) return base;
+
+    final lats = base.map((p) => p.latitude).toList()..sort();
+    final lngs = base.map((p) => p.longitude).toList()..sort();
     final medianLat = lats[lats.length ~/ 2];
     final medianLng = lngs[lngs.length ~/ 2];
 
-    final core = photos.where((p) {
+    final core = base.where((p) {
       final km = LocationService.calculateDistance(
           medianLat, medianLng, p.latitude, p.longitude);
       return km * 0.621371 <= _outlierThresholdMi;
     }).toList();
 
-    return core.isEmpty ? photos : core;
+    return core.isEmpty ? base : core;
   }
 
   @override
@@ -217,9 +254,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
     // data we already have; pins and the profile selector fill in on their own
     // as the requests complete. The primary action (tap the map to log a new
     // attempt) works the moment the map is up — no waiting on existing pins.
-    final photos   = ref.watch(photosProvider).valueOrNull ?? const <PhotoModel>[];
-    final profiles =
-        ref.watch(profilesProvider).valueOrNull ?? const <ProfileModel>[];
+    final photos = ref.watch(photosProvider).valueOrNull ?? const <PhotoModel>[];
 
     return Scaffold(
       // Full-screen map — no AppBar, body extends to top
@@ -227,15 +262,12 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
       backgroundColor: const Color(0xFFF0F0F0),
       body: _MapBody(
         photos: photos,
-        profiles: profiles,
-        selectedProfile: _selectedProfile,
         searchCtrl: _searchCtrl,
         mapController: _mapController,
         userPosition: _userPosition,
         fetchingLocation: _fetchingLocation,
         locationAttemptDone: _locationAttemptDone,
         onMapReady: _onMapReady,
-        onProfileChanged: (v) => setState(() => _selectedProfile = v),
         onFitAll: _fitAll,
         onRefresh: _refresh,
         onMyLocation: () => _fetchUserLocation(moveCamera: true),
@@ -248,12 +280,9 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
 class _MapBody extends ConsumerStatefulWidget {
   const _MapBody({
     required this.photos,
-    required this.profiles,
-    required this.selectedProfile,
     required this.searchCtrl,
     required this.mapController,
     required this.onMapReady,
-    required this.onProfileChanged,
     required this.onFitAll,
     required this.onRefresh,
     required this.onMyLocation,
@@ -263,12 +292,9 @@ class _MapBody extends ConsumerStatefulWidget {
   });
 
   final List<PhotoModel>               photos;
-  final List<ProfileModel>             profiles;
-  final String                         selectedProfile;
   final TextEditingController          searchCtrl;
   final MapController                  mapController;
   final VoidCallback                   onMapReady;
-  final ValueChanged<String>           onProfileChanged;
   final ValueChanged<List<PhotoModel>> onFitAll;
   final VoidCallback                   onRefresh;
   final VoidCallback                   onMyLocation;
@@ -282,6 +308,9 @@ class _MapBody extends ConsumerStatefulWidget {
 
 class _MapBodyState extends ConsumerState<_MapBody> {
   final Set<String> _levels = {};
+  // Quick-filter pill: only today's pins. Independent of _levels so "All" +
+  // "Today" can combine (e.g. every priority, today only).
+  bool _todayOnly = false;
   bool _didInitialFit = false;
   // Distance filter — a radius from the user (0–100 mi) OR a ZIP match. Only
   // the most recently touched control applies (_distanceMode).
@@ -332,21 +361,19 @@ class _MapBodyState extends ConsumerState<_MapBody> {
   }
 
   bool get _anyFilterActive =>
-      widget.selectedProfile != 'all' ||
-      _levels.isNotEmpty ||
-      _distanceMode != null;
+      _levels.isNotEmpty || _todayOnly || _distanceMode != null;
 
-  // Resets every active filter (profile, priority level, distance/ZIP) from
+  // Resets every active filter (priority level, today, distance/ZIP) from
   // outside the filter sheet — used by the "no pins match" empty state so a
   // narrow filter never strands the user without a way back.
   void _clearAllFilters() {
     setState(() {
       _levels.clear();
+      _todayOnly = false;
       _distanceMode = null;
       _zip = '';
       _distanceMi = 100;
     });
-    widget.onProfileChanged('all');
     _scheduleFilterFit();
   }
 
@@ -509,52 +536,6 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // ── Profile ──
-                        _sheetCard(
-                          title: 'Profile',
-                          children: [
-                            Container(
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 12),
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(color: _kSep),
-                              ),
-                              child: DropdownButtonHideUnderline(
-                                child: DropdownButton<String>(
-                                  isExpanded: true,
-                                  value: widget.selectedProfile,
-                                  borderRadius: BorderRadius.circular(12),
-                                  icon: const Icon(Icons.expand_more_rounded,
-                                      color: _kInkMuted),
-                                  style: const TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w600,
-                                      color: _kInk),
-                                  items: [
-                                    const DropdownMenuItem(
-                                      value: 'all',
-                                      child: Text('All profiles'),
-                                    ),
-                                    ...widget.profiles.map(
-                                      (p) => DropdownMenuItem(
-                                        value: p.id.toString(),
-                                        child: Text(p.name,
-                                            overflow: TextOverflow.ellipsis),
-                                      ),
-                                    ),
-                                  ],
-                                  onChanged: (v) {
-                                    if (v == null) return;
-                                    widget.onProfileChanged(v);
-                                    ssheet(() {}); // reflect new selection
-                                  },
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
                         // ── Distance ──
                         _sheetCard(
                           title: 'Distance',
@@ -855,22 +836,29 @@ class _MapBodyState extends ConsumerState<_MapBody> {
     );
   }
 
-  // The photos visible on the map after all active filters (profile, service
-  // level, distance/zip) + a valid geotag. Shared by build() and the filter
-  // sheet's live result count.
+  // The photos visible on the map after all active filters (service level,
+  // distance/zip) + a valid geotag. Shared by build() and the filter sheet's
+  // live result count.
   List<PhotoModel> _visiblePhotos() {
-    var filtered = widget.selectedProfile == 'all'
-        ? widget.photos
-        : widget.photos.where((p) {
-            final pid = widget.selectedProfile;
-            return p.profileId?.toString() == pid ||
-                (p.profiles?.any((pr) => pr.id.toString() == pid) ?? false);
-          }).toList();
+    var filtered = widget.photos;
 
     if (_levels.isNotEmpty) {
       filtered = filtered
           .where((p) => _levels.contains(p.category ?? 'standard'))
           .toList();
+    }
+
+    if (_todayOnly) {
+      final now = DateTime.now();
+      filtered = filtered.where((p) {
+        final ts = p.takenAt ?? p.timestamp;
+        if (ts == null) return false;
+        final dt = DateTime.tryParse(ts)?.toLocal();
+        if (dt == null) return false;
+        return dt.year == now.year &&
+            dt.month == now.month &&
+            dt.day == now.day;
+      }).toList();
     }
 
     // Distance / ZIP filter (mutually exclusive; most-recent control wins).
@@ -965,39 +953,72 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                   ),
                 ],
               ),
-            // Photo pin markers
-            MarkerLayer(
-              markers: groups.entries.map((entry) {
-                final sorted = [...entry.value]
-                  ..sort((a, b) =>
-                      (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
-                final latest  = sorted.first;
-                final color   = categoryOf(_topCategory(sorted)).color;
-                final count   = sorted.length;
+            // Photo pin markers — clustered by screen proximity so nearby-
+            // but-distinct pins don't overlap into an unreadable blob when
+            // zoomed out to fit a wide spread (see Fit All). Pins already
+            // sharing a location (see _groupByLocation) still bundle into a
+            // single numbered marker via _PinMarker as before; this layer
+            // additionally clusters separate markers that are simply close
+            // together on screen at the current zoom.
+            MarkerClusterLayerWidget(
+              options: MarkerClusterLayerOptions(
+                maxClusterRadius: 50,
+                size: const Size(44, 44),
+                markers: groups.entries.map((entry) {
+                  final sorted = [...entry.value]
+                    ..sort((a, b) =>
+                        (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
+                  final latest  = sorted.first;
+                  final color   = categoryOf(_topCategory(sorted)).color;
+                  final count   = sorted.length;
 
-                return Marker(
-                  point: LatLng(latest.latitude, latest.longitude),
-                  width:  count > 1 ? 62 : 56,
-                  height: 74,
-                  child: GestureDetector(
-                    onTap: () {
-                      HapticFeedback.mediumImpact();
-                      showPinPopupSheet(
-                        context,
-                        photos: sorted,
-                        lat: latest.latitude,
-                        lng: latest.longitude,
-                        onUpdated: widget.onRefresh,
-                      );
-                    },
-                    child: _PinMarker(
-                      imageUrl: latest.imageUrl,
-                      color: color,
-                      count: count,
+                  return Marker(
+                    point: LatLng(latest.latitude, latest.longitude),
+                    width:  count > 1 ? 62 : 56,
+                    height: 74,
+                    child: GestureDetector(
+                      onTap: () {
+                        HapticFeedback.mediumImpact();
+                        showPinPopupSheet(
+                          context,
+                          photos: sorted,
+                          lat: latest.latitude,
+                          lng: latest.longitude,
+                          onUpdated: widget.onRefresh,
+                        );
+                      },
+                      child: _PinMarker(
+                        imageUrl: latest.imageUrl,
+                        color: color,
+                        count: count,
+                      ),
                     ),
-                  ),
-                );
-              }).toList(),
+                  );
+                }).toList(),
+                builder: (context, markers) =>
+                    _ClusterMarker(count: markers.length),
+              ),
+            ),
+            // ── Awaiting Attempt profile pins — placeholders for a job at
+            // its Profile Location, independent of any Attempt/Photo. Only
+            // profiles with zero attempts show here; the moment a photo
+            // exists for one it's covered by the photo pins above instead. ──
+            MarkerLayer(
+              markers: (ref.watch(profilesProvider).valueOrNull ?? [])
+                  .where((p) => p.isAwaitingAttempt && p.hasLocation)
+                  .map((p) => Marker(
+                        point: LatLng(p.latitude!, p.longitude!),
+                        width: 44,
+                        height: 44,
+                        child: GestureDetector(
+                          onTap: () {
+                            HapticFeedback.lightImpact();
+                            context.push('/profile/${p.id}');
+                          },
+                          child: const _AwaitingAttemptMarker(),
+                        ),
+                      ))
+                  .toList(),
             ),
             // Live user-location marker
             if (widget.userPosition != null)
@@ -1033,13 +1054,37 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                 photoCount: geotagged.length,
                 pinCount: groups.length,
               ),
+              const SizedBox(height: 12),
+              // Quick filter pills + Map/List toggle
+              Row(
+                children: [
+                  Expanded(
+                    child: _FilterPillRow(
+                      levels: _levels,
+                      todayOnly: _todayOnly,
+                      onLevelsChanged: (next) => setState(() {
+                        _levels
+                          ..clear()
+                          ..addAll(next);
+                        _scheduleFilterFit();
+                      }),
+                      onTodayChanged: (next) => setState(() {
+                        _todayOnly = next;
+                        _scheduleFilterFit();
+                      }),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  _MapListToggle(onListTap: () => context.push('/home')),
+                ],
+              ),
               const SizedBox(height: 10),
               // Search bar — the tune icon opens the single filter sheet
-              // (profile + distance/ZIP + service level).
+              // (distance/ZIP + service level).
               _SearchBar(
                 controller: widget.searchCtrl,
-                activeCount: (widget.selectedProfile != 'all' ? 1 : 0) +
-                    _levels.length +
+                activeCount: _levels.length +
+                    (_todayOnly ? 1 : 0) +
                     (_distanceMode != null ? 1 : 0),
                 onFilterTap: _showFilterSheet,
               ),
@@ -1063,11 +1108,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
               groupCount: groups.length,
               svcCounts: svcCounts,
               onFitAll: () => widget.onFitAll(geotagged),
-              onViewList: () => context.push(
-                _levels.length == 1
-                    ? '/log?category=${_levels.first}'
-                    : '/log',
-              ),
+              onViewList: () => context.push('/home'),
             ),
           )
         // A narrow filter can legitimately match zero pins — don't just
@@ -1081,16 +1122,19 @@ class _MapBodyState extends ConsumerState<_MapBody> {
             child: _EmptyFilterCard(onClearFilters: _clearAllFilters),
           ),
 
-        // ── My-location FAB (must be LAST in Stack for highest z-index) ─
+        // ── Zoom controls: [+] [-] [locate] (must be LAST in Stack for
+        // highest z-index). Locate keeps the exact previous _LocationFab
+        // behavior, just relocated into this vertical stack. ─────────────
         Positioned(
           right: 14,
           bottom: (hasData || _anyFilterActive) ? 204 : 28,
           child: Material(
             color: Colors.transparent,
-            child: _LocationFab(
+            child: _ZoomControls(
+              mapController: widget.mapController,
               userPosition: widget.userPosition,
               loading: widget.fetchingLocation,
-              onTap: () {
+              onLocateTap: () {
                 HapticFeedback.lightImpact();
                 widget.onMyLocation();
                 if (widget.userPosition != null) {
@@ -1822,10 +1866,20 @@ class _PinMarker extends StatelessWidget {
               ],
             ),
             child: ClipOval(
-              child: Image.network(
-                imageUrl,
+              child: CachedNetworkImage(
+                imageUrl: imageUrl,
                 fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => Container(
+                placeholder: (_, __) => Container(
+                  color: color.withValues(alpha: 0.15),
+                  child: const Center(
+                    child: SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+                ),
+                errorWidget: (_, __, ___) => Container(
                   color: color.withValues(alpha: 0.15),
                   child: Icon(Icons.person_rounded, color: color, size: 22),
                 ),
@@ -1879,6 +1933,305 @@ class _PinMarker extends StatelessWidget {
         ),
       ),
     ],
+  );
+}
+
+/// Placeholder pin for a Profile marked Awaiting Attempt with a Profile
+/// Location but zero photos yet — deliberately grey/outline so it never
+/// reads as a real logged Attempt.
+class _AwaitingAttemptMarker extends StatelessWidget {
+  const _AwaitingAttemptMarker();
+
+  static const Color _grey = Color(0xFF9CA3AF);
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: 34,
+        height: 34,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.white,
+          border: Border.all(color: _grey, width: 2),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.12),
+              blurRadius: 6,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: const Icon(Icons.schedule_rounded, color: _grey, size: 18),
+      );
+}
+
+// ── Quick-filter pill row (All / Standard / ASAP / Today) — a faster-access
+// layer on top of the existing _levels/_todayOnly state; the full filter
+// sheet (profile + distance/ZIP + priority) is still reachable via the
+// search bar's tune icon. ──
+class _FilterPillRow extends StatelessWidget {
+  const _FilterPillRow({
+    required this.levels,
+    required this.todayOnly,
+    required this.onLevelsChanged,
+    required this.onTodayChanged,
+  });
+  final Set<String> levels;
+  final bool todayOnly;
+  final ValueChanged<Set<String>> onLevelsChanged;
+  final ValueChanged<bool> onTodayChanged;
+
+  @override
+  Widget build(BuildContext context) => SingleChildScrollView(
+    scrollDirection: Axis.horizontal,
+    child: Row(
+      children: [
+        _pill(
+          label: 'All',
+          selected: levels.isEmpty,
+          color: _kAccent,
+          onTap: () => onLevelsChanged({}),
+        ),
+        const SizedBox(width: 8),
+        _pill(
+          label: 'Standard',
+          selected: levels.length == 1 && levels.contains('standard'),
+          color: categoryOf('standard').color,
+          onTap: () => onLevelsChanged({'standard'}),
+        ),
+        const SizedBox(width: 8),
+        _pill(
+          label: 'ASAP',
+          selected: levels.length == 1 && levels.contains('asap'),
+          color: categoryOf('asap').color,
+          onTap: () => onLevelsChanged({'asap'}),
+        ),
+        const SizedBox(width: 8),
+        _pill(
+          label: 'Today',
+          selected: todayOnly,
+          color: _kAccent,
+          onTap: () => onTodayChanged(!todayOnly),
+          icon: Icons.calendar_today_rounded,
+        ),
+      ],
+    ),
+  );
+
+  Widget _pill({
+    required String label,
+    required bool selected,
+    required Color color,
+    required VoidCallback onTap,
+    IconData? icon,
+  }) => GestureDetector(
+    onTap: () {
+      HapticFeedback.selectionClick();
+      onTap();
+    },
+    child: AnimatedContainer(
+      duration: const Duration(milliseconds: 150),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      decoration: BoxDecoration(
+        color: selected ? color : _kSurface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: selected ? color : Colors.black.withValues(alpha: 0.08),
+        ),
+        boxShadow: selected
+            ? [BoxShadow(color: color.withValues(alpha: 0.3), blurRadius: 8)]
+            : null,
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (icon != null) ...[
+            Icon(icon, size: 13, color: selected ? Colors.white : _kInkMuted),
+            const SizedBox(width: 5),
+          ],
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: selected ? Colors.white : _kInkMuted,
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+// ── Map/List segmented toggle — "List" opens the classic feed screen ───────
+class _MapListToggle extends StatelessWidget {
+  const _MapListToggle({required this.onListTap});
+  final VoidCallback onListTap;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(3),
+    decoration: BoxDecoration(
+      color: _kSurface,
+      borderRadius: BorderRadius.circular(12),
+      boxShadow: [
+        BoxShadow(
+          color: Colors.black.withValues(alpha: 0.06),
+          blurRadius: 8,
+          offset: const Offset(0, 2),
+        ),
+      ],
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          decoration: BoxDecoration(
+            color: _kAccent,
+            borderRadius: BorderRadius.circular(9),
+          ),
+          child: const Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.map_rounded, size: 14, color: Colors.white),
+              SizedBox(width: 5),
+              Text('Map',
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white)),
+            ],
+          ),
+        ),
+        GestureDetector(
+          onTap: () {
+            HapticFeedback.selectionClick();
+            onListTap();
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.list_rounded, size: 14, color: _kInkMuted),
+                SizedBox(width: 5),
+                Text('List',
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: _kInkMuted)),
+              ],
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+// ── Vertical zoom-control stack: [+] [-] [locate]. Replaces the standalone
+// _LocationFab Positioned block; the locate button is that exact same
+// widget/behavior, just relocated into this stack. ──
+class _ZoomControls extends StatelessWidget {
+  const _ZoomControls({
+    required this.mapController,
+    required this.userPosition,
+    required this.loading,
+    required this.onLocateTap,
+  });
+  final MapController mapController;
+  final Position? userPosition;
+  final bool loading;
+  final VoidCallback onLocateTap;
+
+  void _zoom(double delta) {
+    final camera = mapController.camera;
+    final next = (camera.zoom + delta).clamp(2.0, 18.0);
+    mapController.move(camera.center, next);
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      _zoomBtn(icon: Icons.add_rounded, onTap: () => _zoom(1)),
+      const SizedBox(height: 8),
+      _zoomBtn(icon: Icons.remove_rounded, onTap: () => _zoom(-1)),
+      const SizedBox(height: 12),
+      _LocationFab(
+        userPosition: userPosition,
+        loading: loading,
+        onTap: onLocateTap,
+      ),
+    ],
+  );
+
+  Widget _zoomBtn({required IconData icon, required VoidCallback onTap}) =>
+      Material(
+        color: Colors.transparent,
+        child: GestureDetector(
+          onTap: () {
+            HapticFeedback.lightImpact();
+            onTap();
+          },
+          child: Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: _kSurface,
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.1),
+                  blurRadius: 8,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Icon(icon, size: 20, color: _kInkMuted),
+          ),
+        ),
+      );
+}
+
+// ── Cluster bubble — groups screen-close pins so they don't visually
+// overlap when the map is zoomed out (e.g. after Fit All spans a wide
+// area). Tapping it zooms in, per flutter_map_marker_cluster's default. ──
+class _ClusterMarker extends StatelessWidget {
+  const _ClusterMarker({required this.count});
+  final int count;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: 44,
+    height: 44,
+    decoration: BoxDecoration(
+      shape: BoxShape.circle,
+      color: _kAccent,
+      border: Border.all(color: Colors.white, width: 3),
+      boxShadow: [
+        BoxShadow(
+          color: _kAccent.withValues(alpha: 0.45),
+          blurRadius: 10,
+          spreadRadius: 1,
+        ),
+        BoxShadow(
+          color: Colors.black.withValues(alpha: 0.18),
+          blurRadius: 6,
+          offset: const Offset(0, 3),
+        ),
+      ],
+    ),
+    child: Center(
+      child: Text(
+        count > 99 ? '99+' : '$count',
+        style: const TextStyle(
+          fontSize: 15,
+          fontWeight: FontWeight.w800,
+          color: Colors.white,
+        ),
+      ),
+    ),
   );
 }
 

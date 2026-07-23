@@ -34,24 +34,37 @@ class _CreateProfileDialogState extends ConsumerState<_CreateProfileDialog> {
   static const Color _inkMuted = Color(0xFF6B7280);
 
   final _nameCtrl = TextEditingController();
+  final _payRateCtrl = TextEditingController();
   bool _saving = false;
 
   @override
   void dispose() {
     _nameCtrl.dispose();
+    _payRateCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _create() async {
     final name = _nameCtrl.text.trim();
     if (name.isEmpty || _saving) return;
+    final payRate = int.tryParse(_payRateCtrl.text.trim());
     setState(() => _saving = true);
     try {
       // Service level is chosen per-photo during upload, not on the profile,
       // so new profiles start at the default and the upload flow owns the
       // priority/service selection.
-      final created = await ref
-          .read(createProfileProvider((name, kDefaultCategory)).future);
+      final created = await ref.read(createProfileProvider((
+        name: name,
+        serviceType: kDefaultCategory,
+        payRate: payRate,
+        status: null,
+        address: null,
+        city: null,
+        state: null,
+        postalCode: null,
+        latitude: null,
+        longitude: null,
+      )).future);
       ref.invalidate(profilesProvider);
       if (mounted) Navigator.pop(context, created);
     } catch (_) {
@@ -105,6 +118,31 @@ class _CreateProfileDialogState extends ConsumerState<_CreateProfileDialog> {
             const Text(
               'You\'ll choose the service level when you upload a photo.',
               style: TextStyle(fontSize: 12, color: _inkMuted),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _payRateCtrl,
+              keyboardType: TextInputType.number,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => _create(),
+              decoration: InputDecoration(
+                hintText: 'Pay rate (optional)',
+                prefixText: r'$',
+                filled: true,
+                fillColor: _canvas,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide.none,
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide.none,
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: _accent, width: 1.5),
+                ),
+              ),
             ),
           ],
         ),

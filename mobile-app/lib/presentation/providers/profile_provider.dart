@@ -17,27 +17,75 @@ final profileDetailProvider =
   return repository.getProfilePhotos(profileId);
 });
 
+/// Args for [createProfileProvider]. Profile Location + status are
+/// optional — a profile can be created with only a name.
+typedef CreateProfileArgs = ({
+  String name,
+  String serviceType,
+  int? payRate,
+  String? status,
+  String? address,
+  String? city,
+  String? state,
+  String? postalCode,
+  double? latitude,
+  double? longitude,
+});
+
 /// Create profile
-final createProfileProvider = FutureProvider.family<ProfileModel, (String, String)>(
+final createProfileProvider =
+    FutureProvider.family<ProfileModel, CreateProfileArgs>(
   (ref, args) async {
     final repository = ref.watch(profileRepositoryProvider);
     return repository.createProfile(
-      name: args.$1,
-      serviceType: args.$2,
+      name: args.name,
+      serviceType: args.serviceType,
+      payRate: args.payRate,
+      status: args.status,
+      address: args.address,
+      city: args.city,
+      state: args.state,
+      postalCode: args.postalCode,
+      latitude: args.latitude,
+      longitude: args.longitude,
     );
   },
 );
 
+/// Args for [updateProfileProvider].
+typedef UpdateProfileArgs = ({
+  int profileId,
+  String name,
+  String serviceType,
+  String? note,
+  int? payRate,
+  String? status,
+  String? address,
+  String? city,
+  String? state,
+  String? postalCode,
+  double? latitude,
+  double? longitude,
+});
+
 /// Update profile
 final updateProfileProvider =
-    FutureProvider.family<void, (int, String, String, String?)>(
+    FutureProvider.family<void, UpdateProfileArgs>(
   (ref, args) async {
     final repository = ref.watch(profileRepositoryProvider);
     await repository.updateProfile(
-      profileId: args.$1,
-      name: args.$2,
-      serviceType: args.$3,
-      note: args.$4,
+      profileId: args.profileId,
+      name: args.name,
+      serviceType: args.serviceType,
+      note: args.note,
+      payRate: args.payRate,
+      status: args.status,
+      address: args.address,
+      city: args.city,
+      state: args.state,
+      postalCode: args.postalCode,
+      latitude: args.latitude,
+      longitude: args.longitude,
     );
   },
 );

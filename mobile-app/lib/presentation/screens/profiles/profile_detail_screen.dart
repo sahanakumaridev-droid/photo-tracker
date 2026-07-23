@@ -10,6 +10,7 @@ import '../../../core/utils/category.dart';
 import '../../../data/models/photo_model.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/profile_provider.dart';
+import '../../widgets/common/loading_skeleton.dart';
 import '../../widgets/common/photo_preview_gallery.dart';
 
 class ProfileDetailScreen extends ConsumerWidget {
@@ -93,8 +94,17 @@ class ProfileDetailScreen extends ConsumerWidget {
         ),
       ),
       body: photosAsync.when(
-        loading: () => const Center(
-            child: CircularProgressIndicator(color: Color(0xFF7C3AED))),
+        loading: () => GridView.builder(
+          padding: const EdgeInsets.all(2),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 3,
+            crossAxisSpacing: 2,
+            mainAxisSpacing: 2,
+          ),
+          itemCount: 12,
+          itemBuilder: (_, __) =>
+              const LoadingSkeleton(borderRadius: BorderRadius.zero),
+        ),
         error: (e, _) => const Center(
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             Icon(CupertinoIcons.xmark_circle, size: 40, color: _muted),
@@ -107,23 +117,56 @@ class ProfileDetailScreen extends ConsumerWidget {
           final groups = _groupByAddress(photos);
           return CustomScrollView(
             slivers: [
-              // ── Profile header ────────────────────────────────────────
+              // ── Profile Information ─────────────────────────────────────
               SliverToBoxAdapter(
                 child: _buildProfileHeader(profile, photos.length),
               ),
-              // ── Address groups ────────────────────────────────────────
+              // ── Profile Location — independent of any Attempt ──────────
+              SliverToBoxAdapter(
+                child: _buildLocationCard(context, profile),
+              ),
+              // ── Attempts — explicitly separate from Profile Location ───
+              const SliverToBoxAdapter(
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(20, 24, 20, 4),
+                  child: Text('Attempts',
+                      style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: _muted)),
+                ),
+              ),
               if (photos.isEmpty)
-                const SliverFillRemaining(
+                SliverFillRemaining(
                   hasScrollBody: false,
                   child: Center(
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(CupertinoIcons.camera,
+                        const Icon(CupertinoIcons.camera,
                             size: 40, color: _muted),
-                        SizedBox(height: 12),
-                        Text('No photos yet',
-                            style: TextStyle(color: _muted, fontSize: 15)),
+                        const SizedBox(height: 12),
+                        const Text('No attempts yet',
+                            style: TextStyle(
+                                color: _ink,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600)),
+                        const SizedBox(height: 4),
+                        const Text(
+                            'This profile is awaiting its first attempt.',
+                            style: TextStyle(color: _muted, fontSize: 13)),
+                        const SizedBox(height: 16),
+                        ElevatedButton.icon(
+                          onPressed: () => context.push(
+                              '/upload?profileId=$profileId'),
+                          icon: const Icon(CupertinoIcons.play_arrow_solid,
+                              size: 16),
+                          label: const Text('Start Attempt'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: _purple,
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -147,15 +190,106 @@ class ProfileDetailScreen extends ConsumerWidget {
     );
   }
 
+  Widget _statusBadge(ProfileModel? profile) {
+    if (profile?.isAwaitingAttempt != true) return const SizedBox.shrink();
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFEF3C7),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(CupertinoIcons.clock, size: 12, color: Color(0xFFB45309)),
+          SizedBox(width: 4),
+          Text('Awaiting Attempt',
+              style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFFB45309))),
+        ],
+      ),
+    );
+  }
+
+  /// Profile Location — set directly on the profile, independent of any
+  /// Attempt's captured GPS. Shown only when the profile actually has one;
+  /// otherwise prompts the user to add it without requiring an attempt.
+  Widget _buildLocationCard(BuildContext context, ProfileModel? profile) {
+    final hasLocation = profile?.hasLocation ?? false;
+    final lines = [profile?.address, profile?.city, profile?.state]
+        .whereType<String>()
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (profile?.postalCode?.isNotEmpty == true) {
+      lines.add(profile!.postalCode!);
+    }
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: _card,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withValues(alpha: 0.04),
+              blurRadius: 12,
+              offset: const Offset(0, 2)),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(CupertinoIcons.location_solid, size: 15, color: _purple),
+              SizedBox(width: 6),
+              Text('Profile Location',
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: _ink)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (!hasLocation) ...[
+            const Text('Profile location not set',
+                style: TextStyle(fontSize: 13, color: _muted)),
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: () => context.push(
+                '/profiles-management',
+                extra: profile,
+              ),
+              icon: const Icon(CupertinoIcons.add, size: 15),
+              label: const Text('Add Location'),
+            ),
+          ] else ...[
+            Text(lines.join(', '),
+                style: const TextStyle(fontSize: 13, color: _ink)),
+            const SizedBox(height: 4),
+            Text(
+              '${profile!.latitude!.toStringAsFixed(6)}, '
+              '${profile.longitude!.toStringAsFixed(6)}',
+              style: const TextStyle(
+                  fontSize: 12, color: _muted, fontFamily: 'monospace'),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _buildProfileHeader(ProfileModel? profile, int photoCount) {
-    final isPrimary = profile?.primaryAddress?.isNotEmpty == true;
     return Container(
       color: _card,
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Service badge + photo count
+          // Service badge + status badge + photo count
           Row(
             children: [
               Container(
@@ -174,6 +308,8 @@ class ProfileDetailScreen extends ConsumerWidget {
                       color: _svcColor(profile?.serviceType)),
                 ),
               ),
+              const SizedBox(width: 8),
+              _statusBadge(profile),
               const Spacer(),
               Text(
                 '$photoCount photo${photoCount != 1 ? 's' : ''}',
@@ -185,43 +321,6 @@ class ProfileDetailScreen extends ConsumerWidget {
             const SizedBox(height: 10),
             Text(profile!.note!,
                 style: const TextStyle(fontSize: 13, color: _muted)),
-          ],
-          // Primary address
-          if (isPrimary) ...[
-            const SizedBox(height: 12),
-            Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(
-                color: _soft,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                    color: _purple.withValues(alpha: 0.2)),
-              ),
-              child: Row(
-                children: [
-                  const Icon(CupertinoIcons.building_2_fill,
-                      size: 16, color: _purple),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('Primary Address',
-                            style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w700,
-                                color: _purple)),
-                        const SizedBox(height: 2),
-                        Text(profile!.primaryAddress!,
-                            style: const TextStyle(
-                                fontSize: 13, color: _ink)),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
           ],
         ],
       ),

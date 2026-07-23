@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -28,13 +29,6 @@ class PhotoDetailScreen extends ConsumerStatefulWidget {
 
   @override
   ConsumerState<PhotoDetailScreen> createState() => _PhotoDetailScreenState();
-}
-
-/// Result of the export options dialog: what to export + where to send it.
-class _ExportChoice {
-  const _ExportChoice(this.options, {required this.email});
-  final JobExportOptions options;
-  final bool email; // true = email to recipients, false = share sheet
 }
 
 class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
@@ -307,10 +301,12 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
   // Lat/Long, Job Status, Agent, Detailed Notes); the watermarked photos ride
   // along as separate attachments in the same email. Multi-job Excel export
   // (in the Log screen) is unchanged.
-  Future<void> _exportJob(PhotoModel photo) async {
-    final choice = await _showExportOptionsDialog();
-    if (choice == null || !mounted) return;
-    final opts = choice.options;
+  // Options dialog removed for now — export goes straight to the share sheet
+  // with every attempt and photos included; long-press the icon to email
+  // the same record to saved recipients instead.
+  Future<void> _exportJob(PhotoModel photo, {bool email = false}) async {
+    const opts = JobExportOptions(latestOnly: false, includeImages: true);
+    if (!mounted) return;
 
     // A "job" = all attempts for the same profile, newest-first.
     final all = ref.read(photosProvider).valueOrNull ?? const <PhotoModel>[];
@@ -357,7 +353,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
       final baseName = 'service-record-$safeName';
 
       if (!mounted) return;
-      if (choice.email) {
+      if (email) {
         await _emailJobRecord(photo, records, photoIds, baseName,
             _jobHeader(photo, agentName), opts.latestOnly);
       } else {
@@ -395,21 +391,15 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
             .format(DateTime.parse(tsIso).toLocal())
         : '';
 
-    // Address inline with ZIP when the ZIP isn't already part of it.
-    var address = p.address ?? '';
-    final zip = p.zipCode ?? '';
-    if (address.isEmpty) {
-      address = zip;
-    } else if (zip.isNotEmpty && !address.contains(zip)) {
-      address = '$address, $zip';
-    }
-
     final note = (p.note ?? '').trim();
     return {
       'id_ctrl': idCtrl,
+      'file_number': p.fileNumber ?? '',
+      'name': profileName,
       'date_time': dateTime,
       'service_ordered': categoryLabel(p.category ?? p.serviceType),
-      'address': address,
+      'priority_level': categoryLabel(p.category ?? p.serviceType),
+      'address': _streetZip(address: p.address, zipCode: p.zipCode),
       'coordinates':
           '${p.latitude.toStringAsFixed(6)}, ${p.longitude.toStringAsFixed(6)}',
       'job_status': _statusLabel(p.status ?? 'open'),
@@ -417,27 +407,36 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
       'completion_type': p.completionType ?? '',
       'served_to': p.servedTo ?? '',
       'detailed_notes': note.isEmpty ? 'Attempt #$attemptNo' : note,
+      'notes': note,
     };
   }
 
-  /// Rockstar service-record header for the email body, drawn from the most
-  /// recent attempt ([photo]) of the job.
-  Map<String, dynamic> _jobHeader(PhotoModel photo, String agentName) {
-    var address = photo.address ?? '';
-    final zip = photo.zipCode ?? '';
-    if (address.isEmpty) {
-      address = zip;
-    } else if (zip.isNotEmpty && !address.contains(zip)) {
-      address = '$address, $zip';
+  /// Street number + name, plus ZIP only — matches the Log screen's export.
+  String _streetZip({String? address, String? zipCode}) {
+    final full = (address ?? '').trim();
+    final street = full.isEmpty ? '' : full.split(',').first.trim();
+    var zip = (zipCode ?? '').trim();
+    if (zip.isEmpty) {
+      zip = RegExp(r'\b\d{5}(?:-\d{4})?\b').firstMatch(full)?.group(0) ?? '';
     }
+    return [street, zip].where((s) => s.isNotEmpty).join(', ');
+  }
+
+  /// Single-profile service-record header for the email body: File Number,
+  /// Name, Date & Time, Priority Level, Address — drawn from the specific
+  /// attempt ([photo]) being exported.
+  Map<String, dynamic> _jobHeader(PhotoModel photo, String agentName) {
+    final tsIso = photo.takenAt ?? photo.timestamp;
+    final dateTime = tsIso != null
+        ? DateFormat('yyyy-MM-dd HH:mm:ss')
+            .format(DateTime.parse(tsIso).toLocal())
+        : '';
     return {
-      'service_name': photo.profileName ?? '',
-      'dispatch_type': categoryLabel(photo.category ?? photo.serviceType),
-      'status': _statusLabel(photo.status ?? 'open'),
-      'agent': agentName,
-      'address': address,
-      'completion_type': photo.completionType ?? '',
-      'served_to': photo.servedTo ?? '',
+      'file_number': photo.fileNumber ?? '',
+      'name': photo.profileName ?? '',
+      'date_time': dateTime,
+      'priority_level': categoryLabel(photo.category ?? photo.serviceType),
+      'address': _streetZip(address: photo.address, zipCode: photo.zipCode),
     };
   }
 
@@ -503,6 +502,24 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
     }
   }
 
+  /// Returns a safe sharePositionOrigin rect for the iOS share sheet popover
+  /// — required by share_plus or shareXFiles throws a PlatformException.
+  Rect _shareOrigin() {
+    final box = context.findRenderObject();
+    if (box is RenderBox && box.hasSize) {
+      final offset = box.localToGlobal(Offset.zero);
+      final size = box.size;
+      return Rect.fromLTWH(
+        offset.dx + size.width / 2 - 20,
+        offset.dy + size.height - 80,
+        40,
+        40,
+      );
+    }
+    final screen = MediaQuery.of(context).size;
+    return Rect.fromLTWH(screen.width / 2 - 20, screen.height - 120, 40, 40);
+  }
+
   /// Builds the Excel server-side (no recipients) and hands it to the OS share
   /// sheet together with the server-watermarked photos it returns under
   /// `photos`.
@@ -549,6 +566,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
     await Share.shareXFiles(
       files,
       subject: 'Service Record — ${photo.profileName ?? ''}',
+      sharePositionOrigin: _shareOrigin(),
     );
   }
 
@@ -626,83 +644,6 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                     borderRadius: BorderRadius.circular(10)),
               ),
               child: const Text('Send'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// Lets the user pick: latest attempt only vs all attempts, whether to embed
-  /// the watermarked images, and the destination (Share sheet or email to saved
-  /// recipients). Returns null on cancel.
-  Future<_ExportChoice?> _showExportOptionsDialog() {
-    var latestOnly = false;
-    var includeImages = true;
-    return showDialog<_ExportChoice>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setLocal) => AlertDialog(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Text('Export service record',
-              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Latest attempt only'),
-                subtitle: const Text('Off = include every attempt'),
-                value: latestOnly,
-                onChanged: (v) => setLocal(() => latestOnly = v),
-              ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Include photos'),
-                subtitle: const Text('Off = text-only record'),
-                value: includeImages,
-                onChanged: (v) => setLocal(() => includeImages = v),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel'),
-            ),
-            // Email straight to saved recipients (Dispatch / client).
-            OutlinedButton.icon(
-              onPressed: () => Navigator.pop(
-                ctx,
-                _ExportChoice(
-                  JobExportOptions(
-                      latestOnly: latestOnly, includeImages: includeImages),
-                  email: true,
-                ),
-              ),
-              icon: const Icon(Icons.email_outlined, size: 16),
-              style: OutlinedButton.styleFrom(foregroundColor: _accent),
-              label: const Text('Email…'),
-            ),
-            ElevatedButton.icon(
-              onPressed: () => Navigator.pop(
-                ctx,
-                _ExportChoice(
-                  JobExportOptions(
-                      latestOnly: latestOnly, includeImages: includeImages),
-                  email: false,
-                ),
-              ),
-              icon: const Icon(Icons.ios_share_rounded, size: 16),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _accent,
-                foregroundColor: Colors.white,
-                elevation: 0,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10)),
-              ),
-              label: const Text('Share'),
             ),
           ],
         ),
@@ -1007,11 +948,17 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
             surfaceTintColor: Colors.transparent,
             leading: _backButton(context, dark: false),
             actions: [
-              // Export this job as a PDF service record
-              IconButton(
-                icon: const Icon(Icons.ios_share_rounded, color: Colors.white),
-                tooltip: 'Export service record (PDF)',
-                onPressed: () => _exportJob(photo),
+              // Export this job as a PDF service record — tap to share,
+              // long-press to email saved recipients instead.
+              GestureDetector(
+                onLongPress: () => _exportJob(photo, email: true),
+                child: IconButton(
+                  icon: const Icon(Icons.ios_share_rounded,
+                      color: Colors.white),
+                  tooltip:
+                      'Export service record (PDF) — long-press to email',
+                  onPressed: () => _exportJob(photo),
+                ),
               ),
               // Edit photo
               IconButton(
@@ -1043,21 +990,19 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    Image.network(
-                      url,
+                    CachedNetworkImage(
+                      imageUrl: url,
                       fit: BoxFit.cover,
-                      loadingBuilder: (_, child, p) => p == null
-                          ? child
-                          : Container(
-                              color: Colors.black,
-                              child: const Center(
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white54,
-                                ),
-                              ),
-                            ),
-                      errorBuilder: (_, __, ___) => Container(
+                      placeholder: (_, __) => Container(
+                        color: Colors.black,
+                        child: const Center(
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white54,
+                          ),
+                        ),
+                      ),
+                      errorWidget: (_, __, ___) => Container(
                         color: Colors.black87,
                         child: const Center(
                           child: Icon(

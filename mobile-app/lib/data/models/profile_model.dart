@@ -9,7 +9,15 @@ class ProfileModel {
     required this.name,
     required this.serviceType,
     this.note,
-    this.primaryAddress,
+    this.payRate,
+    this.status,
+    this.address,
+    this.city,
+    this.state,
+    this.postalCode,
+    this.latitude,
+    this.longitude,
+    this.attemptsCount = 0,
   });
 
   factory ProfileModel.fromJson(Map<String, dynamic> json) =>
@@ -21,10 +29,38 @@ class ProfileModel {
   final String serviceType;
   final String? note;
 
-  /// Primary address — returned by the API when present; null otherwise.
-  /// Multiple addresses are derived client-side from associated photo data.
-  @JsonKey(name: 'primary_address')
-  final String? primaryAddress;
+  /// Standing pay rate (whole dollars) for this profile — summed across all
+  /// profiles to produce "Total Available Earnings" on the Earnings screen.
+  @JsonKey(name: 'pay_rate')
+  final int? payRate;
+
+  /// Profile-level lifecycle flag, e.g. "awaiting_attempt". Independent of
+  /// any Attempt/Photo status — see Photo.status for that.
+  final String? status;
+
+  /// Profile Location — where the work is supposed to happen. Set directly
+  /// on the profile, independent of any Attempt's captured GPS
+  /// (PhotoModel.latitude/longitude), and settable before any photo exists.
+  final String? address;
+  final String? city;
+  final String? state;
+  @JsonKey(name: 'postal_code')
+  final String? postalCode;
+  final double? latitude;
+  final double? longitude;
+
+  /// Number of Attempts (Photos) logged against this profile.
+  @JsonKey(name: 'attempts_count', defaultValue: 0)
+  final int attemptsCount;
+
+  /// True when this profile is still waiting on its first attempt — a
+  /// derived display state, not a raw status check, so it naturally clears
+  /// once an attempt exists without any server-side status mutation.
+  bool get isAwaitingAttempt =>
+      status == 'awaiting_attempt' && attemptsCount == 0;
+
+  /// True when a Profile Location has been set.
+  bool get hasLocation => latitude != null && longitude != null;
 
   Map<String, dynamic> toJson() => _$ProfileModelToJson(this);
 
@@ -33,13 +69,29 @@ class ProfileModel {
     String? name,
     String? serviceType,
     String? note,
-    String? primaryAddress,
+    int? payRate,
+    String? status,
+    String? address,
+    String? city,
+    String? state,
+    String? postalCode,
+    double? latitude,
+    double? longitude,
+    int? attemptsCount,
   }) =>
       ProfileModel(
         id: id ?? this.id,
         name: name ?? this.name,
         serviceType: serviceType ?? this.serviceType,
         note: note ?? this.note,
-        primaryAddress: primaryAddress ?? this.primaryAddress,
+        payRate: payRate ?? this.payRate,
+        status: status ?? this.status,
+        address: address ?? this.address,
+        city: city ?? this.city,
+        state: state ?? this.state,
+        postalCode: postalCode ?? this.postalCode,
+        latitude: latitude ?? this.latitude,
+        longitude: longitude ?? this.longitude,
+        attemptsCount: attemptsCount ?? this.attemptsCount,
       );
 }

@@ -11,7 +11,7 @@ import '../../../data/models/profile_model.dart';
 import '../../providers/location_provider.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
-import '../../widgets/common/create_profile_dialog.dart';
+import '../../widgets/common/loading_skeleton.dart';
 
 class ProfilesListScreen extends ConsumerStatefulWidget {
   const ProfilesListScreen({super.key});
@@ -32,16 +32,12 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
     super.dispose();
   }
 
-  // Profile creation uses the shared dialog (same as upload & map-tap flows).
-  // The list is rebuilt automatically via the watched profilesProvider.
-  Future<void> _openCreateProfile() async {
-    final created = await showCreateProfileDialog(context);
-    if (created != null && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Profile "${created.name}" created')),
-      );
-    }
-  }
+  // Unlike the quick inline dialog used mid-upload/map-tap, creating a
+  // profile from this list is the deliberate "set up work for later" flow —
+  // it needs the full screen so Profile Location + Awaiting Attempt can be
+  // set without ever touching the upload flow. The list rebuilds
+  // automatically via the watched profilesProvider once saved.
+  void _openCreateProfile() => context.push('/profiles-management');
 
   // ── Design tokens ─────────────────────────────────────────────────────────
   static const Color _grayBg   = Color(0xFFF8FAFC);
@@ -54,16 +50,24 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
 
   Color _svcColor(String serviceType) => categoryOf(serviceType).color;
 
-  /// Find the most recent photo for [profile] and return its coordinates.
-  /// Returns null if the profile has no photos.
+  /// Coordinates for [profile]: the most recent Attempt's GPS if it has any,
+  /// otherwise its own Profile Location (independent of any Attempt) — so an
+  /// Awaiting Attempt profile with a location set still sorts/distances
+  /// correctly instead of falling to the bottom. Returns null only when
+  /// neither is available.
   ({double lat, double lng})? _profileCoords(
     ProfileModel profile,
     List<PhotoModel> photos,
   ) {
     final profilePhotos = _profilePhotos(profile, photos);
-    if (profilePhotos.isEmpty) return null;
-    final latest = profilePhotos.first;
-    return (lat: latest.latitude, lng: latest.longitude);
+    if (profilePhotos.isNotEmpty) {
+      final latest = profilePhotos.first;
+      return (lat: latest.latitude, lng: latest.longitude);
+    }
+    if (profile.hasLocation) {
+      return (lat: profile.latitude!, lng: profile.longitude!);
+    }
+    return null;
   }
 
   /// Get all photos for [profile], sorted newest first.
@@ -136,7 +140,11 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
       ),
       backgroundColor: _grayBg,
       body: profilesAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
+        loading: () => ListView.builder(
+          padding: const EdgeInsets.all(16),
+          itemCount: 6,
+          itemBuilder: (_, __) => const ProfileListSkeleton(),
+        ),
         error: (error, _) => Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -400,13 +408,21 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
                         ),
                       ),
                       const SizedBox(height: 3),
-                      Text(
-                        categoryLabel(profile.serviceType).toUpperCase(),
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                          color: svcColor,
-                        ),
+                      Row(
+                        children: [
+                          Text(
+                            categoryLabel(profile.serviceType).toUpperCase(),
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                              color: svcColor,
+                            ),
+                          ),
+                          if (profile.isAwaitingAttempt) ...[
+                            const SizedBox(width: 6),
+                            _AwaitingAttemptBadge(),
+                          ],
+                        ],
                       ),
                       if (profile.note != null &&
                           profile.note!.isNotEmpty) ...[
@@ -421,9 +437,9 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
                           ),
                         ),
                       ],
-                      // ── Distance badge ──────────────────────────────
-                      if (distKm != null) ...[
-                        const SizedBox(height: 5),
+                      const SizedBox(height: 5),
+                      // ── Distance (or Profile Location address) ──────
+                      if (distKm != null)
                         Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
@@ -439,23 +455,58 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
                               ),
                             ),
                           ],
-                        ),
-                      ] else ...[
-                        const SizedBox(height: 5),
+                        )
+                      else if (profile.hasLocation)
+                        Text(
+                          [profile.address, profile.city, profile.state]
+                              .where((s) => s != null && s.isNotEmpty)
+                              .join(', '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 11, color: _graySubtle),
+                        )
+                      else
                         const Text(
-                          'No photos yet',
+                          'Profile location not set',
                           style: TextStyle(
                             fontSize: 11,
                             color: _graySubtle,
                           ),
                         ),
-                      ],
+                      const SizedBox(height: 3),
+                      Text(
+                        'Attempts: ${profile.attemptsCount}',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: _graySubtle,
+                        ),
+                      ),
                     ],
                   ),
                 ),
 
-                const Icon(Icons.chevron_right_rounded,
-                    size: 24, color: _border),
+                if (profile.attemptsCount == 0) ...[
+                  const SizedBox(width: 8),
+                  OutlinedButton(
+                    onPressed: () => context.push(
+                        '/upload?profileId=${profile.id}'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: _accent,
+                      side: BorderSide(color: _accent.withValues(alpha: 0.4)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 8),
+                      minimumSize: Size.zero,
+                    ),
+                    child: const Text('Start Attempt',
+                        style: TextStyle(fontSize: 12)),
+                  ),
+                ] else ...[
+                  const SizedBox(width: 8),
+                  const Icon(Icons.chevron_right_rounded,
+                      size: 24, color: _border),
+                ],
               ],
             ),
           ),
@@ -463,6 +514,28 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
       ),
     );
   }
+}
+
+/// Small pill matching the app's existing badge styling (see the priority
+/// badge above it), used wherever a profile's Awaiting Attempt state needs
+/// to be shown at a glance.
+class _AwaitingAttemptBadge extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFEF3C7),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: const Text(
+          'AWAITING ATTEMPT',
+          style: TextStyle(
+            fontSize: 9,
+            fontWeight: FontWeight.w700,
+            color: Color(0xFFB45309),
+          ),
+        ),
+      );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

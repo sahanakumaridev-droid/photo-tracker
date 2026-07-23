@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
@@ -7,9 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:go_router/go_router.dart';
-import 'package:share_plus/share_plus.dart';
 import 'package:shimmer/shimmer.dart';
 
 import '../../../config/app_config.dart';
@@ -18,7 +14,6 @@ import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../core/utils/maps_launcher.dart';
 import '../../../data/models/log_entry_model.dart';
-import '../../../data/models/profile_model.dart';
 import '../../providers/location_provider.dart';
 import '../../providers/log_provider.dart';
 
@@ -47,8 +42,6 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
   static const Color _accentSoft = Color(0xFFEDE9FE);
   static const Color _rushRed = Color(0xFFDC2626);
   static const Color _rushRedSoft = Color(0xFFFEF2F2);
-  static const Color _standardGreen = Color(0xFF10B981);
-  static const Color _airportBlue = Color(0xFF0284C7);
   // Filter bar — noticeably darker than the page canvas
   static const Color _filterBar = Color(0xFFD8DCE6);
 
@@ -56,16 +49,12 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
   DateTime? _selectedDate;
   TimeOfDay? _startTime;
   TimeOfDay? _endTime;
-  String? _selectedServiceType;
-  String? _selectedCategory; // null = all categories
+  String? _selectedCategory; // null = all priority levels
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
   bool _searchFocused = false;
   late AnimationController _filterBadgeController;
-  // Export profile selection
-  Set<int> _selectedExportProfileIds = {};
-
   // ── Multi-select export ──────────────────────────────────────────────────
   bool _selectionMode = false;
   final Set<int> _selectedLogIds = {};
@@ -85,14 +74,17 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     });
   }
 
-  Future<void> _exportSelected(List<LogEntryModel> allLogs) async {
+  // Sends the selected entries via `/api/export/excel`, which already routes
+  // correctly: a single selected record goes in the email body, multiple go
+  // as an Excel attachment (see backend `export_excel`).
+  Future<void> _sendSelected(List<LogEntryModel> allLogs) async {
     final chosen =
         allLogs.where((l) => _selectedLogIds.contains(l.id)).toList();
     if (chosen.isEmpty) {
-      _showSnack('Select at least one entry to export.');
+      _showSnack('Select at least one entry to send.');
       return;
     }
-    await _downloadCsv(chosen);
+    await _exportExcel(chosen);
     if (mounted) setState(() => _selectionMode = false);
   }
 
@@ -128,7 +120,8 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
   String? get _startTimeStr {
     if (_selectedDate == null) return null;
     final t = _startTime;
-    if (t == null) return DateFormat('yyyy-MM-dd').format(_selectedDate!);
+    // No explicit start time — let `date` carry the day-only filter.
+    if (t == null) return null;
     final dt = DateTime(
       _selectedDate!.year, _selectedDate!.month, _selectedDate!.day,
       t.hour, t.minute,
@@ -168,14 +161,11 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
       );
 
   bool get _hasFilters =>
-      _selectedDate != null ||
-      _selectedServiceType != null ||
-      _selectedCategory != null;
+      _selectedDate != null || _selectedCategory != null;
 
   int get _filterCount {
     var n = 0;
     if (_selectedDate != null) n++;
-    if (_selectedServiceType != null) n++;
     if (_selectedCategory != null) n++;
     return n;
   }
@@ -184,19 +174,14 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
         _selectedDate = null;
         _startTime = null;
         _endTime = null;
-        _selectedServiceType = null;
         _selectedCategory = null;
       });
 
-  /// Apply client-side filters for service type and category (the backend
-  /// doesn't reliably filter on either).
+  /// Apply client-side filter for priority level (the backend doesn't
+  /// reliably filter on it).
   List<LogEntryModel> _applyClientFilters(List<LogEntryModel> logs) {
-    if (_selectedServiceType == null && _selectedCategory == null) return logs;
+    if (_selectedCategory == null) return logs;
     return logs.where((l) {
-      if (_selectedServiceType != null &&
-          (l.serviceType ?? '').toLowerCase() != _selectedServiceType) {
-        return false;
-      }
       if (_selectedCategory != null &&
           categoryOf(l.category).value != _selectedCategory) {
         return false;
@@ -288,129 +273,6 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     return groups;
   }
 
-  // ── Service helpers ───────────────────────────────────────────────────────
-  Color _svcColor(String? t) {
-    switch ((t ?? '').toLowerCase()) {
-      case 'rush':
-        return _rushRed;
-      case 'airport':
-        return _airportBlue;
-      default:
-        return _standardGreen;
-    }
-  }
-
-  String _svcLabel(String? t) {
-    switch ((t ?? '').toLowerCase()) {
-      case 'rush':
-        return 'ASAP';
-      case 'airport':
-        return 'Airport';
-      default:
-        return 'Standard';
-    }
-  }
-
-  // ── CSV + Share ───────────────────────────────────────────────────────────
-
-  /// Build a CSV string — canonical export schema (permanent contract):
-  /// ID & Cntrl # | Date & Time | Service Ordered | Address | Detailed Notes
-  String _buildCsv(List<LogEntryModel> logs) {
-    final buf = StringBuffer();
-    buf.writeln('"ID & Cntrl #","Date & Time","Service Ordered","Address","Detailed Notes"');
-    for (final log in logs) {
-      String esc(String? v) => '"${(v ?? '').replaceAll('"', '""')}"';
-
-      // ID & Cntrl # — profile id / profile name
-      final profileId = log.profileId?.toString() ?? '';
-      final profileName = log.profileName ?? '';
-      final idCtrl = profileId.isNotEmpty && profileName.isNotEmpty
-          ? '$profileId / $profileName'
-          : profileId.isNotEmpty ? profileId : profileName;
-
-      // Date & Time — YYYY-MM-DD HH:mm:ss local
-      final dateTime = log.timestamp != null
-          ? DateFormat('yyyy-MM-dd HH:mm:ss')
-              .format(DateTime.parse(log.timestamp!).toLocal())
-          : '';
-
-      // Service Ordered — human-readable label
-      final svc = _svcLabel(log.serviceType);
-
-      // Address — full address, preserve formatting
-      final addr = log.address ?? log.zipCode ?? '';
-
-      // Detailed Notes — plain text
-      final notes = log.note ?? '';
-
-      buf.writeln([
-        esc(idCtrl),
-        esc(dateTime),
-        esc(svc),
-        esc(addr),
-        esc(notes),
-      ].join(','));
-    }
-    return buf.toString();
-  }
-
-  /// Write CSV to a temp file and return the path
-  Future<String> _writeCsvFile(List<LogEntryModel> logs) async {
-    final dir = await getTemporaryDirectory();
-    final dateStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
-    final file = File('${dir.path}/geotag-log-$dateStr.csv');
-    await file.writeAsString(_buildCsv(logs));
-    return file.path;
-  }
-
-  /// Returns a safe sharePositionOrigin rect for iOS share sheet popover.
-  /// Uses the widget's own RenderBox — falls back to screen centre-bottom.
-  Rect _shareOrigin() {
-    final box = context.findRenderObject();
-    if (box is RenderBox && box.hasSize) {
-      final offset = box.localToGlobal(Offset.zero);
-      final size   = box.size;
-      // Use centre of the screen horizontally, near the bottom where buttons are
-      return Rect.fromLTWH(
-        offset.dx + size.width / 2 - 20,
-        offset.dy + size.height - 80,
-        40,
-        40,
-      );
-    }
-    // Hard fallback: centre of screen
-    final screen = MediaQuery.of(context).size;
-    return Rect.fromLTWH(screen.width / 2 - 20, screen.height - 120, 40, 40);
-  }
-
-  /// Download (save) CSV — shares as a file so iOS/Android can save it
-  Future<void> _downloadCsv(List<LogEntryModel> logs) async {
-    if (logs.isEmpty) {
-      _showSnack('No records to export — adjust your filters first.');
-      return;
-    }
-    HapticFeedback.mediumImpact();
-    try {
-      final path      = await _writeCsvFile(logs);
-      final dateStr   = DateFormat('yyyy-MM-dd').format(DateTime.now());
-      final result    = await Share.shareXFiles(
-        [XFile(path, mimeType: 'text/csv')],
-        subject: 'GeoTag Log — $dateStr',
-        text: 'GeoTagging activity log — ${logs.length} records',
-        sharePositionOrigin: _shareOrigin(),
-      );
-      if (result.status == ShareResultStatus.success) {
-        _showSnack('✓ CSV exported — ${logs.length} records');
-      }
-    } on PlatformException catch (e) {
-      if (e.code != 'cancel') {
-        _showSnack('Export failed: ${e.message ?? 'Please try again.'}');
-      }
-    } catch (_) {
-      // dismissed or cancelled — no error shown
-    }
-  }
-
   void _showSnack(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -424,208 +286,10 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     );
   }
 
-  // ── Export sheet — multi-select profiles ─────────────────────────────────
-  void _openExportSheet(List<LogEntryModel> allLogs) {
-    HapticFeedback.lightImpact();
-
-    // Build unique profile list from current logs
-    final profilesInLogs = <int, String>{};
-    for (final log in allLogs) {
-      if (log.profileId != null) {
-        profilesInLogs[log.profileId!] = log.profileName ?? 'Unknown';
-      }
-      for (final p in log.profiles ?? <ProfileModel>[]) {
-        profilesInLogs[p.id] = p.name;
-      }
-    }
-
-    var tempSelected = Set<int>.from(_selectedExportProfileIds);
-    final allIds = profilesInLogs.keys.toSet();
-
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, ss) {
-          // Filter logs by selected profiles (empty = all)
-          final exportLogs = tempSelected.isEmpty
-              ? allLogs
-              : allLogs.where((log) {
-                  if (log.profileId != null &&
-                      tempSelected.contains(log.profileId)) {
-                    return true;
-                  }
-                  return log.profiles
-                          ?.any((p) => tempSelected.contains(p.id)) ??
-                      false;
-                }).toList();
-
-          return Container(
-            constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(ctx).size.height * 0.85,
-            ),
-            decoration: const BoxDecoration(
-              color: _surface,
-              borderRadius:
-                  BorderRadius.vertical(top: Radius.circular(28)),
-            ),
-            padding: EdgeInsets.only(
-              left: 24,
-              right: 24,
-              top: 12,
-              bottom: MediaQuery.of(ctx).viewInsets.bottom + 32,
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // ── Drag handle ──────────────────────────────────────
-                Center(
-                  child: Container(
-                    width: 36, height: 4,
-                    decoration: BoxDecoration(
-                      color: _separator,
-                      borderRadius: BorderRadius.circular(2)),
-                  ),
-                ),
-                const SizedBox(height: 20),
-                // ── Title + record count ─────────────────────────────
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text('Export Logs',
-                      style: TextStyle(fontSize: 22,
-                          fontWeight: FontWeight.w700, color: _ink,
-                          letterSpacing: -0.5)),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: _accentSoft,
-                        borderRadius: BorderRadius.circular(20)),
-                      child: Text(
-                        '${exportLogs.length} record${exportLogs.length == 1 ? '' : 's'}',
-                        style: const TextStyle(fontSize: 13,
-                            fontWeight: FontWeight.w600, color: _accent)),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                const Text(
-                  'Select which profiles to include in the export.\nLeave all unchecked to export everything.',
-                  style: TextStyle(fontSize: 13, color: _inkSubtle, height: 1.4),
-                ),
-                const SizedBox(height: 20),
-                // ── Select all / none header ─────────────────────────
-                Row(children: [
-                  const Text('FILTER BY PROFILE',
-                    style: TextStyle(fontSize: 11,
-                        fontWeight: FontWeight.w700, color: _inkSubtle,
-                        letterSpacing: 1.4)),
-                  const Spacer(),
-                  GestureDetector(
-                    onTap: () => ss(() => tempSelected =
-                        tempSelected.length == allIds.length
-                            ? {}
-                            : Set.from(allIds)),
-                    child: Text(
-                      tempSelected.length == allIds.length
-                          ? 'Deselect all'
-                          : 'Select all',
-                      style: const TextStyle(fontSize: 13,
-                          fontWeight: FontWeight.w600, color: _accent)),
-                  ),
-                ]),
-                const SizedBox(height: 10),
-                // ── Scrollable profile checkboxes ────────────────────
-                // Flexible so it shrinks when few profiles and
-                // scrolls when the list is long — no overflow.
-                Flexible(
-                  child: profilesInLogs.isEmpty
-                      ? const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 8),
-                          child: Text('No profiles in current results',
-                            style: TextStyle(color: _inkSubtle, fontSize: 13)),
-                        )
-                      : ListView(
-                          shrinkWrap: true,
-                          children: profilesInLogs.entries.map((e) =>
-                            CheckboxListTile(
-                              dense: true,
-                              contentPadding: EdgeInsets.zero,
-                              title: Text(e.value,
-                                style: const TextStyle(fontSize: 14,
-                                    fontWeight: FontWeight.w500, color: _ink)),
-                              subtitle: Text(
-                                '${allLogs.where((l) => l.profileId == e.key || (l.profiles?.any((p) => p.id == e.key) ?? false)).length} records',
-                                style: const TextStyle(fontSize: 12, color: _inkSubtle)),
-                              value: tempSelected.contains(e.key),
-                              activeColor: _accent,
-                              onChanged: (v) => ss(() {
-                                if (v == true) {
-                                  tempSelected = {...tempSelected, e.key};
-                                } else {
-                                  tempSelected = tempSelected
-                                      .where((id) => id != e.key)
-                                      .toSet();
-                                }
-                              }),
-                            ),
-                          ).toList(),
-                        ),
-                ),
-                const SizedBox(height: 16),
-                const Divider(color: _separator),
-                const SizedBox(height: 12),
-                // ── Export — multi-job Excel spreadsheet → email ──
-                // Multiple selected jobs are sent as one .xlsx to a chosen
-                // recipient. (Single-job service records — formatted email +
-                // photo — are exported from a photo's detail screen.)
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: exportLogs.isEmpty
-                        ? null
-                        : () {
-                            setState(() => _selectedExportProfileIds =
-                                tempSelected);
-                            Navigator.pop(ctx);
-                            // Hand-picked profiles → include the latest photo.
-                            _exportExcel(exportLogs,
-                                manual: tempSelected.isNotEmpty);
-                          },
-                    icon: const Icon(CupertinoIcons.square_grid_2x2_fill, size: 16),
-                    label: const Text('Export Excel → Email'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF16A34A),
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Records are exported as an Excel spreadsheet to your chosen email.',
-                  style: TextStyle(fontSize: 11, color: _inkSubtle),
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-
   // ── F11: Excel export with saved recipients ───────────────────────────────
-  // [manual] = the user hand-picked profiles (embed the latest photo per
-  // profile); false = full-list export (no photo).
-  Future<void> _exportExcel(List<LogEntryModel> logs,
-      {bool manual = false}) async {
+  // Every export — full list or a hand-picked selection — embeds the latest
+  // (watermarked) photo per profile; there's no distinction between them.
+  Future<void> _exportExcel(List<LogEntryModel> logs) async {
     if (logs.isEmpty) {
       _showSnack('No records to export — adjust your filters first.');
       return;
@@ -757,20 +421,20 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                 .format(DateTime.parse(log.timestamp!).toLocal())
             : '';
         final rec = <String, dynamic>{
-          'file_number': log.profileId?.toString() ?? '',
+          'file_number': log.fileNumber ?? log.profileId?.toString() ?? '',
           'name': log.profileName ?? '',
           'date_time': dateTime,
           'priority_level': categoryLabel(log.category),
           'address': _streetZip(log),
           'notes': log.note ?? '',
+          'photo_id': log.id, // every export links to the latest photo
         };
-        if (manual) rec['photo_id'] = log.id; // latest photo for this profile
         return rec;
       }).toList();
       final result = await api.exportExcel(
           recipients: selected.toList(),
           records: records,
-          includePhoto: manual);
+          includePhoto: true);
       if (!mounted) return;
       _showSnack(result['file_base64'] != null
           ? 'Email not configured — Excel generated on server'
@@ -798,7 +462,6 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     var tempDate = _selectedDate;
     var tempStart = _startTime;
     var tempEnd = _endTime;
-    var tempType = _selectedServiceType;
     var tempCategory = _selectedCategory;
 
     showModalBottomSheet<void>(
@@ -843,7 +506,6 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                         tempDate = null;
                         tempStart = null;
                         tempEnd = null;
-                        tempType = null;
                         tempCategory = null;
                       }),
                       child: Container(
@@ -974,27 +636,8 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                   ),
                 ],
                 const SizedBox(height: 28),
-                // ── SERVICE TYPE ──────────────────────────────────────────
-                const Text('SERVICE TYPE',
-                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
-                      color: _inkSubtle, letterSpacing: 1.4)),
-                const SizedBox(height: 12),
-                Row(children: [
-                  _filterPill(label: 'All', selected: tempType == null,
-                      color: _accent, onTap: () => ss(() => tempType = null)),
-                  const SizedBox(width: 8),
-                  _filterPill(label: 'Standard', selected: tempType == 'standard',
-                      color: _standardGreen, onTap: () => ss(() => tempType = 'standard')),
-                  const SizedBox(width: 8),
-                  _filterPill(label: 'ASAP', selected: tempType == 'rush',
-                      color: _rushRed, onTap: () => ss(() => tempType = 'rush')),
-                  const SizedBox(width: 8),
-                  _filterPill(label: 'Airport', selected: tempType == 'airport',
-                      color: _airportBlue, onTap: () => ss(() => tempType = 'airport')),
-                ]),
-                const SizedBox(height: 28),
-                // ── CATEGORY ──────────────────────────────────────────────
-                const Text('CATEGORY',
+                // ── PRIORITY LEVEL ────────────────────────────────────────
+                const Text('PRIORITY LEVEL',
                   style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
                       color: _inkSubtle, letterSpacing: 1.4)),
                 const SizedBox(height: 12),
@@ -1028,7 +671,6 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                         _selectedDate = tempDate;
                         _startTime = tempStart;
                         _endTime = tempEnd;
-                        _selectedServiceType = tempType;
                         _selectedCategory = tempCategory;
                       });
                       Navigator.pop(ctx);
@@ -1209,6 +851,37 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                   ],
                 ),
               ),
+              // ── Send selected — only while selecting, and only once
+              // something is chosen. Routes through `_sendSelected`, which
+              // sends a single record as an email body or multiple as an
+              // Excel attachment (see backend `export_excel`).
+              if (_selectionMode && _selectedLogIds.isNotEmpty)
+                GestureDetector(
+                  onTap: () => _sendSelected(logs),
+                  child: Container(
+                    margin: const EdgeInsets.only(right: 8),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: _accent,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(CupertinoIcons.paperplane_fill,
+                            size: 15, color: Colors.white),
+                        const SizedBox(width: 6),
+                        Text('Send (${_selectedLogIds.length})',
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.white,
+                            )),
+                      ],
+                    ),
+                  ),
+                ),
               // ── Select toggle ──
               if (logs.isNotEmpty)
                 GestureDetector(
@@ -1223,47 +896,6 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                             color: _accent)),
                   ),
                 ),
-              const SizedBox(width: 2),
-              // ── Export button — selected entries, or the profile sheet ──
-              GestureDetector(
-                onTap: _selectionMode
-                    ? () => _exportSelected(logs)
-                    : () => _openExportSheet(logs),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 14, vertical: 10),
-                  decoration: BoxDecoration(
-                    color: _selectionMode && _selectedLogIds.isEmpty
-                        ? _inkSubtle
-                        : _accent,
-                    borderRadius: BorderRadius.circular(12),
-                    boxShadow: [
-                      BoxShadow(
-                        color: _accent.withValues(alpha: 0.30),
-                        blurRadius: 8,
-                        offset: const Offset(0, 3),
-                      ),
-                    ],
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(CupertinoIcons.share,
-                          size: 16, color: Colors.white),
-                      const SizedBox(width: 6),
-                      Text(
-                          _selectionMode
-                              ? 'Export (${_selectedLogIds.length})'
-                              : 'Export',
-                          style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white,
-                          )),
-                    ],
-                  ),
-                ),
-              ),
               const SizedBox(width: 4),
             ],
           ),
@@ -1438,18 +1070,8 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                         _endTime = null;
                       }),
                     ),
-                  if (_selectedServiceType != null) ...[
-                    if (_selectedDate != null) const SizedBox(width: 6),
-                    _activeChip(
-                      label: _svcLabel(_selectedServiceType),
-                      icon: CupertinoIcons.tag_fill,
-                      color: _svcColor(_selectedServiceType),
-                      onRemove: () =>
-                          setState(() => _selectedServiceType = null),
-                    ),
-                  ],
                   if (_selectedCategory != null) ...[
-                    if (_selectedDate != null || _selectedServiceType != null)
+                    if (_selectedDate != null)
                       const SizedBox(width: 6),
                     _activeChip(
                       label: categoryOf(_selectedCategory).label,
@@ -1677,7 +1299,6 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     // Priority reflects the per-photo category (the profile serviceType is a
     // legacy field and is now always 'standard' — see the Category badge).
     final cat = categoryOf(log.category);
-    final isAsap = cat.value == 'asap';
 
     // Distance badge — only shown when GPS is available and pin is within 25 mi
     String? distLabel;
@@ -1724,9 +1345,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
           ],
           border: selected
               ? Border.all(color: _accent, width: 2)
-              : isAsap
-                  ? Border(left: BorderSide(color: cat.color, width: 3))
-                  : null,
+              : Border(left: BorderSide(color: cat.color, width: 3)),
         ),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(18),

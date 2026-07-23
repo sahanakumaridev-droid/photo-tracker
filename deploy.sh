@@ -22,12 +22,14 @@ cd ..
 echo "==> Uploading backend CODE ONLY (preserves prod DB, uploads, .env)..."
 ssh $REMOTE "mkdir -p /opt/photo-tracker/backend /var/www/photo-tracker"
 # Ship application code ONLY. No --delete, so the server's photo_tracker.db,
-# uploads/, and .env are never touched. Allowlist: .py, requirements.txt, render.yaml.
+# uploads/, and .env are never touched. Allowlist: .py, requirements.txt,
+# render.yaml, and fonts/ (bundled watermark font — see backend/fonts/NOTICE.md).
 rsync -az \
   --include='*/' \
   --include='*.py' \
   --include='requirements.txt' \
   --include='render.yaml' \
+  --include='*.ttf' \
   --exclude='*' \
   backend/ $REMOTE:/opt/photo-tracker/backend/
 

@@ -43,8 +43,9 @@ final routerProvider = Provider<GoRouter>((ref) {
       if (location == '/splash') return null;
 
       if (auth.isAuthenticated) {
-        // Logged in — keep the user out of the auth funnel and land on the Map
-        // (the default screen for field work). Home stays available via its tab.
+        // Logged in — keep the user out of the auth funnel and land on the
+        // Home tab (the map view, the default screen for field work). The
+        // old feed screen (/home) is reachable via "View List" on the map.
         if (location == '/login' || location == '/onboarding') return '/map';
         return null;
       }
@@ -81,7 +82,10 @@ final routerProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/upload',
-            builder: (context, state) => const UploadScreenV2(),
+            builder: (context, state) => UploadScreenV2(
+              initialProfileId: int.tryParse(
+                  state.uri.queryParameters['profileId'] ?? ''),
+            ),
           ),
           GoRoute(
             path: '/log',
@@ -156,15 +160,16 @@ class _ShellScaffold extends ConsumerStatefulWidget {
 }
 
 class _ShellScaffoldState extends ConsumerState<_ShellScaffold> {
-  // Index map (matches BottomNav): 0 Home · 1 Map · 2 Earnings · 3 Log · 4
-  // Upload. The selected tab is derived from the live route so landing on the
-  // Map (the default screen) highlights Map, not Home.
+  // Index map (matches BottomNav): 0 Home (map) · 1 Earnings · 2 Log · 3
+  // Upload. "Home" now IS the map view (the default screen); the old feed
+  // screen (/home) is a pushed sub-view reached via "View List", so it also
+  // highlights the Home tab rather than showing no selection.
   int _indexForLocation(String loc) {
+    if (loc.startsWith('/map')) return 0;
     if (loc.startsWith('/home')) return 0;
-    if (loc.startsWith('/map')) return 1;
-    if (loc.startsWith('/earnings')) return 2;
-    if (loc.startsWith('/log')) return 3;
-    if (loc.startsWith('/upload')) return 4;
+    if (loc.startsWith('/earnings')) return 1;
+    if (loc.startsWith('/log')) return 2;
+    if (loc.startsWith('/upload')) return 3;
     return -1; // settings/archive/etc — no tab highlighted
   }
 
@@ -182,17 +187,16 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold> {
   }
 
   void _onTabTap(int index, int currentIndex) {
-    // Tapping the current tab again triggers a data refresh (Home or Map).
-    if (index == currentIndex && (index == 0 || index == 1)) {
+    // Tapping the current (Home/map) tab again triggers a data refresh.
+    if (index == currentIndex && index == 0) {
       ref.invalidate(photosProvider);
       ref.invalidate(profilesProvider);
     }
     switch (index) {
-      case 0: context.go('/home'); break;
-      case 1: context.go('/map'); break;
-      case 2: context.go('/earnings'); break;
-      case 3: context.go('/log'); break;
-      case 4: context.go('/upload'); break;
+      case 0: context.go('/map'); break;
+      case 1: context.go('/earnings'); break;
+      case 2: context.go('/log'); break;
+      case 3: context.go('/upload'); break;
     }
   }
 }

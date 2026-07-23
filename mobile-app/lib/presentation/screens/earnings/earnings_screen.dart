@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 
 import '../../../config/theme.dart';
 import '../../../core/network/api_client.dart';
+import '../../widgets/common/loading_skeleton.dart';
 
 /// F8 / F9 — Earnings dashboard (Uber-driver style) + Payouts / Timesheets.
 class EarningsScreen extends ConsumerStatefulWidget {
@@ -96,6 +97,7 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
     final daily = (_summary?['daily_totals'] as List?) ?? [];
     final payoutDays = (_payouts?['daily'] as List?) ?? [];
     final totalEarnings = (_summary?['total_earnings'] ?? 0) as num;
+    final availableEarnings = (_summary?['available_earnings'] ?? 0) as num;
     final jobsDone = (_summary?['jobs_completed'] ?? 0) as num;
     final avgPerJob = (_summary?['average_per_job'] ?? 0) as num;
 
@@ -123,7 +125,8 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
               ),
               flexibleSpace: FlexibleSpaceBar(
                 collapseMode: CollapseMode.parallax,
-                background: _heroBackground(totalEarnings, jobsDone),
+                background: _heroBackground(
+                    totalEarnings, availableEarnings, jobsDone),
               ),
             ),
 
@@ -139,8 +142,20 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
 
                   if (_loading)
                     const Padding(
-                      padding: EdgeInsets.all(60),
-                      child: Center(child: CircularProgressIndicator()),
+                      padding: EdgeInsets.symmetric(horizontal: 16),
+                      child: Column(
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(child: LoadingSkeletonCard()),
+                              SizedBox(width: 12),
+                              Expanded(child: LoadingSkeletonCard()),
+                            ],
+                          ),
+                          SizedBox(height: 12),
+                          LoadingSkeleton(height: 160),
+                        ],
+                      ),
                     )
                   else ...[
                     // Stat cards
@@ -261,7 +276,8 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
   }
 
   // ── Hero gradient background shown behind the collapsed app bar ──
-  Widget _heroBackground(num totalEarnings, num jobsDone) {
+  Widget _heroBackground(
+      num totalEarnings, num availableEarnings, num jobsDone) {
     return Container(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
@@ -277,23 +293,25 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
             mainAxisAlignment: MainAxisAlignment.end,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Total Earnings',
-                  style: TextStyle(
-                      color: Colors.white60,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                      letterSpacing: 0.3)),
-              const SizedBox(height: 4),
-              Text(
-                _money(totalEarnings),
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 42,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: -1.5,
-                    height: 1),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: _heroStat('Total Earnings', totalEarnings),
+                  ),
+                  Container(
+                    width: 1,
+                    height: 44,
+                    margin: const EdgeInsets.symmetric(horizontal: 16),
+                    color: Colors.white.withValues(alpha: 0.18),
+                  ),
+                  Expanded(
+                    child: _heroStat(
+                        'Total Available Earnings', availableEarnings),
+                  ),
+                ],
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 10),
               Row(
                 children: [
                   Container(
@@ -319,6 +337,31 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
       ),
     );
   }
+
+  Widget _heroStat(String label, num amount) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                  color: Colors.white60,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0.2)),
+          const SizedBox(height: 4),
+          Text(
+            _money(amount),
+            style: const TextStyle(
+                color: Colors.white,
+                fontSize: 30,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -1,
+                height: 1),
+          ),
+        ],
+      );
 
   // ── Period pills — bridging the purple header to the grey body ──
   Widget _periodSelector() {

@@ -7,6 +7,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../../../core/storage/upload_queue.dart';
 import '../../../core/utils/category.dart';
+import '../../../core/utils/location_service.dart';
 import '../../../core/utils/photo_stamp.dart';
 import '../../../core/utils/text_formatters.dart';
 import '../../../data/models/profile_model.dart';
@@ -55,6 +56,9 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
   static const _accent = Color(0xFF5B5BD6);
   static const _accentSoft = Color(0xFFEEEEFD);
   static const _errorRed = Color(0xFFDC2626);
+  // Radius used to surface "Nearby" profiles first in the picker — matches
+  // the main Upload tab's profile picker.
+  static const double _kProfileProximityFt = 200;
 
   ProfileModel? _selectedProfile;
   // Priority level is chosen per-upload here (not stored on the profile).
@@ -64,18 +68,31 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
   // as a watermark and baked into the image on upload.
   String? _takenAt;
   final _noteCtrl = TextEditingController();
+  final _fileNumberCtrl = TextEditingController();
   bool _uploading = false;
   String? _error;
   final _picker = ImagePicker();
 
   @override
+  void initState() {
+    super.initState();
+    // File Number is required — the submit button's enabled state depends on
+    // it, so it needs to rebuild live as the user types.
+    _fileNumberCtrl.addListener(() => setState(() {}));
+  }
+
+  @override
   void dispose() {
     _noteCtrl.dispose();
+    _fileNumberCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _pickImage(ImageSource source) async {
     HapticFeedback.lightImpact();
+    // Clear any stale error from a previous failed attempt — otherwise a
+    // successful pick here still leaves the old error banner on screen.
+    if (_error != null) setState(() => _error = null);
     try {
       // Full resolution so EXIF (capture date) survives; watermark downscales.
       final picked = await _picker.pickImage(source: source);
@@ -96,7 +113,12 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
   }
 
   Future<void> _upload() async {
+    final fileNumber = _fileNumberCtrl.text.trim();
     if (_pickedFile == null || _selectedProfile == null) return;
+    if (fileNumber.isEmpty) {
+      setState(() => _error = 'Please enter a file number');
+      return;
+    }
     HapticFeedback.mediumImpact();
     setState(() { _uploading = true; _error = null; });
     final takenAt = _takenAt ?? DateTime.now().toUtc().toIso8601String();
@@ -119,12 +141,14 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
       takenAt: takenAt,
       note: note,
       category: svc,
+      fileNumber: fileNumber,
       profileName: _selectedProfile!.name,
     );
     try {
       await ref.read(uploadPhotoProvider({
         'filePath': watermarked.path,
         'profileId': _selectedProfile!.id,
+        'fileNumber': fileNumber,
         'latitude': widget.lat,
         'longitude': widget.lng,
         'note': note,
@@ -152,10 +176,92 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
     }
   }
 
+  // Profile IDs with a photo within _kProfileProximityMi of the tapped
+  // location — surfaced first in the picker, matching the main Upload tab.
+  Set<int> _nearbyProfileIds() {
+    final photos = ref.read(photosProvider).valueOrNull ?? const [];
+    final ids = <int>{};
+    for (final p in photos) {
+      if (p.profileId == null) continue;
+      final km = LocationService.calculateDistance(
+          widget.lat, widget.lng, p.latitude, p.longitude);
+      if (km * 3280.84 <= _kProfileProximityFt) ids.add(p.profileId!);
+    }
+    return ids;
+  }
+
+  Widget _profileTile(ProfileModel p) {
+    final selected = _selectedProfile?.id == p.id;
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        setState(() => _selectedProfile = p);
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(
+          horizontal: 12,
+          vertical: 10,
+        ),
+        decoration: BoxDecoration(
+          color: selected ? _accentSoft : _canvas,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: selected ? _accent : Colors.transparent,
+            width: 1.5,
+          ),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: selected ? _accent : _accent.withValues(alpha: 0.12),
+                shape: BoxShape.circle,
+              ),
+              child: Center(
+                child: Text(
+                  p.name[0].toUpperCase(),
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: selected ? Colors.white : _accent,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                p.name,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                  color: selected ? _accent : _ink,
+                ),
+              ),
+            ),
+            if (selected) ...[
+              const SizedBox(width: 6),
+              const Icon(
+                Icons.check_circle_rounded,
+                size: 16,
+                color: _accent,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final profilesAsync = ref.watch(profilesProvider);
-    final canUpload = _pickedFile != null && _selectedProfile != null;
+    final canUpload = _pickedFile != null &&
+        _selectedProfile != null &&
+        _fileNumberCtrl.text.trim().isNotEmpty;
 
     return Container(
       decoration: const BoxDecoration(
@@ -264,98 +370,69 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
                       'Failed to load profiles',
                       style: TextStyle(color: _errorRed, fontSize: 13),
                     ),
-                    data: (profiles) => profiles.isEmpty
-                        ? _noProfilesState()
-                        : Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        ConstrainedBox(
-                      constraints: const BoxConstraints(maxHeight: 180),
-                      child: ListView.separated(
-                        shrinkWrap: true,
-                        itemCount: profiles.length,
-                        separatorBuilder: (_, __) =>
-                            const SizedBox(height: 6),
-                        itemBuilder: (_, i) {
-                          final p = profiles[i];
-                          final selected = _selectedProfile?.id == p.id;
-                          return GestureDetector(
-                            onTap: () {
-                              HapticFeedback.selectionClick();
-                              setState(() => _selectedProfile = p);
-                            },
-                            child: AnimatedContainer(
-                              duration: const Duration(milliseconds: 150),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 10,
-                              ),
-                              decoration: BoxDecoration(
-                                color: selected ? _accentSoft : _canvas,
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(
-                                  color: selected
-                                      ? _accent
-                                      : Colors.transparent,
-                                  width: 1.5,
-                                ),
-                              ),
-                              child: Row(
-                                children: [
-                                  Container(
-                                    width: 32,
-                                    height: 32,
-                                    decoration: BoxDecoration(
-                                      color: selected
-                                          ? _accent
-                                          : _accent.withValues(alpha: 0.12),
-                                      shape: BoxShape.circle,
-                                    ),
-                                    child: Center(
-                                      child: Text(
-                                        p.name[0].toUpperCase(),
-                                        style: TextStyle(
-                                          fontSize: 13,
-                                          fontWeight: FontWeight.w700,
-                                          color: selected
-                                              ? Colors.white
-                                              : _accent,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  Expanded(
+                    data: (profiles) {
+                      if (profiles.isEmpty) return _noProfilesState();
+                      final nearbyIds = _nearbyProfileIds();
+                      final nearby = profiles
+                          .where((p) => nearbyIds.contains(p.id))
+                          .toList();
+                      // Only nearby profiles are selectable here — this sheet
+                      // is for tagging a photo at a specific tapped location,
+                      // so profiles elsewhere aren't relevant. No fallback to
+                      // the full roster when nothing is within range — the
+                      // empty state below prompts creating a new profile.
+                      if (nearby.isEmpty) {
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            _noNearbyProfilesState(),
+                            const SizedBox(height: 8),
+                            _addProfileButton(),
+                          ],
+                        );
+                      }
+                      final items = <Object>[
+                        'Nearby · within ${_kProfileProximityFt.toInt()} ft',
+                        ...nearby,
+                      ];
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          ConstrainedBox(
+                            constraints:
+                                const BoxConstraints(maxHeight: 220),
+                            child: ListView.separated(
+                              shrinkWrap: true,
+                              itemCount: items.length,
+                              separatorBuilder: (_, i) => items[i] is String
+                                  ? const SizedBox()
+                                  : const SizedBox(height: 6),
+                              itemBuilder: (_, i) {
+                                final item = items[i];
+                                if (item is String) {
+                                  return Padding(
+                                    padding: const EdgeInsets.only(
+                                        top: 4, bottom: 6),
                                     child: Text(
-                                      p.name,
-                                      style: TextStyle(
-                                        fontSize: 14,
-                                        fontWeight: selected
-                                            ? FontWeight.w600
-                                            : FontWeight.w400,
-                                        color: selected ? _accent : _ink,
+                                      item.toUpperCase(),
+                                      style: const TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w800,
+                                        letterSpacing: 0.5,
+                                        color: _inkSubtle,
                                       ),
                                     ),
-                                  ),
-                                  if (selected) ...[
-                                    const SizedBox(width: 6),
-                                    const Icon(
-                                      Icons.check_circle_rounded,
-                                      size: 16,
-                                      color: _accent,
-                                    ),
-                                  ],
-                                ],
-                              ),
+                                  );
+                                }
+                                return _profileTile(item as ProfileModel);
+                              },
                             ),
-                          );
-                        },
-                      ),
-                    ),
-                        const SizedBox(height: 8),
-                        _addProfileButton(),
-                      ],
-                    ),
+                          ),
+                          const SizedBox(height: 8),
+                          _addProfileButton(),
+                        ],
+                      );
+                    },
                   ),
 
                   const SizedBox(height: 16),
@@ -372,6 +449,76 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
                   ),
                   const SizedBox(height: 8),
                   _categoryPicker(),
+
+                  const SizedBox(height: 16),
+
+                  // File Number — required, dispatcher-assigned.
+                  Row(
+                    children: [
+                      const Text(
+                        'File Number',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: _inkMuted,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        '*',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: _errorRed.withValues(alpha: 0.8),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _fileNumberCtrl,
+                    style: const TextStyle(fontSize: 14, color: _ink),
+                    decoration: InputDecoration(
+                      hintText: 'e.g. 24-00123',
+                      hintStyle: const TextStyle(
+                        color: _inkSubtle,
+                        fontSize: 14,
+                      ),
+                      prefixIcon: const Padding(
+                        padding: EdgeInsets.only(left: 12, right: 8),
+                        child: Icon(
+                          Icons.tag_rounded,
+                          size: 18,
+                          color: _inkSubtle,
+                        ),
+                      ),
+                      prefixIconConstraints: const BoxConstraints(
+                        minWidth: 40,
+                        minHeight: 40,
+                      ),
+                      filled: true,
+                      fillColor: _canvas,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 0,
+                        vertical: 13,
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(
+                          color: _accent,
+                          width: 1.5,
+                        ),
+                      ),
+                    ),
+                  ),
 
                   const SizedBox(height: 16),
 
@@ -718,6 +865,40 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
                     borderRadius: BorderRadius.circular(12)),
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _noNearbyProfilesState() {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
+      decoration: BoxDecoration(
+        color: _canvas,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _separator, width: 1),
+      ),
+      child: Column(
+        children: [
+          const Icon(Icons.location_searching_rounded,
+              size: 22, color: _inkSubtle),
+          const SizedBox(height: 8),
+          Text(
+            'No profiles within ${_kProfileProximityFt.toInt()} ft of '
+            'this location',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: _ink,
+            ),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Create a new profile here instead.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12, color: _inkSubtle),
           ),
         ],
       ),

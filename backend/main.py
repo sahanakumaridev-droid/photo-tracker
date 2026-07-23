@@ -88,6 +88,23 @@ class Profile(Base):
     name         = Column(String, nullable=False)
     service_type = Column(String, default="standard")
     note         = Column(Text, nullable=True)
+    # Standing pay rate (whole dollars) for this profile — summed across all
+    # profiles to produce "Total Available Earnings" on the Earnings screen.
+    pay_rate     = Column(Integer, nullable=True)
+
+    # ── Profile Location: independent of any Attempt/Photo. Settable before
+    # any photo is ever uploaded against this profile — see /upload (Photo)
+    # for the separate, GPS-captured Attempt location. ──
+    status       = Column(String, nullable=True)  # e.g. "awaiting_attempt"
+    address      = Column(String, nullable=True)
+    city         = Column(String, nullable=True)
+    state        = Column(String, nullable=True)
+    postal_code  = Column(String, nullable=True)
+    latitude     = Column(Float, nullable=True)
+    longitude    = Column(Float, nullable=True)
+    created_at   = Column(DateTime, default=datetime.utcnow)
+    updated_at   = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
     photos       = relationship("Photo", secondary=pin_profile, back_populates="profiles")
 
 
@@ -110,6 +127,11 @@ class Photo(Base):
     #   served_to       — who the service was served to
     completion_type = Column(String, nullable=True)
     served_to       = Column(String, nullable=True)
+    relation_to     = Column(String, nullable=True)  # relation of served_to to profile
+    file_number     = Column(String, nullable=True)
+    # Whether the attempt was a successful service. Defaults true; when
+    # false the served_to/relation_to fields don't apply.
+    successful      = Column(Integer, nullable=False, default=1)
     # legacy single profile_id kept for backward compat
     profile_id    = Column(Integer, nullable=True)
     is_favorited  = Column(Integer, nullable=False, default=0)
@@ -226,6 +248,9 @@ def _ensure_columns():
         "completed_at":       "DATETIME",
         "user_id":            "INTEGER",
         "created_at":         "DATETIME",
+        "relation_to":        "VARCHAR",
+        "file_number":        "VARCHAR",
+        "successful":         "INTEGER NOT NULL DEFAULT 1",
     }
     with engine.connect() as conn:
         for col, ddl in new_cols.items():
@@ -254,6 +279,31 @@ def _ensure_columns():
             "WHERE created_at IS NULL"))
         conn.commit()
 
+        # profiles table: standing per-profile pay rate.
+        existing_profiles = {c["name"] for c in inspector.get_columns("profiles")}
+        if "pay_rate" not in existing_profiles:
+            conn.execute(text("ALTER TABLE profiles ADD COLUMN pay_rate INTEGER"))
+            conn.commit()
+
+        # profiles table: Profile Location + status, independent of any Photo/
+        # Attempt. NULL is the correct default for existing profiles — never
+        # backfilled from a photo's location (see Profile Location ticket).
+        profile_new_cols = {
+            "status":       "VARCHAR",
+            "address":      "VARCHAR",
+            "city":         "VARCHAR",
+            "state":        "VARCHAR",
+            "postal_code":  "VARCHAR",
+            "latitude":     "FLOAT",
+            "longitude":    "FLOAT",
+            "created_at":   "DATETIME",
+            "updated_at":   "DATETIME",
+        }
+        for col, ddl in profile_new_cols.items():
+            if col not in existing_profiles:
+                conn.execute(text(f"ALTER TABLE profiles ADD COLUMN {col} {ddl}"))
+                conn.commit()
+
 
 _ensure_columns()
 
@@ -264,6 +314,17 @@ def _to_pst_iso(ts):
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
     return ts.astimezone(PST).isoformat()
+
+
+def _pst_naive_to_utc(dt):
+    """Interpret a naive datetime (as sent by the client's local date/time
+    pickers) as PST wall-clock time and convert to naive UTC, matching how
+    Photo.timestamp is stored. Without this, filter comparisons are off by
+    the PST/UTC offset and silently exclude/include the wrong rows."""
+    if dt is None:
+        return None
+    localized = dt.replace(tzinfo=PST)
+    return localized.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def _haversine_ft(lat1, lon1, lat2, lon2):
@@ -295,6 +356,9 @@ def _photo_dict(ph):
         "category":           ph.category or "standard",
         "completion_type":    ph.completion_type,
         "served_to":          ph.served_to,
+        "relation_to":        ph.relation_to,
+        "file_number":        ph.file_number,
+        "successful":         bool(ph.successful) if ph.successful is not None else True,
         "pay_rate":           ph.pay_rate,
         "status":             ph.status or "open",
         "completed_at":       _to_pst_iso(ph.completed_at),
@@ -318,11 +382,60 @@ seed_data()
 
 # ─── PROFILE ROUTES ───────────────────────────────────────────────────────────
 
+def _profile_dict(p):
+    """Shared response shape for all three profile endpoints. `attempts_count`
+    is the number of Photos (Attempts) logged against this profile — reused
+    by the client to decide whether "Awaiting Attempt" still applies and
+    whether to show Profile Location vs. the Attempts list."""
+    return {
+        "id": p.id,
+        "name": p.name,
+        "service_type": p.service_type,
+        "note": p.note,
+        "pay_rate": p.pay_rate,
+        "status": p.status,
+        "address": p.address,
+        "city": p.city,
+        "state": p.state,
+        "postal_code": p.postal_code,
+        "latitude": p.latitude,
+        "longitude": p.longitude,
+        "attempts_count": len(p.photos),
+    }
+
+
+def _parse_profile_location(data, profile):
+    """Applies address/city/state/postal_code/lat/lng/status fields from
+    `data` onto `profile` in place, when present. Independent of any Photo/
+    Attempt — this is the ONLY place (besides create_profile) that ever
+    writes Profile Location."""
+    for field in ("address", "city", "state", "postal_code", "status"):
+        if field in data:
+            value = data[field]
+            setattr(profile, field, value.strip() if isinstance(value, str) else value)
+
+    for field in ("latitude", "longitude"):
+        if field in data:
+            value = data[field]
+            if value is None:
+                setattr(profile, field, None)
+                continue
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=422, detail=f"{field} must be a number")
+            if field == "latitude" and not (-90 <= value <= 90):
+                raise HTTPException(status_code=422, detail="latitude must be between -90 and 90")
+            if field == "longitude" and not (-180 <= value <= 180):
+                raise HTTPException(status_code=422, detail="longitude must be between -180 and 180")
+            setattr(profile, field, value)
+
+
 @app.get("/profiles")
 def get_profiles():
     db = SessionLocal()
     profiles = db.query(Profile).all()
-    result = [{"id": p.id, "name": p.name, "service_type": p.service_type, "note": p.note} for p in profiles]
+    result = [_profile_dict(p) for p in profiles]
     db.close()
     return result
 
@@ -331,23 +444,38 @@ def get_profiles():
 async def create_profile(data: dict = Body(...)):
     name = data.get("name", "").strip()
     service_type = data.get("service_type", "standard").strip()
-    
+
     if not name:
         raise HTTPException(status_code=422, detail="Profile name is required")
-    
+
     # Priority categories (+ legacy rush/airport kept for backward compat)
     if service_type not in (
         "standard", "special", "next_day", "asap", "rush", "airport"
     ):
         service_type = "standard"
 
+    pay_rate = data.get("pay_rate")
+    if pay_rate is not None:
+        try:
+            pay_rate = int(round(float(pay_rate)))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="pay_rate must be a whole dollar number")
+
     db = SessionLocal()
-    profile = Profile(name=name, service_type=service_type)
+    profile = Profile(name=name, service_type=service_type, pay_rate=pay_rate)
+    # Profile Location + status are entirely optional here — creating a
+    # profile never requires an attempt, photo, upload, or GPS capture.
+    try:
+        _parse_profile_location(data, profile)
+    except HTTPException:
+        db.close()
+        raise
     db.add(profile)
     db.commit()
     db.refresh(profile)
+    result = _profile_dict(profile)
     db.close()
-    return {"id": profile.id, "name": profile.name, "service_type": profile.service_type, "note": profile.note}
+    return result
 
 
 @app.patch("/profiles/{profile_id}")
@@ -357,18 +485,37 @@ async def update_profile(profile_id: int, data: dict = Body(...)):
     if not profile:
         db.close()
         raise HTTPException(status_code=404, detail="Profile not found")
-    
+
     if "name" in data:
         profile.name = data["name"]
     if "service_type" in data:
         profile.service_type = data["service_type"]
     if "note" in data:
         profile.note = data["note"]
-    
+    if "pay_rate" in data:
+        pay_rate = data["pay_rate"]
+        if pay_rate is not None:
+            try:
+                pay_rate = int(round(float(pay_rate)))
+            except (TypeError, ValueError):
+                db.close()
+                raise HTTPException(status_code=422, detail="pay_rate must be a whole dollar number")
+        profile.pay_rate = pay_rate
+
+    # Profile Location can be changed independently of everything else — this
+    # never touches Photo/Attempt rows, so historical Attempt GPS is untouched.
+    try:
+        _parse_profile_location(data, profile)
+    except HTTPException:
+        db.close()
+        raise
+
+    profile.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(profile)
+    result = _profile_dict(profile)
     db.close()
-    return {"id": profile.id, "name": profile.name, "service_type": profile.service_type, "note": profile.note}
+    return result
 
 
 @app.delete("/profiles/{profile_id}")
@@ -421,10 +568,12 @@ def get_profile_photos(profile_id: int):
 
 
 @app.get("/photos/{photo_id}/watermarked")
-def watermarked_photo(photo_id: int):
-    """Return the photo with its timestamp + geotag watermark burned in. Used by
-    the 'View photo' hyperlinks in the Excel exports (so the sheet stays compact
-    while the linked image is still stamped)."""
+def watermarked_photo(photo_id: int, max_w: int = 1600, max_h: int = 1600):
+    """Return the photo with its timestamp + geotag watermark burned in. Used
+    by the 'View photo' hyperlinks in the Excel exports (full 1600px size, so
+    the sheet stays compact while the linked image is still stamped) and by
+    inline <img> tags in export emails, which pass a smaller max_w/max_h
+    (e.g. 800) — a full-size PNG is too heavy to render reliably inline."""
     from fastapi.responses import Response
     db = SessionLocal()
     ph = db.query(Photo).filter(Photo.id == photo_id).first()
@@ -434,8 +583,8 @@ def watermarked_photo(photo_id: int):
     path = ph.image_url.lstrip("/")
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Image file missing")
-    stamped = _watermark_photo_png(path, _photo_caption(ph), max_w=1600,
-                                   max_h=1600)
+    stamped = _watermark_photo_png(path, _photo_caption(ph),
+                                   max_w=max_w, max_h=max_h)
     if stamped:
         return Response(content=stamped[0], media_type="image/png")
     with open(path, "rb") as f:                       # fallback: raw image
@@ -494,6 +643,9 @@ async def upload_photo(
     category:          str        = Form("standard"),
     completion_type:   str        = Form(""),    # e.g. Substitute | Personal
     served_to:         str        = Form(""),    # who service was served to
+    relation_to:       str        = Form(""),    # served_to's relation to the profile
+    file_number:       str        = Form(""),    # dispatcher-assigned file number
+    successful:        bool       = Form(True),  # whether the attempt was successful
     taken_at:          str        = Form(""),    # F6: device capture time (ISO)
     pay_rate:          str        = Form(""),     # F7: whole dollars
     user_id:           str        = Form(""),     # F8/F9: attribution
@@ -504,6 +656,8 @@ async def upload_photo(
         raise HTTPException(status_code=422, detail="Latitude must be between -90 and 90")
     if not (-180 <= longitude <= 180):
         raise HTTPException(status_code=422, detail="Longitude must be between -180 and 180")
+    if not file_number.strip():
+        raise HTTPException(status_code=422, detail="File number is required")
     ext      = os.path.splitext(file.filename)[1] or ".jpg"
     filename = f"{uuid.uuid4()}{ext}"
     filepath = os.path.join(UPLOAD_DIR, filename)
@@ -552,6 +706,9 @@ async def upload_photo(
                               else "standard"),
         completion_type    = completion_type.strip() or None,
         served_to          = served_to.strip() or None,
+        relation_to        = relation_to.strip() or None,
+        file_number        = file_number.strip() or None,
+        successful         = 1 if successful else 0,
         pay_rate           = pay_val,
         user_id            = uid,
         status             = initial_status,
@@ -785,20 +942,20 @@ def get_log(
         if start_time:
             dt_start = _parse_dt(start_time)
             if dt_start:
-                query = query.filter(Photo.timestamp >= dt_start)
+                query = query.filter(Photo.timestamp >= _pst_naive_to_utc(dt_start))
         if end_time:
             dt_end = _parse_dt(end_time)
             if dt_end:
                 # If only date provided (no time), extend to end of that day
                 if "T" not in end_time and " " not in end_time.strip():
                     dt_end = dt_end.replace(hour=23, minute=59, second=59)
-                query = query.filter(Photo.timestamp <= dt_end)
+                query = query.filter(Photo.timestamp <= _pst_naive_to_utc(dt_end))
     elif date:
         try:
             d = datetime.strptime(date, "%Y-%m-%d")
             query = query.filter(
-                Photo.timestamp >= d.replace(hour=0, minute=0, second=0),
-                Photo.timestamp <= d.replace(hour=23, minute=59, second=59),
+                Photo.timestamp >= _pst_naive_to_utc(d.replace(hour=0, minute=0, second=0)),
+                Photo.timestamp <= _pst_naive_to_utc(d.replace(hour=23, minute=59, second=59)),
             )
         except ValueError:
             pass
@@ -961,7 +1118,7 @@ async def export_log_email(request: Request):
 # Service-level / scheduling metadata
 _SERVICE_LEVELS = ("asap", "next_day", "standard", "special")
 _PRIORITY = {"asap": 0, "next_day": 1, "special": 2, "standard": 3}
-_NEARBY_DEFAULT_FT = 100.0
+_NEARBY_DEFAULT_FT = 200.0
 
 
 def _group_key(ph):
@@ -1331,11 +1488,17 @@ def earnings_summary(period: str = "today", user_id: Optional[int] = None,
 
     highest = _job_summary(max(jobs, key=lambda j: (j.pay_rate or 0), default=None))
     lowest  = _job_summary(min(jobs, key=lambda j: (j.pay_rate or 0), default=None))
+
+    # "Available" earnings: the standing Pay Rate set on each profile, summed
+    # across ALL profiles — not tied to job status or the selected period.
+    available_earnings = sum((p.pay_rate or 0) for p in db.query(Profile).all())
+
     db.close()
     return {
         "period":             period,
         "jobs_completed":     count,
         "total_earnings":     total,
+        "available_earnings": available_earnings,
         "average_per_job":    round(total / count, 2) if count else 0,
         "highest_paying_job": highest,
         "lowest_paying_job":  lowest,
@@ -1614,15 +1777,21 @@ def _build_xlsx(records, columns=_EXPORT_COLUMNS, sheet_title="Activity Log",
     return bio.getvalue(), f"{base_name}.xlsx"
 
 
-# Common DejaVu/Liberation locations on Linux servers + macOS, so the caption
-# renders at a real size instead of Pillow's tiny bitmap default font.
+# Bundled first (see fonts/NOTICE.md) so the watermark renders legibly on any
+# server regardless of which system fonts happen to be installed — the system
+# paths below only matter as a fallback if the bundled file is ever missing.
+# Bold reads far more clearly than regular weight against busy photo
+# backgrounds, which is why it's listed ahead of the regular-weight fallbacks.
+_FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 _FONT_PATHS = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-    "/Library/Fonts/Arial.ttf",
-    "/System/Library/Fonts/Supplemental/Arial.ttf",
-    "DejaVuSans.ttf",
+    os.path.join(_FONT_DIR, "DejaVuSans-Bold.ttf"),
+    os.path.join(_FONT_DIR, "DejaVuSans.ttf"),
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+    "/Library/Fonts/Arial Bold.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    "DejaVuSans-Bold.ttf",
 ]
 
 
@@ -1633,7 +1802,9 @@ def _load_font(size):
             return ImageFont.truetype(p, size)
         except Exception:
             continue
-    return ImageFont.load_default()
+    # Only reached if every bundled + system path above failed to load.
+    # `size=` keeps it legible instead of Pillow's tiny fixed-size bitmap font.
+    return ImageFont.load_default(size=size)
 
 
 def _watermark_photo_png(image_path, caption_lines, max_w=300, max_h=400):
@@ -1695,6 +1866,60 @@ def _photo_caption(ph):
     if ph.address:
         lines.append(str(ph.address)[:48])
     return lines
+
+
+def _get_watermarked_bytes(photo_id, max_w=800, max_h=800):
+    """Fetch + watermark a photo's bytes directly (no HTTP round-trip) so it
+    can be attached inline (CID) in an export email — this travels with the
+    message itself, so it still renders even when a mail client refuses to
+    fetch remote images (e.g. for an unauthenticated/spam-flagged sender)."""
+    db = SessionLocal()
+    ph = db.query(Photo).filter(Photo.id == photo_id).first()
+    db.close()
+    if not ph or not ph.image_url:
+        return None
+    path = ph.image_url.lstrip("/")
+    if not os.path.exists(path):
+        return None
+    stamped = _watermark_photo_png(path, _photo_caption(ph),
+                                   max_w=max_w, max_h=max_h)
+    return stamped[0] if stamped else None
+
+
+def _sendgrid_inline_attachments(photo_ids, max_w=800, max_h=800):
+    """SendGrid Attachment objects (inline, Content-ID) for the given photo
+    ids — matches the `cid:photo_{id}` references built into the HTML body."""
+    from sendgrid.helpers.mail import (
+        Attachment, FileContent, FileName, FileType, Disposition, ContentId)
+    atts = []
+    for pid in photo_ids:
+        img_bytes = _get_watermarked_bytes(pid, max_w=max_w, max_h=max_h)
+        if not img_bytes:
+            continue
+        atts.append(Attachment(
+            FileContent(base64.b64encode(img_bytes).decode()),
+            FileName(f"photo_{pid}.png"),
+            FileType("image/png"),
+            Disposition("inline"),
+            ContentId(f"photo_{pid}"),
+        ))
+    return atts
+
+
+def _smtp_inline_photo_parts(photo_ids, max_w=800, max_h=800):
+    """MIMEImage parts (inline, Content-ID) for the given photo ids — matches
+    the `cid:photo_{id}` references built into the HTML body."""
+    from email.mime.image import MIMEImage
+    parts = []
+    for pid in photo_ids:
+        img_bytes = _get_watermarked_bytes(pid, max_w=max_w, max_h=max_h)
+        if not img_bytes:
+            continue
+        img = MIMEImage(img_bytes, _subtype="png")
+        img.add_header("Content-ID", f"<photo_{pid}>")
+        img.add_header("Content-Disposition", "inline", filename=f"photo_{pid}.png")
+        parts.append(img)
+    return parts
 
 
 def _photo_link_cell(ws, row, col, photo_id, wrap):
@@ -1789,13 +2014,16 @@ def _pro_email_text(intro, *, sender=None, count=None, closing=None):
 
 @app.post("/export/excel")
 async def export_excel(request: Request):
-    """Generate an Excel file and email it to one or more recipients."""
+    """Email the selected profiles to one or more recipients. A single
+    selected profile puts its fields (File Number, Name, Date & Time,
+    Priority Level, Address, Notes) and watermarked photo directly in the
+    message body — no attachment. Multiple profiles keep the existing
+    Excel-attachment flow with a link to each profile's latest photo."""
     content_type = request.headers.get("content-type", "")
     if "application/json" in content_type:
         data = await request.json()
         recipients = data.get("recipients") or ([data["to"]] if data.get("to") else [])
         records = data.get("records", [])
-        include_photo = bool(data.get("include_photo"))
     else:
         form = await request.form()
         recipients = json.loads(form.get("recipients", "[]")) or (
@@ -1804,21 +2032,10 @@ async def export_excel(request: Request):
             records = json.loads(form.get("records", "[]"))
         except Exception:
             records = []
-        include_photo = str(form.get("include_photo", "")).lower() in ("1", "true", "yes")
 
     recipients = [e.strip() for e in recipients if e and "@" in e]
     if not recipients:
         raise HTTPException(status_code=422, detail="At least one recipient email required")
-
-    # Manual selection → one row per profile with a link to its latest
-    # (watermarked) photo. Full list → the same fields minus the Photo column.
-    if include_photo:
-        file_bytes, fname = _build_xlsx_with_photos(records)
-    else:
-        file_bytes, fname = _build_xlsx(
-            records, _EXPORT_COLUMNS_LIST, sheet_title="Profiles Export",
-            base_name="profiles_export")
-    b64 = base64.b64encode(file_bytes).decode()
 
     smtp_host = os.environ.get("SMTP_HOST")
     smtp_user = os.environ.get("SMTP_USER")
@@ -1827,55 +2044,78 @@ async def export_excel(request: Request):
     sg_api_key = os.environ.get("SENDGRID_API_KEY")
     sg_sender = os.environ.get("SENDGRID_SENDER_EMAIL")
 
+    single = len(records) == 1
+    if single:
+        rec = records[0]
+        subject = f"GeoTagging CRM — {rec.get('name') or 'Profile'} Export"
+        body_html = _build_records_export_html(records)
+        body_text = None
+        file_bytes = fname = b64 = None
+        photo_ids = [rec["photo_id"]] if rec.get("photo_id") is not None else []
+    else:
+        # Every export row gets a link to its (watermarked) photo — no
+        # distinction between a hand-picked selection and the full list.
+        file_bytes, fname = _build_xlsx_with_photos(records)
+        b64 = base64.b64encode(file_bytes).decode()
+        subject = f"GeoTagging CRM — Profiles Export ({len(records)} records)"
+        intro = (f"Please find attached the profiles export you requested from "
+                 f"GeoTagging CRM, containing {len(records)} profiles with the "
+                 f"most recent photo for each profile.")
+        body_html = _pro_email_html(intro, sender=sg_sender or smtp_user,
+                                    count=len(records))
+        body_text = _pro_email_text(intro, sender=sg_sender or smtp_user,
+                                    count=len(records))
+
     if not sg_api_key and (not smtp_host or not smtp_user):
-        # Not configured: return the file as base64 for client download
         return {"ok": True, "message": "Email not configured — file returned",
                 "filename": fname, "file_base64": b64, "count": len(records)}
 
-    noun = "profiles" if include_photo else "profile records"
-    subject = f"GeoTagging CRM — Profiles Export ({len(records)} records)"
-    intro = (f"Please find attached the profiles export you requested from "
-             f"GeoTagging CRM, containing {len(records)} {noun}"
-             + (" with the most recent photo for each profile."
-                if include_photo else "."))
-    body_html = _pro_email_html(intro, sender=sg_sender or smtp_user,
-                                count=len(records))
-    body_text = _pro_email_text(intro, sender=sg_sender or smtp_user,
-                                count=len(records))
     try:
         if sg_api_key and SendGridAPIClient and Mail:
-            from sendgrid.helpers.mail import Attachment, FileContent, FileName, FileType, Disposition
             message = Mail(from_email=sg_sender, to_emails=recipients,
-                           subject=subject,
-                           html_content=body_html)
-            message.attachment = Attachment(
-                FileContent(b64), FileName(fname),
-                FileType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-                Disposition("attachment"))
+                           subject=subject, html_content=body_html)
+            if single:
+                for att in _sendgrid_inline_attachments(photo_ids):
+                    message.add_attachment(att)
+            else:
+                from sendgrid.helpers.mail import Attachment, FileContent, FileName, FileType, Disposition
+                message.attachment = Attachment(
+                    FileContent(b64), FileName(fname),
+                    FileType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+                    Disposition("attachment"))
             SendGridAPIClient(sg_api_key).send(message)
-            return {"ok": True, "message": f"Excel sent to {', '.join(recipients)}",
+            return {"ok": True, "message": f"Export sent to {', '.join(recipients)}",
                     "count": len(records)}
         else:
-            from email.mime.application import MIMEApplication
             msg = MIMEMultipart("mixed")
             msg["Subject"] = subject
             msg["From"] = smtp_user
             msg["To"] = ", ".join(recipients)
+            # `related` holds the HTML + any inline (cid:) images so mail
+            # clients associate them; `mixed` holds that plus any attachment.
+            related = MIMEMultipart("related")
             alt = MIMEMultipart("alternative")
-            alt.attach(MIMEText(body_text, "plain"))
+            if body_text:
+                alt.attach(MIMEText(body_text, "plain"))
             alt.attach(MIMEText(body_html, "html"))
-            msg.attach(alt)
-            part = MIMEApplication(file_bytes, _subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            part.add_header("Content-Disposition", "attachment", filename=fname)
-            msg.attach(part)
+            related.attach(alt)
+            if single:
+                for part in _smtp_inline_photo_parts(photo_ids):
+                    related.attach(part)
+            msg.attach(related)
+            if not single:
+                from email.mime.application import MIMEApplication
+                part = MIMEApplication(file_bytes, _subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                part.add_header("Content-Disposition", "attachment", filename=fname)
+                msg.attach(part)
             with smtplib.SMTP(smtp_host, smtp_port) as server:
                 server.starttls()
                 server.login(smtp_user, smtp_pass)
                 server.sendmail(smtp_user, recipients, msg.as_string())
-            return {"ok": True, "message": f"Excel sent to {', '.join(recipients)}",
+            return {"ok": True, "message": f"Export sent to {', '.join(recipients)}",
                     "count": len(records)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Excel export failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
 
 
 def _esc(s):
@@ -1898,12 +2138,59 @@ def _fmt_note_stamp(date_time):
     return raw
 
 
-def _build_service_record_html(records, header=None, latest_only=False):
-    """Build the Rockstar-style 'SERVICE RECORDED' email body from the export
-    records (newest-first, as the app sends them) plus an optional ``header``
-    dict carrying the top-block fields. Mirrors the format the client receives
-    from Rockstar Processing: a header block + a 'PREV NOTES FROM SERVICE' log.
-    """
+def _build_records_export_html(records):
+    """Build the profiles-export email body: every selected record's File
+    Number, Name, Date & Time, Priority Level, Address and Notes, with its
+    watermarked photo embedded inline — one block per record, directly in
+    the message body. No spreadsheet attachment."""
+    records = records or []
+    blocks = []
+    for rec in records:
+        rows = [
+            ("File Number",    _esc(rec.get("file_number")) or "—"),
+            ("Name",           _esc(rec.get("name")) or "—"),
+            ("Date & Time",    _esc(rec.get("date_time")) or "—"),
+            ("Priority Level", _esc(rec.get("priority_level")) or "—"),
+            ("Address",        _esc(rec.get("address")) or "—"),
+        ]
+        rows_html = "".join(
+            f'<tr><td style="padding:2px 12px 2px 0;color:#64748b;white-space:nowrap;">'
+            f'{label}:</td><td style="padding:2px 0;color:#0f172a;font-weight:600;">'
+            f'{value}</td></tr>'
+            for label, value in rows
+        )
+        notes = (rec.get("notes") or "").strip()
+        notes_html = (_esc(notes) if notes
+                      else '<span style="color:#94a3b8;">No notes recorded.</span>')
+
+        photo_html = ""
+        photo_id = rec.get("photo_id")
+        if photo_id is not None:
+            # cid: reference — the image travels WITH the email as an inline
+            # attachment (see _attach_inline_photos), so it renders even when
+            # a client refuses to fetch remote images from this sender.
+            photo_html = (
+                f'<img src="cid:photo_{photo_id}" alt="Service photo" '
+                f'style="max-width:100%;border-radius:8px;display:block;margin-top:10px;">'
+            )
+
+        blocks.append(f"""\
+<table style="border-collapse:collapse;font-size:14px;margin:0 0 8px;">{rows_html}</table>
+<div style="margin:0 0 4px;color:#334155;font-weight:700;font-size:13px;">Notes</div>
+<div style="margin:0 0 10px;color:#0f172a;line-height:1.5;">{notes_html}</div>
+{photo_html}""")
+
+    separator = '<hr style="border:none;border-top:1px solid #e2e8f0;margin:20px 0;">'
+    body = separator.join(blocks) if blocks else '<p>No records to export.</p>'
+    return (f'<div style="font-family:Arial,Helvetica,sans-serif;color:#0f172a;'
+            f'max-width:640px;">{body}</div>')
+
+
+def _build_service_record_html(records, header=None, latest_only=False,
+                                photo_id=None):
+    """Build the single-profile service-record email body: File Number, Name,
+    Date & Time, Priority Level, Address, Notes, and the watermarked Photo
+    embedded inline (this export is always for one profile/job at a time)."""
     records = records or []
     header = header or {}
     latest = records[0] if records else {}
@@ -1915,13 +2202,11 @@ def _build_service_record_html(records, header=None, latest_only=False):
         return _esc(v) if v else default
 
     rows = [
-        ("Dispatch Type",          hv("dispatch_type", "service_ordered", "Standard")),
-        ("Service Name",           hv("service_name")),
-        ("Status",                 hv("status", "job_status")),
-        ("Agent",                  hv("agent", "agent")),
-        ("Actual Service Address", hv("address", "address")),
-        ("Completed Type",         hv("completion_type")),
-        ("Served To",              hv("served_to")),
+        ("File Number",    hv("file_number")),
+        ("Name",           hv("name", "id_ctrl")),
+        ("Date & Time",    hv("date_time", "date_time")),
+        ("Priority Level", hv("priority_level", "service_ordered", "Standard")),
+        ("Address",        hv("address", "address")),
     ]
     header_html = "".join(
         f'<tr><td style="padding:2px 12px 2px 0;color:#64748b;white-space:nowrap;">'
@@ -1930,11 +2215,11 @@ def _build_service_record_html(records, header=None, latest_only=False):
         for label, value in rows
     )
 
-    # PREV NOTES FROM SERVICE — oldest-first, like the Rockstar email.
+    # Notes — one attempt when latest_only, otherwise every attempt oldest-first.
     note_records = ([latest] if latest_only else list(reversed(records)))
     note_lines = []
     for r in note_records:
-        note = (r.get("detailed_notes") or "").strip()
+        note = (r.get("detailed_notes") or r.get("notes") or "").strip()
         if not note:
             continue
         stamp = _fmt_note_stamp(r.get("date_time"))
@@ -1946,26 +2231,22 @@ def _build_service_record_html(records, header=None, latest_only=False):
     notes_html = ("".join(note_lines)
                   or '<div style="color:#94a3b8;">No notes recorded.</div>')
 
-    section_title = ("MOST RECENT NOTE FROM SERVICE" if latest_only
-                     else "PREV NOTES FROM SERVICE")
+    photo_html = ""
+    if photo_id is not None:
+        # cid: reference — see _attach_inline_photos for the matching attachment.
+        photo_html = (
+            f'<h3 style="margin:20px 0 10px;font-size:14px;letter-spacing:0.4px;'
+            f'color:#334155;">Photo</h3>'
+            f'<img src="cid:photo_{photo_id}" alt="Service photo" '
+            f'style="max-width:100%;border-radius:8px;display:block;">'
+        )
 
     return f"""\
 <div style="font-family:Arial,Helvetica,sans-serif;color:#0f172a;max-width:640px;">
-  <p style="margin:0 0 14px;line-height:1.5;">
-    You've recorded a completion or final service for Rockstar Processing.
-    The status of this delivery has been immediately sent to Dispatch and the Client.
-  </p>
   <table style="border-collapse:collapse;font-size:14px;margin:0 0 16px;">{header_html}</table>
-  <p style="margin:0 0 6px;font-weight:700;">You have recorded a service attempt or completion</p>
-  <hr style="border:none;border-top:1px solid #e2e8f0;margin:12px 0;">
-  <h3 style="margin:0 0 12px;font-size:14px;letter-spacing:0.4px;color:#334155;">{section_title}</h3>
+  <h3 style="margin:0 0 12px;font-size:14px;letter-spacing:0.4px;color:#334155;">Notes</h3>
   {notes_html}
-  <hr style="border:none;border-top:1px solid #e2e8f0;margin:16px 0 10px;">
-  <p style="margin:0;font-size:11px;color:#94a3b8;line-height:1.5;">
-    Dates and times appear with each attempt. If they are missing, the agent
-    needs to edit and record. This stamp may not reflect the actual time of the
-    service and is for troubleshooting only.
-  </p>
+  {photo_html}
 </div>"""
 
 
@@ -2050,8 +2331,11 @@ async def export_job(request: Request):
     photo_ids = data.get("photo_ids") or []
     subject = (data.get("subject") or "Service Record").strip()
     latest_only = bool(data.get("latest_only"))
+    # This export is always for a single profile/job — show just the one
+    # (most recent) photo inline in the email body, not every attempt's.
     html_body = _build_service_record_html(
-        records, data.get("header"), latest_only)
+        records, data.get("header"), latest_only,
+        photo_id=photo_ids[0] if photo_ids else None)
 
     base_name = data.get("base_name") or "service-record"
     if photo_ids:
@@ -2081,6 +2365,8 @@ async def export_job(request: Request):
                 "photos": attachments, "count": len(records)}
 
     _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    # The single photo referenced by html_body's cid:photo_{id} (see above).
+    inline_photo_ids = [photo_ids[0]] if photo_ids else []
     try:
         if sg_api_key and SendGridAPIClient and Mail:
             from sendgrid.helpers.mail import (
@@ -2095,6 +2381,7 @@ async def export_job(request: Request):
                         FileName(a.get("filename", "photo.jpg")),
                         FileType(a.get("mimetype", "image/jpeg")),
                         Disposition("attachment")))
+            atts.extend(_sendgrid_inline_attachments(inline_photo_ids))
             message = Mail(from_email=sg_sender, to_emails=recipients,
                            subject=subject, html_content=html_body)
             message.attachment = atts
@@ -2102,11 +2389,16 @@ async def export_job(request: Request):
         else:
             from email.mime.application import MIMEApplication
             from email.mime.image import MIMEImage
-            msg = MIMEMultipart()
+            msg = MIMEMultipart("mixed")
             msg["Subject"] = subject
             msg["From"] = smtp_user
             msg["To"] = ", ".join(recipients)
-            msg.attach(MIMEText(html_body, "html"))
+            # `related` holds the HTML + the inline (cid:) photo it references.
+            related = MIMEMultipart("related")
+            related.attach(MIMEText(html_body, "html"))
+            for part in _smtp_inline_photo_parts(inline_photo_ids):
+                related.attach(part)
+            msg.attach(related)
             part = MIMEApplication(file_bytes, _subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             part.add_header("Content-Disposition", "attachment", filename=fname)
             msg.attach(part)

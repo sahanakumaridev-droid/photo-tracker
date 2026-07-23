@@ -34,6 +34,9 @@ class QueuedUpload {
     this.category,
     this.completionType,
     this.servedTo,
+    this.relationTo,
+    this.fileNumber,
+    this.successful = true,
     this.payRate,
     this.locationGroupId,
     this.userId,
@@ -55,6 +58,9 @@ class QueuedUpload {
   final String? category;
   final String? completionType;
   final String? servedTo;
+  final String? relationTo;
+  final String? fileNumber;
+  final bool successful;
   final int? payRate;
   final int? locationGroupId;
   final int? userId;
@@ -76,6 +82,9 @@ class QueuedUpload {
         'category': category,
         'completionType': completionType,
         'servedTo': servedTo,
+        'relationTo': relationTo,
+        'fileNumber': fileNumber,
+        'successful': successful,
         'payRate': payRate,
         'locationGroupId': locationGroupId,
         'userId': userId,
@@ -98,6 +107,9 @@ class QueuedUpload {
         category: m['category'] as String?,
         completionType: m['completionType'] as String?,
         servedTo: m['servedTo'] as String?,
+        relationTo: m['relationTo'] as String?,
+        fileNumber: m['fileNumber'] as String?,
+        successful: (m['successful'] as bool?) ?? true,
         payRate: m['payRate'] as int?,
         locationGroupId: m['locationGroupId'] as int?,
         userId: m['userId'] as int?,
@@ -210,6 +222,9 @@ class UploadQueueService {
     String? category,
     String? completionType,
     String? servedTo,
+    String? relationTo,
+    String? fileNumber,
+    bool successful = true,
     int? payRate,
     int? locationGroupId,
     int? userId,
@@ -231,6 +246,9 @@ class UploadQueueService {
       category: category,
       completionType: completionType,
       servedTo: servedTo,
+      relationTo: relationTo,
+      fileNumber: fileNumber,
+      successful: successful,
       payRate: payRate,
       locationGroupId: locationGroupId,
       userId: userId,

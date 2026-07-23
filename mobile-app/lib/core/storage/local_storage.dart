@@ -70,6 +70,21 @@ class LocalStorage {
   /// Clear the saved pin draft.
   static Future<bool> clearPinDraft() async => _prefs.remove(_draftKey);
 
+  // ─── Served To — custom names ──────────────────────────────────────────────
+  static const String _servedToCustomNamesKey = 'served_to_custom_names';
+
+  /// Custom "Served To" names the user has created, most-recent first.
+  static List<String> getServedToCustomNames() =>
+      _prefs.getStringList(_servedToCustomNamesKey) ?? [];
+
+  /// Remember a custom "Served To" name for reuse (most-recent first, deduped).
+  static Future<bool> addServedToCustomName(String name) async {
+    final names = getServedToCustomNames()
+      ..remove(name)
+      ..insert(0, name);
+    return _prefs.setStringList(_servedToCustomNamesKey, names);
+  }
+
   // ─── Permissions ──────────────────────────────────────────────────────────
   static const String _permissionsRequestedKey = 'permissions_requested';
 

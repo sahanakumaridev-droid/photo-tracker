@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 import 'app.dart';
+import 'core/storage/api_cache.dart';
 import 'core/storage/local_storage.dart';
 import 'core/storage/upload_queue.dart';
 
@@ -14,6 +15,10 @@ void main() async {
 
   // Initialize local storage
   await LocalStorage.init();
+
+  // Cache for list-endpoint responses (photos/profiles) — lets the app show
+  // last-known data on a poor or dropped connection instead of a blank screen.
+  await ApiCache.init();
 
   // Offline upload queue — opens its Hive box and starts the auto-retry loop.
   // The actual network uploader is attached once Riverpod providers are ready
