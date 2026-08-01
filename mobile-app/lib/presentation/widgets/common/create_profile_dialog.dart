@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../core/utils/category.dart';
 import '../../../core/utils/text_formatters.dart';
+import '../../../data/models/company.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/profile_provider.dart';
 
@@ -13,15 +13,23 @@ import '../../providers/profile_provider.dart';
 /// Returns the created [ProfileModel] on success, or `null` if the user
 /// cancelled or creation failed. The caller does not need to invalidate
 /// [profilesProvider] — the dialog already does so on success.
-Future<ProfileModel?> showCreateProfileDialog(BuildContext context) {
+///
+/// When [initialCompanyId] is set (e.g. from the upload company selector),
+/// that company is pre-selected in the dropdown.
+Future<ProfileModel?> showCreateProfileDialog(
+  BuildContext context, {
+  String? initialCompanyId,
+}) {
   return showDialog<ProfileModel>(
     context: context,
-    builder: (_) => const _CreateProfileDialog(),
+    builder: (_) => _CreateProfileDialog(initialCompanyId: initialCompanyId),
   );
 }
 
 class _CreateProfileDialog extends ConsumerStatefulWidget {
-  const _CreateProfileDialog();
+  const _CreateProfileDialog({this.initialCompanyId});
+
+  final String? initialCompanyId;
 
   @override
   ConsumerState<_CreateProfileDialog> createState() =>
@@ -35,7 +43,14 @@ class _CreateProfileDialogState extends ConsumerState<_CreateProfileDialog> {
 
   final _nameCtrl = TextEditingController();
   final _payRateCtrl = TextEditingController();
+  late String _companyId;
   bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _companyId = companyById(widget.initialCompanyId)?.id ?? kDefaultCompanyId;
+  }
 
   @override
   void dispose() {
@@ -51,11 +66,12 @@ class _CreateProfileDialogState extends ConsumerState<_CreateProfileDialog> {
     setState(() => _saving = true);
     try {
       // Service level is chosen per-photo during upload, not on the profile,
-      // so new profiles start at the default and the upload flow owns the
-      // priority/service selection.
+      // so new profiles start at the company default and the upload flow owns
+      // the priority/service selection (filtered by company).
       final created = await ref.read(createProfileProvider((
         name: name,
-        serviceType: kDefaultCategory,
+        serviceType: defaultPriorityForCompany(_companyId),
+        company: _companyId,
         payRate: payRate,
         status: null,
         address: null,
@@ -94,8 +110,7 @@ class _CreateProfileDialogState extends ConsumerState<_CreateProfileDialog> {
               autofocus: true,
               textCapitalization: TextCapitalization.words,
               inputFormatters: const [TitleCaseInputFormatter()],
-              textInputAction: TextInputAction.done,
-              onSubmitted: (_) => _create(),
+              textInputAction: TextInputAction.next,
               decoration: InputDecoration(
                 hintText: 'Profile name',
                 filled: true,
@@ -114,10 +129,49 @@ class _CreateProfileDialogState extends ConsumerState<_CreateProfileDialog> {
                 ),
               ),
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 14),
             const Text(
-              'You\'ll choose the service level when you upload a photo.',
-              style: TextStyle(fontSize: 12, color: _inkMuted),
+              'Company',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: _inkMuted,
+              ),
+            ),
+            const SizedBox(height: 6),
+            DropdownButtonFormField<String>(
+              initialValue: _companyId,
+              decoration: InputDecoration(
+                filled: true,
+                fillColor: _canvas,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide.none,
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide.none,
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: _accent, width: 1.5),
+                ),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              ),
+              items: [
+                for (final c in kCompanies)
+                  DropdownMenuItem(value: c.id, child: Text(c.name)),
+              ],
+              onChanged: (v) {
+                if (v == null) return;
+                setState(() => _companyId = v);
+              },
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Priority levels and pay rates follow this company.',
+              style: const TextStyle(fontSize: 12, color: _inkMuted),
             ),
             const SizedBox(height: 14),
             TextField(

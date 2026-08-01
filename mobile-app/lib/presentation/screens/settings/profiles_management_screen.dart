@@ -1,16 +1,17 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../../../core/utils/location_service.dart';
 import '../../../core/utils/text_formatters.dart';
+import '../../../data/models/company.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/profile_provider.dart';
 import '../upload/location_picker_map.dart';
 
 class ProfilesManagementScreen extends ConsumerStatefulWidget {
-
   const ProfilesManagementScreen({
     super.key,
     this.profileToEdit,
@@ -24,10 +25,30 @@ class ProfilesManagementScreen extends ConsumerStatefulWidget {
 
 class _ProfilesManagementScreenState
     extends ConsumerState<ProfilesManagementScreen> {
+  // ── Design tokens — matches the rest of the app (Upload screen, Profile
+  // Detail): soft-lavender canvas, white cards with a subtle shadow, colored
+  // icon badges per section. ─────────────────────────────────────────────────
+  static const Color _canvas = Color(0xFFF7F5FF);
+  static const Color _surface = Color(0xFFFFFFFF);
+  static const Color _ink = Color(0xFF0F0F0F);
+  static const Color _inkMuted = Color(0xFF6B7280);
+  static const Color _inkSubtle = Color(0xFF9CA3AF);
+  static const Color _separator = Color(0xFFE5E7EB);
+  static const Color _accent = Color(0xFF7C3AED);
+  static const Color _accentSoft = Color(0xFFEDE9FE);
+  static const Color _successGreen = Color(0xFF10B981);
+  static const Color _errorRed = Color(0xFFEF4444);
+  static const LinearGradient _btnGradient = LinearGradient(
+    begin: Alignment.centerLeft,
+    end: Alignment.centerRight,
+    colors: [Color(0xFF8B5CF6), Color(0xFF6D28D9)],
+  );
+
   late TextEditingController _nameController;
   late TextEditingController _noteController;
   late TextEditingController _payRateController;
   String _selectedServiceType = 'standard';
+  late String _companyId;
   bool _isLoading = false;
 
   // ── Status: independent of any Attempt/Photo status. ──────────────────────
@@ -44,6 +65,23 @@ class _ProfilesManagementScreenState
   late TextEditingController _latController;
   late TextEditingController _lngController;
   bool _locatingCurrent = false;
+  bool _coordsExpanded = false;
+
+  /// Stepper: Basics → Company → Location.
+  int _step = 0;
+  static const int _stepCount = 3;
+  static const List<String> _stepTitles = [
+    'Basics',
+    'Company',
+    'Location',
+  ];
+  static const List<String> _stepSubtitles = [
+    'Name and status for this profile.',
+    'Company, priorities, and optional pay rate.',
+    'Optional work location for this profile.',
+  ];
+
+  bool get _isEditing => widget.profileToEdit != null;
 
   @override
   void initState() {
@@ -53,6 +91,13 @@ class _ProfilesManagementScreenState
     _noteController = TextEditingController(text: p?.note ?? '');
     _payRateController =
         TextEditingController(text: p?.payRate?.toString() ?? '');
+    _companyId = companyById(p?.company)?.id ?? kDefaultCompanyId;
+    if (p?.serviceType != null &&
+        companyOrDefault(_companyId).allowsPriority(p!.serviceType)) {
+      _selectedServiceType = p.serviceType;
+    } else {
+      _selectedServiceType = defaultPriorityForCompany(_companyId);
+    }
     _status = p?.status;
     _addressController = TextEditingController(text: p?.address ?? '');
     _cityController = TextEditingController(text: p?.city ?? '');
@@ -68,11 +113,28 @@ class _ProfilesManagementScreenState
     _selectedServiceType = valid.contains(raw)
         ? raw
         : (raw == 'rush' ? 'asap' : 'standard');
+    // Profile Name is required — its "done" badge must update live as the
+    // user types, matching the Upload screen's required-field pattern.
+    _nameController.addListener(_onNameChanged);
+
+    // Convenience auto-fill: whenever there's no Profile Location yet — a
+    // brand-new profile, or an existing one nobody has set a location for —
+    // pre-fill the device's current location (silently; failure just leaves
+    // the fields blank, it never blocks saving). A profile that already HAS
+    // a saved location is never touched: `_hasLocation` guards against
+    // overwriting real data with wherever the device happens to be right now.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && !_hasLocation) _useCurrentLocation();
+    });
   }
+
+  void _onNameChanged() => setState(() {});
 
   @override
   void dispose() {
-    _nameController.dispose();
+    _nameController
+      ..removeListener(_onNameChanged)
+      ..dispose();
     _noteController.dispose();
     _payRateController.dispose();
     _addressController.dispose();
@@ -87,6 +149,28 @@ class _ProfilesManagementScreenState
   bool get _hasLocation =>
       _latController.text.trim().isNotEmpty &&
       _lngController.text.trim().isNotEmpty;
+
+  String get _locationSummary {
+    final parts = <String>[
+      if (_addressController.text.trim().isNotEmpty)
+        _addressController.text.trim(),
+      if (_cityController.text.trim().isNotEmpty) _cityController.text.trim(),
+      if (_stateController.text.trim().isNotEmpty) _stateController.text.trim(),
+      if (_zipController.text.trim().isNotEmpty) _zipController.text.trim(),
+    ];
+    if (parts.isNotEmpty) return parts.join(', ');
+    if (_hasLocation) {
+      return '${_latController.text.trim()}, ${_lngController.text.trim()}';
+    }
+    return '';
+  }
+
+  String get _statusHelper {
+    if (_status == 'awaiting_attempt') {
+      return 'Created, but field work has not started yet.';
+    }
+    return 'Open and ready for field work.';
+  }
 
   void _applyPickedLocation(
     double lat,
@@ -151,11 +235,12 @@ class _ProfilesManagementScreenState
       _zipController.clear();
       _latController.clear();
       _lngController.clear();
+      _coordsExpanded = false;
     });
   }
 
   Future<void> _saveProfile() async {
-    if (_nameController.text.isEmpty) {
+    if (_nameController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please enter a profile name')),
       );
@@ -178,8 +263,9 @@ class _ProfilesManagementScreenState
         // Update existing profile
         await ref.read(updateProfileProvider((
           profileId: widget.profileToEdit!.id,
-          name: _nameController.text,
+          name: _nameController.text.trim(),
           serviceType: _selectedServiceType,
+          company: _companyId,
           note: _noteController.text.isEmpty ? null : _noteController.text,
           payRate: payRate,
           status: _status,
@@ -199,8 +285,9 @@ class _ProfilesManagementScreenState
       } else {
         // Create new profile
         final created = await ref.read(createProfileProvider((
-          name: _nameController.text,
+          name: _nameController.text.trim(),
           serviceType: _selectedServiceType,
+          company: _companyId,
           payRate: payRate,
           status: _status,
           address: orNull(_addressController),
@@ -242,153 +329,438 @@ class _ProfilesManagementScreenState
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    const grayBg = Color(0xFFF8FAFC);
-    const grayText = Color(0xFF6B7280);
-    const grayBorder = Color(0xFFE2E8F0);
-    const graySubtle = Color(0xFF94A3B8);
-    final accent = Theme.of(context).colorScheme.primary;
-
-    InputDecoration deco({
-      required String hint,
-      IconData? icon,
-    }) =>
-        InputDecoration(
-          hintText: hint,
-          hintStyle: const TextStyle(color: graySubtle),
-          prefixIcon: icon != null ? Icon(icon, color: graySubtle) : null,
-          filled: true,
-          fillColor: Colors.white,
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: grayBorder, width: 1),
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: grayBorder, width: 1),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: BorderSide(color: accent, width: 1.5),
-          ),
-        );
-
-    Widget label(String text) => Text(
-          text,
-          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                fontWeight: FontWeight.w600,
-                color: grayText,
-              ),
-        );
-
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(
-          widget.profileToEdit != null ? 'Edit Profile' : 'Add Profile',
+  // ── Shared card shell — matches the Upload screen's `_card()` exactly. ─────
+  Widget _card({required Widget child}) => Container(
+        margin: const EdgeInsets.only(bottom: 14),
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          color: _surface,
+          borderRadius: BorderRadius.circular(22),
+          boxShadow: [
+            BoxShadow(
+              color: _accent.withValues(alpha: 0.05),
+              blurRadius: 16,
+              offset: const Offset(0, 4),
+            ),
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.04),
+              blurRadius: 6,
+              offset: const Offset(0, 1),
+            ),
+          ],
         ),
-        elevation: 0,
-        backgroundColor: Colors.white,
-        foregroundColor: grayText,
-      ),
-      backgroundColor: grayBg,
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+        child: child,
+      );
+
+  // ── Section header: colored icon badge + title (+ required/done state) —
+  // matches the Upload screen's `_sectionLabel()` exactly. ───────────────────
+  Widget _sectionLabel(
+    String label,
+    IconData icon, {
+    bool required = false,
+    bool done = false,
+  }) =>
+      Row(
+        children: [
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 250),
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              gradient: done
+                  ? const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0xFF10B981), Color(0xFF059669)],
+                    )
+                  : const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0xFFEDE9FE), Color(0xFFDDD6FE)],
+                    ),
+              borderRadius: BorderRadius.circular(10),
+              boxShadow: done
+                  ? [
+                      BoxShadow(
+                        color: _successGreen.withValues(alpha: 0.25),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      )
+                    ]
+                  : null,
+            ),
+            child: Icon(
+              done ? Icons.check_rounded : icon,
+              size: 16,
+              color: done ? Colors.white : _accent,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Row(
+              children: [
+                Flexible(
+                  child: Text(
+                    label,
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      color: _ink,
+                      letterSpacing: -0.2,
+                    ),
+                  ),
+                ),
+                if (required && !done) ...[
+                  const SizedBox(width: 4),
+                  const Text(
+                    '*',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      color: _errorRed,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          if (required && !done)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: _errorRed.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text(
+                'Required',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: _errorRed,
+                ),
+              ),
+            ),
+        ],
+      );
+
+  Widget _fieldLabel(String label) => Text(
+        label,
+        style: const TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+          color: _inkMuted,
+          letterSpacing: -0.1,
+        ),
+      );
+
+  Widget _helper(String text) => Text(
+        text,
+        style: const TextStyle(fontSize: 12.5, height: 1.35, color: _inkMuted),
+      );
+
+  Widget _divider() => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        child: Container(height: 1, color: _separator),
+      );
+
+  InputDecoration _deco({required String hint, IconData? icon}) =>
+      InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(color: _inkSubtle, fontSize: 14),
+        prefixIcon:
+            icon != null ? Icon(icon, size: 18, color: _inkSubtle) : null,
+        prefixIconConstraints:
+            const BoxConstraints(minWidth: 40, minHeight: 40),
+        filled: true,
+        fillColor: _canvas,
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none,
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none,
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: _accent, width: 1.5),
+        ),
+      );
+
+  TextStyle get _fieldStyle => const TextStyle(fontSize: 14, color: _ink);
+
+  Widget _dropdownShell({required Widget child}) => Container(
+        decoration: BoxDecoration(
+          color: _canvas,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        child: DropdownButtonHideUnderline(child: child),
+      );
+
+  Widget _metaChip(IconData icon, String label) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        decoration: BoxDecoration(
+          color: _accentSoft,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            // Profile Name
-            label('Profile Name'),
-            const SizedBox(height: 10),
+            Icon(icon, size: 14, color: _accent),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                label,
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: _accent,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+
+  Widget _actionTile({
+    required VoidCallback? onTap,
+    required IconData icon,
+    required String label,
+    bool primary = false,
+    bool loading = false,
+  }) {
+    final bg = primary ? _accent : _canvas;
+    final fg = primary ? Colors.white : _accent;
+    return Material(
+      color: bg,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: loading ? null : onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          constraints: const BoxConstraints(minHeight: 48),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          alignment: Alignment.center,
+          child: loading
+              ? SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: fg,
+                  ),
+                )
+              : Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(icon, size: 18, color: fg),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        label,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: fg,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+        ),
+      ),
+    );
+  }
+
+  // ── Identity: name + status ───────────────────────────────────────────────
+  Widget _buildIdentityCard(bool nameDone) => _card(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _sectionLabel(
+              'Profile Name',
+              Icons.person_rounded,
+              required: true,
+              done: nameDone,
+            ),
+            const SizedBox(height: 12),
             TextField(
               controller: _nameController,
               textCapitalization: TextCapitalization.words,
+              textInputAction: TextInputAction.next,
               inputFormatters: const [TitleCaseInputFormatter()],
-              decoration: deco(
+              style: _fieldStyle,
+              decoration: _deco(
                 hint: 'Enter profile name',
                 icon: Icons.person_outline_rounded,
               ),
             ),
-            const SizedBox(height: 24),
-
-            // Service level is chosen per-photo during upload, not on the
-            // profile, so there is no service-level picker here (it would be a
-            // duplicate of the upload screen's picker).
-
-            // Status — independent of any Attempt/Photo status.
-            label('Status'),
+            _divider(),
+            _fieldLabel('Status'),
             const SizedBox(height: 6),
-            const Text(
-              'The Profile/job has already been created, but field work has '
-              'not yet been attempted.',
-              style: TextStyle(fontSize: 12, color: graySubtle),
-            ),
+            _helper(_statusHelper),
             const SizedBox(height: 10),
-            DropdownButtonFormField<String?>(
-              initialValue: _status,
-              decoration: deco(hint: 'Status'),
-              items: const [
-                DropdownMenuItem(value: null, child: Text('Active')),
-                DropdownMenuItem(
-                  value: 'awaiting_attempt',
-                  child: Text('Awaiting Attempt'),
+            _dropdownShell(
+              child: DropdownButtonFormField<String?>(
+                initialValue: _status,
+                decoration: const InputDecoration(
+                  border: InputBorder.none,
+                  contentPadding:
+                      EdgeInsets.symmetric(horizontal: 12, vertical: 14),
                 ),
-              ],
-              onChanged: (v) => setState(() => _status = v),
+                style: _fieldStyle,
+                icon: const Icon(Icons.expand_more_rounded, color: _inkSubtle),
+                items: const [
+                  DropdownMenuItem(value: null, child: Text('Active')),
+                  DropdownMenuItem(
+                    value: 'awaiting_attempt',
+                    child: Text('Awaiting Attempt'),
+                  ),
+                ],
+                onChanged: (v) => setState(() => _status = v),
+              ),
             ),
-            const SizedBox(height: 24),
+          ],
+        ),
+      );
 
-            // ── Profile Location ────────────────────────────────────────────
-            label('Profile Location'),
-            const SizedBox(height: 6),
-            const Text(
-              'Physical location where this work/profile is associated. '
-              'This can be set before an attempt is made.',
-              style: TextStyle(fontSize: 12, color: graySubtle),
+  // ── Company (+ live diligence / priority summary) ─────────────────────────
+  Widget _buildCompanyCard() {
+    final company = companyOrDefault(_companyId);
+    final priorities = company.priorityCategories
+        .map((c) => c.label)
+        .join(' · ');
+
+    return _card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _sectionLabel('Company', Icons.business_rounded),
+          const SizedBox(height: 6),
+          _helper('Sets available priorities, diligence rules, and rates.'),
+          const SizedBox(height: 12),
+          _dropdownShell(
+            child: DropdownButtonFormField<String>(
+              key: ValueKey(_companyId),
+              initialValue: _companyId,
+              decoration: const InputDecoration(
+                border: InputBorder.none,
+                contentPadding:
+                    EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+              ),
+              style: _fieldStyle,
+              icon: const Icon(Icons.expand_more_rounded, color: _inkSubtle),
+              items: [
+                for (final c in kCompanies)
+                  DropdownMenuItem(value: c.id, child: Text(c.name)),
+              ],
+              onChanged: (v) {
+                if (v == null) return;
+                HapticFeedback.selectionClick();
+                setState(() {
+                  _companyId = v;
+                  _selectedServiceType = defaultPriorityForCompany(v);
+                });
+              },
             ),
-            const SizedBox(height: 10),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _metaChip(
+                Icons.replay_rounded,
+                '${company.attemptsForDiligence} diligence attempts',
+              ),
+              _metaChip(Icons.bolt_rounded, priorities),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Location ──────────────────────────────────────────────────────────────
+  Widget _buildLocationCard() => _card(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _sectionLabel(
+              'Profile Location',
+              Icons.location_on_rounded,
+              done: _hasLocation,
+            ),
+            const SizedBox(height: 6),
+            _helper('Optional. Where this profile’s work is associated.'),
+            if (_hasLocation && _locationSummary.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                decoration: BoxDecoration(
+                  color: _successGreen.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: _successGreen.withValues(alpha: 0.22),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.check_circle_rounded,
+                        size: 18, color: _successGreen),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        _locationSummary,
+                        style: const TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w600,
+                          color: _ink,
+                          height: 1.3,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _pickOnMap,
-                    icon: const Icon(Icons.map_outlined, size: 18),
-                    label: Text(
-                        _hasLocation ? 'Change on Map' : 'Search / Pick on Map'),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      side: const BorderSide(color: grayBorder, width: 1.5),
-                    ),
+                  flex: 3,
+                  child: _actionTile(
+                    onTap: _pickOnMap,
+                    icon: Icons.map_outlined,
+                    label: _hasLocation ? 'Edit on Map' : 'Set on Map',
+                    primary: true,
                   ),
                 ),
-                const SizedBox(width: 8),
-                OutlinedButton(
-                  onPressed: _locatingCurrent ? null : _useCurrentLocation,
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 12),
-                    side: const BorderSide(color: grayBorder, width: 1.5),
+                const SizedBox(width: 10),
+                Expanded(
+                  flex: 2,
+                  child: _actionTile(
+                    onTap: _locatingCurrent ? null : _useCurrentLocation,
+                    icon: Icons.my_location_rounded,
+                    label: 'Current',
+                    loading: _locatingCurrent,
                   ),
-                  child: _locatingCurrent
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.my_location_rounded, size: 18),
                 ),
               ],
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 14),
             TextField(
               controller: _addressController,
               textCapitalization: TextCapitalization.words,
-              decoration: deco(
-                hint: 'Address',
-                icon: Icons.apartment_rounded,
-              ),
+              style: _fieldStyle,
+              decoration: _deco(hint: 'Address', icon: Icons.apartment_rounded),
+              onChanged: (_) => setState(() {}),
             ),
             const SizedBox(height: 10),
             Row(
@@ -398,15 +770,19 @@ class _ProfilesManagementScreenState
                   child: TextField(
                     controller: _cityController,
                     textCapitalization: TextCapitalization.words,
-                    decoration: deco(hint: 'City'),
+                    style: _fieldStyle,
+                    decoration: _deco(hint: 'City'),
+                    onChanged: (_) => setState(() {}),
                   ),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 10),
                 Expanded(
                   child: TextField(
                     controller: _stateController,
                     textCapitalization: TextCapitalization.characters,
-                    decoration: deco(hint: 'State'),
+                    style: _fieldStyle,
+                    decoration: _deco(hint: 'State'),
+                    onChanged: (_) => setState(() {}),
                   ),
                 ),
               ],
@@ -415,115 +791,493 @@ class _ProfilesManagementScreenState
             TextField(
               controller: _zipController,
               keyboardType: TextInputType.number,
-              decoration: deco(hint: 'ZIP Code'),
+              style: _fieldStyle,
+              decoration: _deco(hint: 'ZIP Code'),
+              onChanged: (_) => setState(() {}),
             ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _latController,
-                    keyboardType:
-                        const TextInputType.numberWithOptions(
-                            decimal: true, signed: true),
-                    decoration: deco(hint: 'Latitude'),
-                  ),
+            const SizedBox(height: 8),
+            InkWell(
+              onTap: () => setState(() => _coordsExpanded = !_coordsExpanded),
+              borderRadius: BorderRadius.circular(8),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  children: [
+                    Icon(
+                      _coordsExpanded
+                          ? Icons.expand_less_rounded
+                          : Icons.expand_more_rounded,
+                      size: 18,
+                      color: _inkMuted,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      _coordsExpanded
+                          ? 'Hide coordinates'
+                          : 'Show coordinates',
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: _inkMuted,
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: TextField(
-                    controller: _lngController,
-                    keyboardType:
-                        const TextInputType.numberWithOptions(
-                            decimal: true, signed: true),
-                    decoration: deco(hint: 'Longitude'),
-                  ),
-                ),
-              ],
+              ),
             ),
+            if (_coordsExpanded) ...[
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _latController,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                        signed: true,
+                      ),
+                      style: _fieldStyle,
+                      decoration: _deco(hint: 'Latitude'),
+                      onChanged: (_) => setState(() {}),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextField(
+                      controller: _lngController,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                        signed: true,
+                      ),
+                      style: _fieldStyle,
+                      decoration: _deco(hint: 'Longitude'),
+                      onChanged: (_) => setState(() {}),
+                    ),
+                  ),
+                ],
+              ),
+            ],
             if (_hasLocation) ...[
               const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  onPressed: _clearLocation,
-                  icon: const Icon(Icons.close_rounded, size: 16),
-                  label: const Text('Clear Location'),
-                  style: TextButton.styleFrom(foregroundColor: grayText),
+              GestureDetector(
+                onTap: _clearLocation,
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.close_rounded, size: 15, color: _inkMuted),
+                    SizedBox(width: 5),
+                    Text(
+                      'Clear Location',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: _inkMuted,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
-            const SizedBox(height: 24),
+          ],
+        ),
+      );
 
-            // Pay Rate — standing rate summed across all profiles to produce
-            // "Total Available Earnings" on the Earnings screen.
-            label('Pay Rate (Optional)'),
-            const SizedBox(height: 10),
+  // ── Optional details ──────────────────────────────────────────────────────
+  Widget _buildDetailsCard() => _card(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _sectionLabel('Details', Icons.tune_rounded),
+            const SizedBox(height: 6),
+            _helper('Optional pay rate and notes for this profile.'),
+            const SizedBox(height: 14),
+            _fieldLabel('Pay Rate'),
+            const SizedBox(height: 8),
             TextField(
               controller: _payRateController,
               keyboardType: TextInputType.number,
-              decoration:
-                  deco(hint: 'Enter pay rate', icon: Icons.attach_money_rounded),
-            ),
-            const SizedBox(height: 24),
-
-            // Note
-            label('Note (Optional)'),
-            const SizedBox(height: 10),
-            TextField(
-              controller: _noteController,
-              maxLines: 3,
-              textCapitalization: TextCapitalization.sentences,
-              inputFormatters: const [SentenceCaseInputFormatter()],
-              decoration: deco(
-                hint: 'Add a note about this profile',
-                icon: Icons.description_outlined,
+              style: _fieldStyle,
+              decoration: _deco(
+                hint: 'Enter pay rate',
+                icon: Icons.attach_money_rounded,
               ),
             ),
-            const SizedBox(height: 36),
-
-            // Save Button
-            ElevatedButton(
-              onPressed: _isLoading ? null : _saveProfile,
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                backgroundColor: Theme.of(context).colorScheme.primary,
+            if (_isEditing) ...[
+              const SizedBox(height: 14),
+              _fieldLabel('Note'),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _noteController,
+                maxLines: 3,
+                textCapitalization: TextCapitalization.sentences,
+                inputFormatters: const [SentenceCaseInputFormatter()],
+                style: _fieldStyle,
+                decoration: _deco(
+                  hint: 'Add a note about this profile',
+                  icon: Icons.description_outlined,
+                ),
               ),
-              child: _isLoading
-                  ? const SizedBox(
-                      height: 20,
-                      width: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          Colors.white,
-                        ),
-                      ),
-                    )
-                  : Text(
-                      widget.profileToEdit != null
-                          ? 'Update Profile'
-                          : 'Create Profile',
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-            ),
-            const SizedBox(height: 12),
-
-            // Cancel Button
-            OutlinedButton(
-              onPressed: _isLoading ? null : () => context.pop(),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                side: const BorderSide(color: grayBorder, width: 1.5),
-              ),
-              child: const Text('Cancel'),
-            ),
-            const SizedBox(height: 24),
+            ],
           ],
         ),
+      );
+
+  bool get _nameDone => _nameController.text.trim().isNotEmpty;
+
+  bool get _canAdvance {
+    if (_step == 0) return _nameDone;
+    return true;
+  }
+
+  void _goNext() {
+    if (!_canAdvance) return;
+    FocusScope.of(context).unfocus();
+    HapticFeedback.selectionClick();
+    if (_step < _stepCount - 1) {
+      setState(() => _step++);
+    } else {
+      _saveProfile();
+    }
+  }
+
+  void _goBack() {
+    FocusScope.of(context).unfocus();
+    HapticFeedback.selectionClick();
+    if (_step > 0) {
+      setState(() => _step--);
+    } else {
+      context.pop();
+    }
+  }
+
+  Widget _buildStepHeader() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              for (var i = 0; i < _stepCount; i++) ...[
+                if (i > 0)
+                  Expanded(
+                    child: Container(
+                      height: 2,
+                      margin: const EdgeInsets.symmetric(horizontal: 4),
+                      color: i <= _step ? _accent : _separator,
+                    ),
+                  ),
+                _stepDot(i),
+              ],
+            ],
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Step ${_step + 1} of $_stepCount',
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: _accent,
+              letterSpacing: 0.2,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            _stepTitles[_step],
+            style: const TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.w800,
+              color: _ink,
+              letterSpacing: -0.3,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            _stepSubtitles[_step],
+            style: const TextStyle(
+              fontSize: 13.5,
+              color: _inkMuted,
+              height: 1.35,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _stepDot(int index) {
+    final done = index < _step;
+    final active = index == _step;
+    return GestureDetector(
+      onTap: () {
+        if (index == _step) return;
+        // Only allow revisiting earlier steps from the indicator.
+        if (index < _step) {
+          FocusScope.of(context).unfocus();
+          HapticFeedback.selectionClick();
+          setState(() => _step = index);
+        }
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        width: active ? 28 : 22,
+        height: active ? 28 : 22,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: (done || active) ? _btnGradient : null,
+          color: (done || active) ? null : _separator,
+          boxShadow: active
+              ? [
+                  BoxShadow(
+                    color: _accent.withValues(alpha: 0.35),
+                    blurRadius: 10,
+                    offset: const Offset(0, 3),
+                  ),
+                ]
+              : null,
+        ),
+        child: done
+            ? const Icon(Icons.check_rounded, size: 14, color: Colors.white)
+            : Text(
+                '${index + 1}',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  color: active ? Colors.white : _inkSubtle,
+                ),
+              ),
+      ),
+    );
+  }
+
+  Widget _buildStepBody() {
+    final nameDone = _nameDone;
+    switch (_step) {
+      case 0:
+        return _buildIdentityCard(nameDone);
+      case 1:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _buildCompanyCard(),
+            _buildDetailsCard(),
+          ],
+        );
+      case 2:
+        return _buildLocationCard();
+      default:
+        return const SizedBox.shrink();
+    }
+  }
+
+  // ── Sticky stepper CTA ────────────────────────────────────────────────────
+  Widget _buildStickyFooter() {
+    final isLast = _step == _stepCount - 1;
+    final canPrimary = isLast ? _nameDone : _canAdvance;
+    final primaryLabel = isLast
+        ? (_isEditing ? 'Update Profile' : 'Create Profile')
+        : 'Continue';
+    final primaryIcon = isLast
+        ? (_isEditing ? Icons.check_rounded : Icons.add_rounded)
+        : Icons.arrow_forward_rounded;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: _surface,
+        border: const Border(
+          top: BorderSide(color: _separator, width: 1),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.07),
+            blurRadius: 20,
+            offset: const Offset(0, -4),
+          ),
+        ],
+      ),
+      padding: EdgeInsets.fromLTRB(
+        16,
+        12,
+        16,
+        MediaQuery.of(context).padding.bottom + 12,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              if (_step > 0) ...[
+                SizedBox(
+                  height: 54,
+                  width: 54,
+                  child: OutlinedButton(
+                    onPressed: _isLoading ? null : _goBack,
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: _ink,
+                      side: const BorderSide(color: _separator),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      padding: EdgeInsets.zero,
+                    ),
+                    child: const Icon(Icons.arrow_back_rounded, size: 22),
+                  ),
+                ),
+                const SizedBox(width: 10),
+              ],
+              Expanded(
+                child: SizedBox(
+                  height: 54,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient:
+                          (!_isLoading && canPrimary) ? _btnGradient : null,
+                      color: (_isLoading || !canPrimary) ? _separator : null,
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: (!_isLoading && canPrimary)
+                          ? [
+                              BoxShadow(
+                                color: _accent.withValues(alpha: 0.35),
+                                blurRadius: 16,
+                                offset: const Offset(0, 6),
+                              ),
+                            ]
+                          : null,
+                    ),
+                    child: Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(16),
+                        onTap: (_isLoading || !canPrimary) ? null : _goNext,
+                        child: Center(
+                          child: _isLoading
+                              ? const SizedBox(
+                                  height: 20,
+                                  width: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    valueColor: AlwaysStoppedAnimation<Color>(
+                                      _inkMuted,
+                                    ),
+                                  ),
+                                )
+                              : Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(
+                                      primaryIcon,
+                                      size: 20,
+                                      color: canPrimary
+                                          ? Colors.white
+                                          : _inkSubtle,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      primaryLabel,
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w700,
+                                        color: canPrimary
+                                            ? Colors.white
+                                            : _inkSubtle,
+                                        letterSpacing: 0.2,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (isLast && !_isEditing) ...[
+            const SizedBox(height: 6),
+            const Text(
+              'You can skip optional steps — only name is required.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 12,
+                color: _inkSubtle,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+          const SizedBox(height: 2),
+          TextButton(
+            onPressed: _isLoading ? null : () => context.pop(),
+            style: TextButton.styleFrom(
+              foregroundColor: _inkMuted,
+              minimumSize: const Size(48, 40),
+            ),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          _isEditing ? 'Edit Profile' : 'Add Profile',
+          style: const TextStyle(
+            fontSize: 17,
+            fontWeight: FontWeight.w700,
+            color: _ink,
+          ),
+        ),
+        elevation: 0,
+        surfaceTintColor: Colors.transparent,
+        backgroundColor: _surface,
+        foregroundColor: _ink,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_rounded),
+          onPressed: _isLoading ? null : _goBack,
+        ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Container(height: 1, color: _separator),
+        ),
+      ),
+      backgroundColor: _canvas,
+      body: Column(
+        children: [
+          _buildStepHeader(),
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 220),
+                switchInCurve: Curves.easeOut,
+                switchOutCurve: Curves.easeIn,
+                transitionBuilder: (child, anim) => FadeTransition(
+                  opacity: anim,
+                  child: SlideTransition(
+                    position: Tween<Offset>(
+                      begin: const Offset(0.04, 0),
+                      end: Offset.zero,
+                    ).animate(anim),
+                    child: child,
+                  ),
+                ),
+                child: KeyedSubtree(
+                  key: ValueKey<int>(_step),
+                  child: _buildStepBody(),
+                ),
+              ),
+            ),
+          ),
+          _buildStickyFooter(),
+        ],
       ),
     );
   }

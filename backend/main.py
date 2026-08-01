@@ -7,10 +7,19 @@ from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from typing import Optional
-import os, shutil, uuid, smtplib, json
+import os, shutil, uuid, smtplib, json, re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from dotenv import load_dotenv
+from companies import (
+    COMPANIES,
+    DEFAULT_COMPANY_ID,
+    company_allows_priority,
+    default_priority_for_company,
+    get_company,
+    normalize_company_id,
+)
+from attempt_models import backfill_attempts, define_attempt_model, ensure_attempts_schema
 
 # Try importing sendgrid, will fail gracefully if not installed
 try:
@@ -92,6 +101,10 @@ class Profile(Base):
     # profiles to produce "Total Available Earnings" on the Earnings screen.
     pay_rate     = Column(Integer, nullable=True)
 
+    # Process-serving company slug (see companies.py). Drives allowed priority
+    # levels, diligence attempts, payout schedule, and pay-rate copy.
+    company      = Column(String, nullable=True)
+
     # ── Profile Location: independent of any Attempt/Photo. Settable before
     # any photo is ever uploaded against this profile — see /upload (Photo)
     # for the separate, GPS-captured Attempt location. ──
@@ -106,11 +119,18 @@ class Profile(Base):
     updated_at   = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     photos       = relationship("Photo", secondary=pin_profile, back_populates="profiles")
+    attempts     = relationship(
+        "Attempt", back_populates="profile",
+        cascade="all, delete-orphan",
+    )
+
+
+Attempt = define_attempt_model(Base)
 
 
 class Photo(Base):
-    """A Photo is one *attempt*. Attempts that share a location_group_id belong
-    to the same master pin (see Feature 1 / nearby detection)."""
+    """Media attached to an Attempt. Attempt-level fields are also mirrored
+    here for backward-compatible map/earnings queries."""
     __tablename__ = "photos"
     id        = Column(Integer, primary_key=True, index=True)
     image_url = Column(String)
@@ -129,12 +149,18 @@ class Photo(Base):
     served_to       = Column(String, nullable=True)
     relation_to     = Column(String, nullable=True)  # relation of served_to to profile
     file_number     = Column(String, nullable=True)
-    # Whether the attempt was a successful service. Defaults true; when
-    # false the served_to/relation_to fields don't apply.
-    successful      = Column(Integer, nullable=False, default=1)
+    # Whether the attempt was a successful service. Kept in sync with
+    # attempt_status for older clients (1 only when status is "successful").
+    successful      = Column(Integer, nullable=False, default=0)
+    # Attempt outcome: pending | successful | unsuccessful (default pending).
+    attempt_status  = Column(String, nullable=False, default="pending")
     # legacy single profile_id kept for backward compat
     profile_id    = Column(Integer, nullable=True)
     is_favorited  = Column(Integer, nullable=False, default=0)
+
+    # FK to Attempt (Profile 1──* Attempt 1──* Photo)
+    attempt_id = Column(Integer, ForeignKey("attempts.id", ondelete="CASCADE"),
+                        nullable=True, index=True)
 
     # ── F1: master-pin grouping. NULL group means a standalone pin whose
     #    own id is its group root. Attempts appended to an existing pin
@@ -157,7 +183,8 @@ class Photo(Base):
     # ── F8/F9: ownership for payouts/earnings ──
     user_id = Column(Integer, nullable=True)
 
-    profiles      = relationship("Profile", secondary=pin_profile, back_populates="photos")
+    profiles = relationship("Profile", secondary=pin_profile, back_populates="photos")
+    attempt  = relationship("Attempt", back_populates="photos")
 
 
 class User(Base):
@@ -228,35 +255,45 @@ Base.metadata.create_all(bind=engine)
 
 
 def _ensure_columns():
-    """Lightweight SQLite migration: add columns introduced after the table
-    was first created. create_all() never alters existing tables."""
+    """Lightweight migration: add columns introduced after the table was first
+    created. create_all() never alters existing tables. Uses dialect-aware DDL
+    so the same code works on SQLite (local) and PostgreSQL (production)."""
     from sqlalchemy import text, inspect
     inspector = inspect(engine)
+    is_pg = engine.dialect.name == "postgresql"
+    # Postgres rejects SQLite's DATETIME; TIMESTAMP is the portable equivalent.
+    DT = "TIMESTAMP" if is_pg else "DATETIME"
     existing = {c["name"] for c in inspector.get_columns("photos")}
     # column name -> DDL fragment to add it
     new_cols = {
         "category":           "VARCHAR DEFAULT 'standard'",
         "is_favorited":       "INTEGER NOT NULL DEFAULT 0",
         "location_group_id":  "INTEGER",
-        "taken_at":           "DATETIME",
-        "original_timestamp": "DATETIME",
-        "edited_timestamp":   "DATETIME",
+        "taken_at":           DT,
+        "original_timestamp": DT,
+        "edited_timestamp":   DT,
         "pay_rate":           "INTEGER",
         "completion_type":    "VARCHAR",
         "served_to":          "VARCHAR",
         "status":             "VARCHAR NOT NULL DEFAULT 'open'",
-        "completed_at":       "DATETIME",
+        "completed_at":       DT,
         "user_id":            "INTEGER",
-        "created_at":         "DATETIME",
+        "created_at":         DT,
         "relation_to":        "VARCHAR",
         "file_number":        "VARCHAR",
-        "successful":         "INTEGER NOT NULL DEFAULT 1",
+        "successful":         "INTEGER NOT NULL DEFAULT 0",
+        "attempt_status":     "VARCHAR NOT NULL DEFAULT 'pending'",
+        "attempt_id":         "INTEGER",
     }
     with engine.connect() as conn:
         for col, ddl in new_cols.items():
             if col not in existing:
-                conn.execute(text(f"ALTER TABLE photos ADD COLUMN {col} {ddl}"))
-                conn.commit()
+                try:
+                    conn.execute(text(f"ALTER TABLE photos ADD COLUMN {col} {ddl}"))
+                    conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    print(f"[migrate] skip photos.{col}: {e}")
         # Backfill timestamp-integrity + grouping columns for legacy rows
         conn.execute(text(
             "UPDATE photos SET taken_at = timestamp WHERE taken_at IS NULL"))
@@ -277,13 +314,29 @@ def _ensure_columns():
         conn.execute(text(
             "UPDATE photos SET created_at = COALESCE(original_timestamp, timestamp) "
             "WHERE created_at IS NULL"))
+        # Backfill attempt_status from legacy successful flag when missing.
+        try:
+            conn.execute(text(
+                "UPDATE photos SET attempt_status = CASE "
+                "WHEN successful = 1 THEN 'successful' "
+                "WHEN successful = 0 THEN 'unsuccessful' "
+                "ELSE 'pending' END "
+                "WHERE attempt_status IS NULL OR attempt_status = ''"))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"[migrate] skip attempt_status backfill: {e}")
         conn.commit()
 
         # profiles table: standing per-profile pay rate.
         existing_profiles = {c["name"] for c in inspector.get_columns("profiles")}
         if "pay_rate" not in existing_profiles:
-            conn.execute(text("ALTER TABLE profiles ADD COLUMN pay_rate INTEGER"))
-            conn.commit()
+            try:
+                conn.execute(text("ALTER TABLE profiles ADD COLUMN pay_rate INTEGER"))
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                print(f"[migrate] skip profiles.pay_rate: {e}")
 
         # profiles table: Profile Location + status, independent of any Photo/
         # Attempt. NULL is the correct default for existing profiles — never
@@ -294,18 +347,35 @@ def _ensure_columns():
             "city":         "VARCHAR",
             "state":        "VARCHAR",
             "postal_code":  "VARCHAR",
-            "latitude":     "FLOAT",
-            "longitude":    "FLOAT",
-            "created_at":   "DATETIME",
-            "updated_at":   "DATETIME",
+            "latitude":     "FLOAT" if not is_pg else "DOUBLE PRECISION",
+            "longitude":    "FLOAT" if not is_pg else "DOUBLE PRECISION",
+            "created_at":   DT,
+            "updated_at":   DT,
+            "company":      "VARCHAR",
         }
         for col, ddl in profile_new_cols.items():
             if col not in existing_profiles:
-                conn.execute(text(f"ALTER TABLE profiles ADD COLUMN {col} {ddl}"))
-                conn.commit()
+                try:
+                    conn.execute(text(f"ALTER TABLE profiles ADD COLUMN {col} {ddl}"))
+                    conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    print(f"[migrate] skip profiles.{col}: {e}")
 
 
 _ensure_columns()
+# Create attempts table + backfill Profile→Attempt→Photo from legacy photos.
+try:
+    ensure_attempts_schema(engine, Base, Attempt, Photo, pin_profile)
+    _bf_db = SessionLocal()
+    try:
+        n = backfill_attempts(_bf_db, Attempt, Photo, pin_profile)
+        if n:
+            print(f"[migrate] backfilled {n} attempt(s) from photos")
+    finally:
+        _bf_db.close()
+except Exception as e:
+    print(f"[migrate] attempts backfill skipped: {e}")
 
 
 def _to_pst_iso(ts):
@@ -337,6 +407,32 @@ def _haversine_ft(lat1, lon1, lat2, lon2):
     return R_ft * 2 * atan2(sqrt(a), sqrt(1 - a))
 
 
+def _normalize_attempt_status(ph):
+    """Resolve attempt_status from the column or legacy successful flag."""
+    raw = (getattr(ph, "attempt_status", None) or "").strip().lower()
+    if raw in ("pending", "successful", "unsuccessful"):
+        return raw
+    if ph.successful is None:
+        return "pending"
+    return "successful" if ph.successful else "unsuccessful"
+
+
+def _attempt_is_successful(ph):
+    return _normalize_attempt_status(ph) == "successful"
+
+
+def _resolve_attempt_status_input(attempt_status, successful):
+    """Prefer explicit attempt_status; fall back to legacy successful bool."""
+    raw = (attempt_status or "").strip().lower() if attempt_status else ""
+    if raw in ("pending", "successful", "unsuccessful"):
+        return raw
+    if successful is True:
+        return "successful"
+    if successful is False:
+        return "unsuccessful"
+    return "pending"
+
+
 def _photo_dict(ph):
     profiles = [{"id": p.id, "name": p.name, "service_type": p.service_type} for p in ph.profiles]
     primary = profiles[0] if profiles else None
@@ -358,7 +454,8 @@ def _photo_dict(ph):
         "served_to":          ph.served_to,
         "relation_to":        ph.relation_to,
         "file_number":        ph.file_number,
-        "successful":         bool(ph.successful) if ph.successful is not None else True,
+        "successful":         _attempt_is_successful(ph),
+        "attempt_status":     _normalize_attempt_status(ph),
         "pay_rate":           ph.pay_rate,
         "status":             ph.status or "open",
         "completed_at":       _to_pst_iso(ph.completed_at),
@@ -369,6 +466,53 @@ def _photo_dict(ph):
         "service_type":       primary["service_type"] if primary else "standard",
         "profiles":           profiles,
         "is_favorited":       bool(ph.is_favorited),
+        "attempt_id":         getattr(ph, "attempt_id", None),
+    }
+
+
+def _attempt_dict(att):
+    """Serialize an Attempt with nested photos (media)."""
+    photos = list(att.photos or [])
+    primary = photos[0] if photos else None
+    profile = att.profile
+    return {
+        "id":                 att.id,
+        "profile_id":         att.profile_id,
+        "profile_name":       profile.name if profile else "Unknown",
+        "service_type":       profile.service_type if profile else "standard",
+        "latitude":           att.latitude,
+        "longitude":          att.longitude,
+        "zip_code":           att.zip_code,
+        "address":            att.address,
+        "note":               att.note,
+        "category":           att.category or "standard",
+        "completion_type":    att.completion_type,
+        "served_to":          att.served_to,
+        "relation_to":        att.relation_to,
+        "file_number":        att.file_number,
+        "successful":         (att.attempt_status or "") == "successful",
+        "attempt_status":     att.attempt_status or "pending",
+        "pay_rate":           att.pay_rate,
+        "status":             att.status or "open",
+        "completed_at":       _to_pst_iso(att.completed_at),
+        "user_id":            att.user_id,
+        "location_group_id":  att.location_group_id or att.id,
+        "timestamp":          _to_pst_iso(att.timestamp),
+        "taken_at":           _to_pst_iso(att.taken_at),
+        "created_at":         _to_pst_iso(att.created_at),
+        # Compat: treat primary photo as the "photo" surface for old clients.
+        "image_url":          primary.image_url if primary else None,
+        "photo_id":           primary.id if primary else None,
+        "photos": [
+            {
+                "id": primary_ph.id,
+                "image_url": primary_ph.image_url,
+                "taken_at": _to_pst_iso(primary_ph.taken_at),
+                "is_favorited": bool(primary_ph.is_favorited),
+            }
+            for primary_ph in photos
+        ],
+        "photo_count": len(photos),
     }
 
 
@@ -387,12 +531,16 @@ def _profile_dict(p):
     is the number of Photos (Attempts) logged against this profile — reused
     by the client to decide whether "Awaiting Attempt" still applies and
     whether to show Profile Location vs. the Attempts list."""
+    company_id = p.company or DEFAULT_COMPANY_ID
+    company = get_company(company_id)
     return {
         "id": p.id,
         "name": p.name,
         "service_type": p.service_type,
         "note": p.note,
         "pay_rate": p.pay_rate,
+        "company": company_id,
+        "company_name": company["name"] if company else None,
         "status": p.status,
         "address": p.address,
         "city": p.city,
@@ -400,7 +548,8 @@ def _profile_dict(p):
         "postal_code": p.postal_code,
         "latitude": p.latitude,
         "longitude": p.longitude,
-        "attempts_count": len(p.photos),
+        "attempts_count": len(p.attempts) if getattr(p, "attempts", None) is not None
+            else len(p.photos),
     }
 
 
@@ -431,6 +580,13 @@ def _parse_profile_location(data, profile):
             setattr(profile, field, value)
 
 
+@app.get("/companies")
+def list_companies():
+    """Hardcoded company catalog — clients use this for selectors and to
+    resolve rates / diligence / priority allowlists without embedding drift."""
+    return COMPANIES
+
+
 @app.get("/profiles")
 def get_profiles():
     db = SessionLocal()
@@ -448,11 +604,20 @@ async def create_profile(data: dict = Body(...)):
     if not name:
         raise HTTPException(status_code=422, detail="Profile name is required")
 
+    company_id = normalize_company_id(data.get("company"), required=True)
+    if company_id is None:
+        # Blank → default; invalid non-blank → 422
+        if (data.get("company") or "").strip():
+            raise HTTPException(status_code=422, detail="Unknown company")
+        company_id = DEFAULT_COMPANY_ID
+
     # Priority categories (+ legacy rush/airport kept for backward compat)
     if service_type not in (
         "standard", "special", "next_day", "asap", "rush", "airport"
     ):
         service_type = "standard"
+    if not company_allows_priority(company_id, service_type):
+        service_type = default_priority_for_company(company_id)
 
     pay_rate = data.get("pay_rate")
     if pay_rate is not None:
@@ -462,7 +627,12 @@ async def create_profile(data: dict = Body(...)):
             raise HTTPException(status_code=422, detail="pay_rate must be a whole dollar number")
 
     db = SessionLocal()
-    profile = Profile(name=name, service_type=service_type, pay_rate=pay_rate)
+    profile = Profile(
+        name=name,
+        service_type=service_type,
+        pay_rate=pay_rate,
+        company=company_id,
+    )
     # Profile Location + status are entirely optional here — creating a
     # profile never requires an attempt, photo, upload, or GPS capture.
     try:
@@ -492,6 +662,15 @@ async def update_profile(profile_id: int, data: dict = Body(...)):
         profile.service_type = data["service_type"]
     if "note" in data:
         profile.note = data["note"]
+    if "company" in data:
+        company_id = normalize_company_id(data.get("company"), required=True)
+        if company_id is None:
+            db.close()
+            raise HTTPException(status_code=422, detail="Unknown company")
+        profile.company = company_id
+        # Drop a legacy service_type that the new company doesn't allow.
+        if not company_allows_priority(company_id, profile.service_type):
+            profile.service_type = default_priority_for_company(company_id)
     if "pay_rate" in data:
         pay_rate = data["pay_rate"]
         if pay_rate is not None:
@@ -554,17 +733,195 @@ def delete_profile(profile_id: int):
 
 @app.get("/profiles/{profile_id}/photos")
 def get_profile_photos(profile_id: int):
+    """Legacy endpoint — returns one photo-shaped row per Attempt (primary
+    image) so older clients keep working. Prefer GET /profiles/{id}/attempts."""
     db = SessionLocal()
     profile = db.query(Profile).filter(Profile.id == profile_id).first()
     if not profile:
         db.close()
         raise HTTPException(status_code=404, detail="Profile not found")
+    attempts = (
+        db.query(Attempt)
+        .filter(Attempt.profile_id == profile_id)
+        .order_by(Attempt.id.desc())
+        .all()
+    )
+    # Newest first by taken_at when present.
+    attempts.sort(
+        key=lambda a: a.taken_at or a.timestamp or datetime.min,
+        reverse=True,
+    )
+    photos_out = []
+    if attempts:
+        for att in attempts:
+            d = _attempt_dict(att)
+            # Shape like _photo_dict for list UIs that still expect photos.
+            photos_out.append({
+                "id": d.get("photo_id") or d["id"],
+                "attempt_id": d["id"],
+                "image_url": d.get("image_url"),
+                "timestamp": d.get("timestamp"),
+                "taken_at": d.get("taken_at"),
+                "latitude": d.get("latitude"),
+                "longitude": d.get("longitude"),
+                "zip_code": d.get("zip_code"),
+                "address": d.get("address"),
+                "note": d.get("note"),
+                "category": d.get("category"),
+                "completion_type": d.get("completion_type"),
+                "served_to": d.get("served_to"),
+                "relation_to": d.get("relation_to"),
+                "file_number": d.get("file_number"),
+                "successful": d.get("successful"),
+                "attempt_status": d.get("attempt_status"),
+                "pay_rate": d.get("pay_rate"),
+                "status": d.get("status"),
+                "completed_at": d.get("completed_at"),
+                "location_group_id": d.get("location_group_id"),
+                "profile_id": d.get("profile_id"),
+                "profile_name": d.get("profile_name"),
+                "service_type": d.get("service_type"),
+                "photos": d.get("photos"),
+                "photo_count": d.get("photo_count"),
+                "is_favorited": False,
+            })
+    else:
+        # Fallback before backfill finished
+        photos_out = [_photo_dict(ph) for ph in profile.photos]
     result = {
         "profile": {"id": profile.id, "name": profile.name, "service_type": profile.service_type},
-        "photos":  [_photo_dict(ph) for ph in profile.photos],
+        "photos":  photos_out,
     }
     db.close()
     return result
+
+
+@app.get("/profiles/{profile_id}/attempts")
+def get_profile_attempts(profile_id: int):
+    """Profile → Attempts (newest first), each with nested photos."""
+    db = SessionLocal()
+    profile = db.query(Profile).filter(Profile.id == profile_id).first()
+    if not profile:
+        db.close()
+        raise HTTPException(status_code=404, detail="Profile not found")
+    attempts = (
+        db.query(Attempt)
+        .filter(Attempt.profile_id == profile_id)
+        .order_by(Attempt.id.desc())
+        .all()
+    )
+    attempts.sort(
+        key=lambda a: a.taken_at or a.timestamp or datetime.min,
+        reverse=True,
+    )
+    result = {
+        "profile": _profile_dict(profile),
+        "attempts": [_attempt_dict(a) for a in attempts],
+    }
+    db.close()
+    return result
+
+
+@app.post("/attempts/{attempt_id}/duplicate")
+def duplicate_attempt(attempt_id: int, data: dict = Body(...)):
+    """Duplicate an attempt onto other nearby profiles.
+
+    Creates distinct Attempt + Photo rows per target profile (independent
+    copies — editing one never changes another).
+    """
+    profile_ids = data.get("profile_ids") or []
+    if not isinstance(profile_ids, list) or not profile_ids:
+        raise HTTPException(status_code=422, detail="profile_ids required")
+    db = SessionLocal()
+    source = db.query(Attempt).filter(Attempt.id == attempt_id).first()
+    if not source:
+        db.close()
+        raise HTTPException(status_code=404, detail="Attempt not found")
+    created = []
+    for raw_pid in profile_ids:
+        try:
+            pid = int(raw_pid)
+        except (TypeError, ValueError):
+            continue
+        if pid == source.profile_id:
+            continue
+        profile = db.query(Profile).filter(Profile.id == pid).first()
+        if not profile:
+            continue
+        clone = Attempt(
+            profile_id=pid,
+            latitude=source.latitude,
+            longitude=source.longitude,
+            zip_code=source.zip_code,
+            address=source.address,
+            note=source.note,
+            category=source.category,
+            completion_type=source.completion_type,
+            served_to=source.served_to,
+            relation_to=source.relation_to,
+            file_number=source.file_number,
+            successful=source.successful,
+            attempt_status=source.attempt_status,
+            pay_rate=source.pay_rate,
+            status=source.status or "in_progress",
+            completed_at=None,
+            user_id=source.user_id,
+            location_group_id=None,
+            taken_at=source.taken_at,
+            original_timestamp=source.original_timestamp or source.taken_at,
+            timestamp=source.timestamp or datetime.utcnow(),
+            created_at=datetime.utcnow(),
+        )
+        db.add(clone)
+        db.flush()
+        clone.location_group_id = clone.id
+        for ph in list(source.photos or []):
+            # Copy image file so each attempt owns independent media.
+            src_path = (ph.image_url or "").lstrip("/")
+            new_url = ph.image_url
+            if src_path and os.path.exists(src_path):
+                ext = os.path.splitext(src_path)[1] or ".jpg"
+                filename = f"{uuid.uuid4()}{ext}"
+                dest = os.path.join(UPLOAD_DIR, filename)
+                try:
+                    shutil.copy2(src_path, dest)
+                    new_url = f"/uploads/{filename}"
+                except OSError:
+                    new_url = ph.image_url
+            new_ph = Photo(
+                image_url=new_url,
+                timestamp=ph.timestamp or clone.timestamp,
+                taken_at=ph.taken_at or clone.taken_at,
+                original_timestamp=ph.original_timestamp or clone.taken_at,
+                latitude=clone.latitude,
+                longitude=clone.longitude,
+                zip_code=clone.zip_code,
+                address=clone.address,
+                note=clone.note,
+                category=clone.category,
+                completion_type=clone.completion_type,
+                served_to=clone.served_to,
+                relation_to=clone.relation_to,
+                file_number=clone.file_number,
+                successful=clone.successful,
+                attempt_status=clone.attempt_status,
+                pay_rate=clone.pay_rate,
+                user_id=clone.user_id,
+                status=clone.status,
+                profile_id=pid,
+                attempt_id=clone.id,
+                location_group_id=clone.id,
+            )
+            new_ph.profiles = [profile]
+            db.add(new_ph)
+        created.append(clone)
+    db.commit()
+    out = []
+    for a in created:
+        db.refresh(a)
+        out.append(_attempt_dict(a))
+    db.close()
+    return {"ok": True, "duplicated": len(out), "attempts": out}
 
 
 @app.get("/photos/{photo_id}/watermarked")
@@ -577,14 +934,16 @@ def watermarked_photo(photo_id: int, max_w: int = 1600, max_h: int = 1600):
     from fastapi.responses import Response
     db = SessionLocal()
     ph = db.query(Photo).filter(Photo.id == photo_id).first()
-    db.close()
     if not ph or not ph.image_url:
+        db.close()
         raise HTTPException(status_code=404, detail="Photo not found")
+    # Build caption while the session is open so profile names can lazy-load.
+    caption = _photo_caption(ph)
     path = ph.image_url.lstrip("/")
+    db.close()
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Image file missing")
-    stamped = _watermark_photo_png(path, _photo_caption(ph),
-                                   max_w=max_w, max_h=max_h)
+    stamped = _watermark_photo_png(path, caption, max_w=max_w, max_h=max_h)
     if stamped:
         return Response(content=stamped[0], media_type="image/png")
     with open(path, "rb") as f:                       # fallback: raw image
@@ -644,12 +1003,14 @@ async def upload_photo(
     completion_type:   str        = Form(""),    # e.g. Substitute | Personal
     served_to:         str        = Form(""),    # who service was served to
     relation_to:       str        = Form(""),    # served_to's relation to the profile
-    file_number:       str        = Form(""),    # dispatcher-assigned file number
-    successful:        bool       = Form(True),  # whether the attempt was successful
-    taken_at:          str        = Form(""),    # F6: device capture time (ISO)
+    file_number:       str             = Form(""),    # dispatcher-assigned file number
+    successful:        Optional[bool]  = Form(None),  # legacy; prefer attempt_status
+    attempt_status:    Optional[str]   = Form(None),  # pending|successful|unsuccessful
+    taken_at:          str             = Form(""),    # F6: device capture time (ISO)
     pay_rate:          str        = Form(""),     # F7: whole dollars
     user_id:           str        = Form(""),     # F8/F9: attribution
     location_group_id: str        = Form(""),     # F1: append to existing master pin
+    attempt_id:        str        = Form(""),     # attach photo to existing Attempt
 ):
     # Validate coordinates
     if not (-90 <= latitude <= 90):
@@ -684,66 +1045,96 @@ async def upload_photo(
 
     uid = int(user_id) if user_id.strip().isdigit() else None
     grp = int(location_group_id) if location_group_id.strip().isdigit() else None
+    existing_attempt_id = int(attempt_id) if attempt_id.strip().isdigit() else None
 
     # New pins always start as in_progress — status only changes to completed
     # or archived when the user explicitly closes them out.
     initial_status = "in_progress"
     initial_completed_at = None
 
+    # Resolve priority against the profile's company allowlist.
+    cat = category.strip().lower()
+    if cat not in ("standard", "special", "next_day", "asap"):
+        cat = "standard"
+    company_id = profile.company or DEFAULT_COMPANY_ID
+    if not company_allows_priority(company_id, cat):
+        cat = default_priority_for_company(company_id)
+
+    attempt_st = _resolve_attempt_status_input(attempt_status, successful)
+
+    # Resolve or create the Attempt (upload session = one Attempt).
+    attempt = None
+    if existing_attempt_id:
+        attempt = db.query(Attempt).filter(
+            Attempt.id == existing_attempt_id,
+            Attempt.profile_id == profile_id,
+        ).first()
+        if not attempt:
+            db.close()
+            raise HTTPException(status_code=404, detail="Attempt not found")
+    else:
+        attempt = Attempt(
+            profile_id=profile_id,
+            latitude=latitude,
+            longitude=longitude,
+            zip_code=zip_code.strip() or None,
+            address=address.strip() or None,
+            note=note.strip() or None,
+            category=cat,
+            completion_type=completion_type.strip() or None,
+            served_to=served_to.strip() or None,
+            relation_to=relation_to.strip() or None,
+            file_number=file_number.strip() or None,
+            successful=1 if attempt_st == "successful" else 0,
+            attempt_status=attempt_st,
+            pay_rate=pay_val,
+            user_id=uid,
+            status=initial_status,
+            completed_at=initial_completed_at,
+            taken_at=device_ts,
+            original_timestamp=device_ts,
+            timestamp=device_ts,
+            created_at=datetime.utcnow(),
+            location_group_id=grp,
+        )
+        db.add(attempt)
+        db.flush()
+        if not attempt.location_group_id:
+            attempt.location_group_id = attempt.id
+
     photo = Photo(
         image_url          = f"/uploads/{filename}",
         timestamp          = device_ts,
         taken_at           = device_ts,
         original_timestamp = device_ts,
-        latitude           = latitude,
-        longitude          = longitude,
-        zip_code           = zip_code.strip() or None,
-        address            = address.strip()  or None,
-        note               = note.strip()     or None,
-        category           = (category.strip().lower()
-                              if category.strip().lower() in
-                              ("standard", "special", "next_day", "asap")
-                              else "standard"),
-        completion_type    = completion_type.strip() or None,
-        served_to          = served_to.strip() or None,
-        relation_to        = relation_to.strip() or None,
-        file_number        = file_number.strip() or None,
-        successful         = 1 if successful else 0,
-        pay_rate           = pay_val,
+        latitude           = attempt.latitude,
+        longitude          = attempt.longitude,
+        zip_code           = attempt.zip_code,
+        address            = attempt.address,
+        note               = attempt.note,
+        category           = attempt.category,
+        completion_type    = attempt.completion_type,
+        served_to          = attempt.served_to,
+        relation_to        = attempt.relation_to,
+        file_number        = attempt.file_number,
+        successful         = attempt.successful,
+        attempt_status     = attempt.attempt_status,
+        pay_rate           = attempt.pay_rate,
         user_id            = uid,
-        status             = initial_status,
-        completed_at       = initial_completed_at,
+        status             = attempt.status or initial_status,
+        completed_at       = attempt.completed_at,
         profile_id         = profile_id,
+        attempt_id         = attempt.id,
+        location_group_id  = attempt.location_group_id or attempt.id,
     )
     photo.profiles = [profile]
     db.add(photo)
     db.commit()
     db.refresh(photo)
-    # F1: if appending to an explicit master pin, use its group. Otherwise, reuse
-    # an existing group for the SAME profile + SAME address so repeated uploads
-    # to one place collapse into ONE master pin (multiple photos under one
-    # profile) instead of spawning separate pins. Falls back to its own id.
-    if grp:
-        photo.location_group_id = grp
-    else:
-        addr_norm = (address.strip() or "").lower()
-        reuse_group = None
-        if addr_norm:
-            siblings = (
-                db.query(Photo)
-                .filter(Photo.id != photo.id,
-                        Photo.profile_id == profile_id,
-                        Photo.location_group_id.isnot(None))
-                .all()
-            )
-            for s in siblings:
-                if (s.address or "").strip().lower() == addr_norm:
-                    reuse_group = s.location_group_id
-                    break
-        photo.location_group_id = reuse_group if reuse_group else photo.id
-    db.commit()
-    db.refresh(photo)
+    db.refresh(attempt)
     result = _photo_dict(photo)
+    result["attempt_id"] = attempt.id
+    result["attempt"] = _attempt_dict(attempt)
     db.close()
     return result
 
@@ -1365,6 +1756,49 @@ async def update_status(photo_id: int, data: dict = Body(...)):
     return {"ok": True, "status": st, "previous_status": old_status}
 
 
+@app.patch("/attempts/{attempt_id}/status")
+async def update_attempt_status(attempt_id: int, data: dict = Body(...)):
+    """Cascades a status change to the Attempt row and every sibling Photo
+    row in one transaction, mirroring update_status's validation/transition
+    logic (~L1726) so the audit trail and completion stamps stay consistent
+    whether a job is closed out photo-by-photo or all at once."""
+    db = SessionLocal()
+    attempt = db.query(Attempt).filter(Attempt.id == attempt_id).first()
+    if not attempt:
+        db.close()
+        raise HTTPException(status_code=404, detail="Attempt not found")
+    st = (data.get("status") or "").strip().lower()
+    if st not in ("open", "in_progress", "completed", "archived"):
+        db.close()
+        raise HTTPException(status_code=422, detail="status must be open|in_progress|completed|archived")
+
+    # Update the Attempt row itself.
+    attempt.status = st
+    if st in ("completed", "archived") and not attempt.completed_at:
+        attempt.completed_at = datetime.utcnow()
+    if st in ("open", "in_progress"):
+        attempt.completed_at = None
+
+    # Cascade the same transition to every sibling Photo row.
+    photos = db.query(Photo).filter(Photo.attempt_id == attempt_id).all()
+    for photo in photos:
+        old_status = photo.status or "open"
+        photo.status = st
+        if st in ("completed", "archived") and not photo.completed_at:
+            photo.completed_at = datetime.utcnow()
+        if st in ("open", "in_progress"):
+            photo.completed_at = None
+        db.add(StatusHistory(
+            photo_id=photo.id,
+            old_status=old_status,
+            new_status=st,
+            updated_by=data.get("updated_by"),
+        ))
+    db.commit()
+    db.close()
+    return {"ok": True, "status": st, "photos_updated": len(photos)}
+
+
 @app.get("/photos/{photo_id}/status-history")
 def status_history(photo_id: int):
     db = SessionLocal()
@@ -1440,6 +1874,20 @@ def _period_bounds(period):
     return start.astimezone(timezone.utc).replace(tzinfo=None)
 
 
+def _dedupe_by_attempt(jobs):
+    """One Attempt can have several Photo rows (each upload = one row); dedupe
+    so earnings/payouts count an attempt's pay_rate once, not once per photo."""
+    seen = set()
+    out = []
+    for j in jobs:
+        key = j.attempt_id or f"photo:{j.id}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(j)
+    return out
+
+
 @app.get("/earnings/summary")
 def earnings_summary(period: str = "today", user_id: Optional[int] = None,
                       start_date: Optional[str] = None, end_date: Optional[str] = None):
@@ -1466,6 +1914,7 @@ def earnings_summary(period: str = "today", user_id: Optional[int] = None,
     if user_id is not None:
         q = q.filter(Photo.user_id == user_id)
     jobs = q.all()
+    jobs = _dedupe_by_attempt(jobs)
     total = sum((j.pay_rate or 0) for j in jobs)
     count = len(jobs)
     # daily breakdown for trend chart
@@ -1489,9 +1938,19 @@ def earnings_summary(period: str = "today", user_id: Optional[int] = None,
     highest = _job_summary(max(jobs, key=lambda j: (j.pay_rate or 0), default=None))
     lowest  = _job_summary(min(jobs, key=lambda j: (j.pay_rate or 0), default=None))
 
-    # "Available" earnings: the standing Pay Rate set on each profile, summed
-    # across ALL profiles — not tied to job status or the selected period.
-    available_earnings = sum((p.pay_rate or 0) for p in db.query(Profile).all())
+    # "Available" earnings: standing pay rates on non-completed profiles.
+    # New profiles (no attempts yet) and profiles with every job closed out
+    # do not contribute — those closed jobs already count toward Total Earnings.
+    available_earnings = 0
+    for p in db.query(Profile).all():
+        if not p.pay_rate:
+            continue
+        photos = list(p.photos or [])
+        if not photos:
+            continue  # new profile — exclude
+        if all((ph.status or "") in ("completed", "archived") for ph in photos):
+            continue  # fully completed profile
+        available_earnings += p.pay_rate
 
     db.close()
     return {
@@ -1520,6 +1979,7 @@ def get_payouts(user_id: Optional[int] = None):
     if user_id is not None:
         q = q.filter(Photo.user_id == user_id)
     jobs = q.order_by(Photo.completed_at.desc()).all()
+    jobs = _dedupe_by_attempt(jobs)
     # Build per-day buckets with the actual closed-pin entries (like the log)
     days = {}
     for j in jobs:
@@ -1566,6 +2026,7 @@ async def finalize_payout(data: dict = Body(...)):
     if end:
         q = q.filter(Photo.completed_at <= end)
     jobs = q.all()
+    jobs = _dedupe_by_attempt(jobs)
     snap = PayoutPeriod(
         user_id=uid, period_start=start, period_end=end,
         total_amount=sum((j.pay_rate or 0) for j in jobs), jobs_count=len(jobs))
@@ -1735,7 +2196,7 @@ _EXPORT_COLUMNS_LIST = [
 # profile, watermarked with its timestamp + geotag and embedded into the sheet.
 _EXPORT_COLUMNS_MANUAL = _EXPORT_COLUMNS_LIST + [("photo", "Photo")]
 
-# Map a stored priority category to the label shown in exports/watermarks.
+# Map a stored priority category to the label shown in exports.
 _PRIORITY_LABELS = {
     "asap": "ASAP", "rush": "ASAP", "next_day": "Next Day",
     "standard": "Standard", "special": "Special", "airport": "Airport",
@@ -1853,18 +2314,56 @@ def _watermark_photo_png(image_path, caption_lines, max_w=300, max_h=400):
     return out.getvalue(), img.width, img.height
 
 
+def _street_zip(address, zip_code=None):
+    """Street number + name, plus ZIP — same formatting as the profile export
+    address column. Takes the first comma-segment of `address` as the street
+    line and appends `zip_code` (or the first 5-digit token in the address)."""
+    full = (address or "").strip()
+    street = full.split(",")[0].strip() if full else ""
+    zip_val = (zip_code or "").strip()
+    if not zip_val:
+        m = re.search(r"\b\d{5}(?:-\d{4})?\b", full)
+        zip_val = m.group(0) if m else ""
+    return ", ".join(p for p in (street, zip_val) if p)
+
+
 def _photo_caption(ph):
-    """Timestamp + geotag caption lines burned into an exported photo."""
+    """Caption lines burned into an exported photo:
+      FILE-123                 (file number, or profile name when no file #)
+      2025-07-03 14:30 PST
+      4822 Reno Drive, 92101
+      32.690861, -117.113289
+    Priority / service level is intentionally omitted."""
+    lines = []
+    file_no = (ph.file_number or "").strip()
+    if file_no:
+        lines.append(file_no)
+    else:
+        name = ""
+        try:
+            if ph.profiles:
+                name = (ph.profiles[0].name or "").strip()
+        except Exception:
+            name = ""
+        if not name and ph.profile_id:
+            try:
+                db = SessionLocal()
+                prof = db.query(Profile).filter(Profile.id == ph.profile_id).first()
+                name = (prof.name or "").strip() if prof else ""
+                db.close()
+            except Exception:
+                name = ""
+        if name:
+            lines.append(name)
     ts = _to_pst_iso(ph.taken_at or ph.timestamp)
-    when = ""
     if ts:
         # 2025-07-03T14:30:45-07:00 → "2025-07-03 14:30 PST"
-        when = ts.replace("T", " ")[:16] + " PST"
-    lines = [when]
+        lines.append(ts.replace("T", " ")[:16] + " PST")
+    street_zip = _street_zip(ph.address, ph.zip_code)
+    if street_zip:
+        lines.append(street_zip[:64])
     if ph.latitude is not None and ph.longitude is not None:
         lines.append(f"{ph.latitude:.6f}, {ph.longitude:.6f}")
-    if ph.address:
-        lines.append(str(ph.address)[:48])
     return lines
 
 
@@ -1875,14 +2374,16 @@ def _get_watermarked_bytes(photo_id, max_w=800, max_h=800):
     fetch remote images (e.g. for an unauthenticated/spam-flagged sender)."""
     db = SessionLocal()
     ph = db.query(Photo).filter(Photo.id == photo_id).first()
-    db.close()
     if not ph or not ph.image_url:
+        db.close()
         return None
+    # Build caption while the session is open so profile names can lazy-load.
+    caption = _photo_caption(ph)
     path = ph.image_url.lstrip("/")
+    db.close()
     if not os.path.exists(path):
         return None
-    stamped = _watermark_photo_png(path, _photo_caption(ph),
-                                   max_w=max_w, max_h=max_h)
+    stamped = _watermark_photo_png(path, caption, max_w=max_w, max_h=max_h)
     return stamped[0] if stamped else None
 
 
@@ -2252,21 +2753,22 @@ def _build_service_record_html(records, header=None, latest_only=False,
 
 def _job_photo_caption(rec):
     """Caption lines burned into a service-record photo, from the matching
-    export record (already formatted by the client)."""
+    export record (already formatted by the client). Priority / service level
+    is intentionally omitted from watermarks."""
     lines = []
+    heading = (rec.get("file_number") or "").strip() or (
+        rec.get("profile_name") or "").strip()
+    if heading:
+        lines.append(heading)
     if rec.get("date_time"):
         lines.append(str(rec["date_time"]))
+    # Prefer an already street+ZIP-formatted address from the export record.
     if rec.get("address"):
         lines.append(str(rec["address"]))
     if rec.get("coordinates"):
         lines.append(str(rec["coordinates"]))
-    meta = []
-    if rec.get("service_ordered"):
-        meta.append(str(rec["service_ordered"]))
     if rec.get("agent"):
-        meta.append(f"Agent: {rec['agent']}")
-    if meta:
-        lines.append("  -  ".join(meta))
+        lines.append(f"Agent: {rec['agent']}")
     return [ln for ln in lines if ln]
 
 

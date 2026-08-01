@@ -1037,16 +1037,17 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                       ),
                     ),
                     // Live watermark caption drawn from the photo's metadata
-                    // (date / address / coordinates / service) so EVERY photo
-                    // shows it — including ones uploaded before the stamp was
-                    // baked in. Includes its own bottom gradient for contrast.
+                    // (file # / profile · date · street+ZIP · coordinates) so
+                    // EVERY photo shows it — including ones uploaded before the
+                    // stamp was baked in. Includes its own bottom gradient.
                     WatermarkCaption(
                       takenAtIso: photo.takenAt ?? photo.timestamp,
-                      address: photo.address ?? photo.zipCode ?? '',
+                      address: photo.address ?? '',
+                      zipCode: photo.zipCode,
+                      fileNumber: photo.fileNumber,
+                      profileName: photo.profileName,
                       latitude: photo.latitude,
                       longitude: photo.longitude,
-                      serviceLabel:
-                          categoryLabel(photo.category ?? photo.serviceType),
                     ),
                   ],
                 ),

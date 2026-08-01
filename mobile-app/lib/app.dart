@@ -40,6 +40,7 @@ class _PhotoTrackerAppState extends ConsumerState<PhotoTrackerApp> {
         relationTo: item.relationTo,
         fileNumber: item.fileNumber,
         successful: item.successful,
+        attemptStatus: item.attemptStatus,
         payRate: item.payRate,
         takenAt: item.takenAt,
         locationGroupId: item.locationGroupId,

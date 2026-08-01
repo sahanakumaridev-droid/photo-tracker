@@ -69,33 +69,53 @@ String formatStampFriendly(String? iso) {
   }
 }
 
-/// Builds the multi-line overlay caption the client requires baked into every
-/// photo:
+/// Street number + name, plus ZIP — same formatting as the profile export
+/// address column. Takes the first comma-segment of [address] as the street
+/// line and appends [zipCode] (or the first 5-digit token in the address).
+String formatStreetZip({String? address, String? zipCode}) {
+  final full = (address ?? '').trim();
+  final street = full.isEmpty ? '' : full.split(',').first.trim();
+  var zip = (zipCode ?? '').trim();
+  if (zip.isEmpty) {
+    zip = RegExp(r'\b\d{5}(?:-\d{4})?\b').firstMatch(full)?.group(0) ?? '';
+  }
+  return [street, zip].where((s) => s.isNotEmpty).join(', ');
+}
+
+/// Builds the multi-line overlay caption burned into / overlaid on every photo:
+///   FILE-123              (file number, or profile name when no file #)
 ///   06/22/2026 08:28 AM
-///   4822 Reno Drive
+///   4822 Reno Drive, 92101
 ///   32.690861, -117.113289
-///   Standard · Attempt #3 · Agent: Donald
-/// Empty fields are dropped so the bar only shows what's known.
+/// Empty fields are dropped so the bar only shows what's known. Priority /
+/// service level is intentionally omitted from watermarks.
 List<String> buildStampLines({
   required String takenAtIso,
   String address = '',
+  String? zipCode,
+  String? fileNumber,
+  String? profileName,
   double? latitude,
   double? longitude,
-  String? serviceLabel,
   int? attemptNumber,
   String? agentName,
+  @Deprecated('Priority is no longer shown on watermarks')
+  String? serviceLabel,
 }) {
   final lines = <String>[];
+  final heading = (fileNumber ?? '').trim().isNotEmpty
+      ? fileNumber!.trim()
+      : (profileName ?? '').trim();
+  if (heading.isNotEmpty) lines.add(heading);
   final ts = formatStampFriendly(takenAtIso);
   if (ts.isNotEmpty) lines.add(ts);
-  if (address.trim().isNotEmpty) lines.add(address.trim());
+  final streetZip = formatStreetZip(address: address, zipCode: zipCode);
+  if (streetZip.isNotEmpty) lines.add(streetZip);
   if (latitude != null && longitude != null) {
     lines.add('${latitude.toStringAsFixed(6)}, '
         '${longitude.toStringAsFixed(6)}');
   }
   final meta = <String>[
-    if (serviceLabel != null && serviceLabel.trim().isNotEmpty)
-      serviceLabel.trim(),
     if (attemptNumber != null) 'Attempt #$attemptNumber',
     if (agentName != null && agentName.trim().isNotEmpty)
       'Agent: ${agentName.trim()}',
@@ -146,11 +166,15 @@ Future<File> applyWatermark(
   File imageFile,
   String takenAtIso,
   String address, {
+  String? zipCode,
+  String? fileNumber,
+  String? profileName,
   double? latitude,
   double? longitude,
-  String? serviceLabel,
   int? attemptNumber,
   String? agentName,
+  @Deprecated('Priority is no longer shown on watermarks')
+  String? serviceLabel,
 }) async {
   try {
     final bytes = await imageFile.readAsBytes();
@@ -186,13 +210,22 @@ Future<File> applyWatermark(
     var lines = buildStampLines(
       takenAtIso: takenAtIso,
       address: address,
+      zipCode: zipCode,
+      fileNumber: fileNumber,
+      profileName: profileName,
       latitude: latitude,
       longitude: longitude,
-      serviceLabel: serviceLabel,
       attemptNumber: attemptNumber,
       agentName: agentName,
     );
-    if (lines.isEmpty) lines = [buildWatermarkText(takenAtIso, address)];
+    if (lines.isEmpty) {
+      lines = [
+        buildWatermarkText(
+          takenAtIso,
+          formatStreetZip(address: address, zipCode: zipCode),
+        ),
+      ];
+    }
 
     final png = await compute(
       _bakeWatermark,
@@ -303,6 +336,9 @@ class WatermarkBar extends StatelessWidget {
   const WatermarkBar({
     required this.takenAtIso,
     this.address = '',
+    this.zipCode,
+    this.fileNumber,
+    this.profileName,
     this.compact = false,
     super.key,
   });
@@ -310,54 +346,98 @@ class WatermarkBar extends StatelessWidget {
   /// ISO-8601 capture time; null while EXIF is still being read.
   final String? takenAtIso;
   final String address;
+  final String? zipCode;
+  final String? fileNumber;
+  final String? profileName;
 
   /// Compact mode = small chip for thumbnails; full = wide caption bar.
   final bool compact;
 
   @override
   Widget build(BuildContext context) {
-    final text = takenAtIso == null
-        ? 'Reading time…'
-        : compact
-            ? shortStamp(takenAtIso)
-            : buildWatermarkText(takenAtIso!, address);
+    if (takenAtIso == null) {
+      return _bar(
+        child: Text(
+          'Reading time…',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: compact ? 9 : 13,
+            fontWeight: FontWeight.w600,
+            shadows: const [Shadow(color: Colors.black, blurRadius: 4)],
+          ),
+        ),
+      );
+    }
+    if (compact) {
+      return _bar(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.schedule_rounded, size: 10, color: Colors.white),
+            const SizedBox(width: 3),
+            Flexible(
+              child: Text(
+                shortStamp(takenAtIso),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 9,
+                  fontWeight: FontWeight.w600,
+                  shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    final lines = buildStampLines(
+      takenAtIso: takenAtIso!,
+      address: address,
+      zipCode: zipCode,
+      fileNumber: fileNumber,
+      profileName: profileName,
+    );
+    final text = lines.isEmpty
+        ? buildWatermarkText(
+            takenAtIso!,
+            formatStreetZip(address: address, zipCode: zipCode),
+          )
+        : lines.join('\n');
+    return _bar(
+      child: Text(
+        text,
+        textAlign: TextAlign.center,
+        maxLines: 4,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+          height: 1.25,
+          shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+        ),
+      ),
+    );
+  }
+
+  Widget _bar({required Widget child}) {
     return Container(
       width: double.infinity,
+      alignment: Alignment.center,
       padding: EdgeInsets.symmetric(
         horizontal: compact ? 6 : 14,
         vertical: compact ? 3 : 9,
       ),
       color: Colors.black.withValues(alpha: 0.45),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            Icons.schedule_rounded,
-            size: compact ? 10 : 14,
-            color: Colors.white,
-          ),
-          SizedBox(width: compact ? 3 : 6),
-          Flexible(
-            child: Text(
-              text,
-              maxLines: compact ? 1 : 2,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: compact ? 9 : 13,
-                fontWeight: FontWeight.w600,
-                shadows: const [Shadow(color: Colors.black, blurRadius: 4)],
-              ),
-            ),
-          ),
-        ],
-      ),
+      child: child,
     );
   }
 }
 
 /// The full multi-line watermark caption, drawn as a display overlay across the
-/// bottom of a photo (date / address / coordinates / service · attempt · agent).
+/// bottom of a photo (file # or profile · date · street+ZIP · coordinates).
 ///
 /// This renders from the post's metadata at display time, so EVERY post shows
 /// the caption — including older photos uploaded before the watermark was baked
@@ -367,34 +447,45 @@ class WatermarkCaption extends StatelessWidget {
   const WatermarkCaption({
     required this.takenAtIso,
     this.address = '',
+    this.zipCode,
+    this.fileNumber,
+    this.profileName,
     this.latitude,
     this.longitude,
-    this.serviceLabel,
     this.attemptNumber,
     this.agentName,
     this.compact = false,
+    @Deprecated('Priority is no longer shown on watermarks')
+    this.serviceLabel,
     super.key,
   });
 
   final String? takenAtIso;
   final String address;
+  final String? zipCode;
+  final String? fileNumber;
+  final String? profileName;
   final double? latitude;
   final double? longitude;
-  final String? serviceLabel;
   final int? attemptNumber;
   final String? agentName;
 
   /// Compact = smaller text for feed cards; full = larger for the detail view.
   final bool compact;
 
+  @Deprecated('Priority is no longer shown on watermarks')
+  final String? serviceLabel;
+
   @override
   Widget build(BuildContext context) {
     final lines = buildStampLines(
       takenAtIso: takenAtIso ?? '',
       address: address,
+      zipCode: zipCode,
+      fileNumber: fileNumber,
+      profileName: profileName,
       latitude: latitude,
       longitude: longitude,
-      serviceLabel: serviceLabel,
       attemptNumber: attemptNumber,
       agentName: agentName,
     );
@@ -407,6 +498,7 @@ class WatermarkCaption extends StatelessWidget {
       bottom: 0,
       child: IgnorePointer(
         child: Container(
+          alignment: Alignment.center,
           padding: EdgeInsets.fromLTRB(
               14, compact ? 22 : 30, 14, compact ? 10 : 14),
           decoration: BoxDecoration(

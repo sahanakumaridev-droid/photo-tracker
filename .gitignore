@@ -19,3 +19,9 @@ frontend/.env
 
 # Secrets — never commit
 backend/.env
+
+# Local production-data backups — never commit
+backend/backups_local/
+
+# Local built APKs — never commit binaries
+mobile-app/releases/

@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../core/utils/text_formatters.dart';
+import '../../../data/models/company.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/location_provider.dart';
 import '../../providers/photo_provider.dart';
@@ -250,6 +251,7 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
                 await ref.read(createProfileProvider((
                   name: nameController.text,
                   serviceType: kDefaultCategory,
+                  company: kDefaultCompanyId,
                   payRate: int.tryParse(payRateController.text.trim()),
                   status: null,
                   address: null,
@@ -330,6 +332,7 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
                   // Service level is no longer a profile property; preserve
                   // whatever was stored so the update is a no-op for it.
                   serviceType: profile.serviceType,
+                  company: profile.company,
                   note: noteController.text.isEmpty ? null : noteController.text,
                   payRate: int.tryParse(payRateController.text.trim()),
                   // This dialog only edits name/note/pay rate — preserve

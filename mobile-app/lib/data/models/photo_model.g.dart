@@ -23,7 +23,9 @@ PhotoModel _$PhotoModelFromJson(Map<String, dynamic> json) => PhotoModel(
       servedTo: json['served_to'] as String?,
       relationTo: json['relation_to'] as String?,
       fileNumber: json['file_number'] as String?,
-      successful: json['successful'] as bool? ?? true,
+      successful: json['successful'] as bool? ?? false,
+      attemptStatus: json['attempt_status'] as String? ?? 'pending',
+      attemptId: (json['attempt_id'] as num?)?.toInt(),
       profiles: (json['profiles'] as List<dynamic>?)
           ?.map((e) => ProfileModel.fromJson(e as Map<String, dynamic>))
           .toList(),
@@ -56,6 +58,8 @@ Map<String, dynamic> _$PhotoModelToJson(PhotoModel instance) =>
       'relation_to': instance.relationTo,
       'file_number': instance.fileNumber,
       'successful': instance.successful,
+      'attempt_status': instance.attemptStatus,
+      'attempt_id': instance.attemptId,
       'profiles': instance.profiles,
       'is_favorited': instance.isFavorited,
       'pay_rate': instance.payRate,

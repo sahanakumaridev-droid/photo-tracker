@@ -24,6 +24,7 @@ LogEntryModel _$LogEntryModelFromJson(Map<String, dynamic> json) =>
       profiles: (json['profiles'] as List<dynamic>?)
           ?.map((e) => ProfileModel.fromJson(e as Map<String, dynamic>))
           .toList(),
+      attemptStatus: json['attempt_status'] as String? ?? 'pending',
     );
 
 Map<String, dynamic> _$LogEntryModelToJson(LogEntryModel instance) =>
@@ -42,4 +43,5 @@ Map<String, dynamic> _$LogEntryModelToJson(LogEntryModel instance) =>
       'category': instance.category,
       'file_number': instance.fileNumber,
       'profiles': instance.profiles,
+      'attempt_status': instance.attemptStatus,
     };

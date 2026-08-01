@@ -380,7 +380,7 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          onTap: () => context.push('/profiles-management', extra: profile),
+          onTap: () => context.push('/profile/${profile.id}'),
           borderRadius: BorderRadius.circular(12),
           child: Padding(
             padding: const EdgeInsets.all(14),
@@ -499,7 +499,7 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
                           horizontal: 10, vertical: 8),
                       minimumSize: Size.zero,
                     ),
-                    child: const Text('Start Attempt',
+                    child: const Text('Add Attempt',
                         style: TextStyle(fontSize: 12)),
                   ),
                 ] else ...[

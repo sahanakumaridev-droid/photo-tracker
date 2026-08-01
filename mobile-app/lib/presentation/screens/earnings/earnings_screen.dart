@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import '../../../config/theme.dart';
 import '../../../core/network/api_client.dart';
 import '../../widgets/common/loading_skeleton.dart';
+import '../../widgets/common/stat_card.dart';
 
 /// F8 / F9 — Earnings dashboard (Uber-driver style) + Payouts / Timesheets.
 class EarningsScreen extends ConsumerStatefulWidget {
@@ -163,20 +164,24 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
                       padding: const EdgeInsets.symmetric(horizontal: 16),
                       child: Row(
                         children: [
-                          _statCard(
-                            label: 'Jobs Done',
-                            value: '$jobsDone',
-                            icon: CupertinoIcons.checkmark_circle,
-                            iconColor: AppTheme.primary,
-                            iconBg: AppTheme.primarySoft,
+                          Expanded(
+                            child: StatCard(
+                              label: 'Jobs Done',
+                              value: '$jobsDone',
+                              icon: CupertinoIcons.checkmark_circle,
+                              iconColor: AppTheme.primary,
+                              iconBg: AppTheme.primarySoft,
+                            ),
                           ),
                           const SizedBox(width: 12),
-                          _statCard(
-                            label: 'Avg Per Job',
-                            value: _money(avgPerJob),
-                            icon: CupertinoIcons.chart_bar,
-                            iconColor: AppTheme.warning,
-                            iconBg: const Color(0xFFFEF3C7),
+                          Expanded(
+                            child: StatCard(
+                              label: 'Avg Per Job',
+                              value: _money(avgPerJob),
+                              icon: CupertinoIcons.chart_bar,
+                              iconColor: AppTheme.warning,
+                              iconBg: const Color(0xFFFEF3C7),
+                            ),
                           ),
                         ],
                       ),
@@ -450,61 +455,6 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
               );
             }).toList(),
           ),
-        ),
-      ),
-    );
-  }
-
-  // ── Compact stat card with icon bubble ──
-  Widget _statCard({
-    required String label,
-    required String value,
-    required IconData icon,
-    required Color iconColor,
-    required Color iconBg,
-  }) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: [
-            BoxShadow(
-                color: Colors.black.withValues(alpha: 0.05),
-                blurRadius: 10,
-                offset: const Offset(0, 3))
-          ],
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 40,
-              height: 40,
-              decoration:
-                  BoxDecoration(color: iconBg, shape: BoxShape.circle),
-              child: Icon(icon, size: 19, color: iconColor),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(label,
-                      style: const TextStyle(
-                          color: Color(0xFF9CA3AF),
-                          fontSize: 11,
-                          fontWeight: FontWeight.w500)),
-                  const SizedBox(height: 2),
-                  Text(value,
-                      style: const TextStyle(
-                          fontWeight: FontWeight.w800,
-                          fontSize: 20,
-                          letterSpacing: -0.5)),
-                ],
-              ),
-            ),
-          ],
         ),
       ),
     );

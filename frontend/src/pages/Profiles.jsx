@@ -2,6 +2,12 @@ import React, { useEffect, useState, useContext } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getProfilesLive, getPhotosLive, createProfile, deleteProfile } from '../api'
 import { GeoContext } from '../context/GeoContext'
+import {
+  COMPANIES,
+  DEFAULT_COMPANY_ID,
+  defaultPriorityForCompany,
+  prioritiesForCompany,
+} from '../companies'
 
 // Haversine distance in miles
 function distanceMiles(lat1, lng1, lat2, lng2) {
@@ -37,6 +43,7 @@ export default function Profiles({ showToast }) {
   const [loading,  setLoading]  = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [name,     setName]     = useState('')
+  const [companyId, setCompanyId] = useState(DEFAULT_COMPANY_ID)
   const [svcType,  setSvcType]  = useState('standard')
   const [saving,   setSaving]   = useState(false)
   const [search,   setSearch]   = useState('')
@@ -63,13 +70,17 @@ export default function Profiles({ showToast }) {
     e.preventDefault()
     if (!name.trim()) return
     setSaving(true)
-    const fd = new FormData()
-    fd.append('name', name)
-    fd.append('service_type', svcType)
     try {
-      await createProfile(fd)
+      await createProfile({
+        name: name.trim(),
+        service_type: svcType,
+        company: companyId,
+      })
       showToast('Profile created')
-      setName(''); setSvcType('standard'); setShowForm(false)
+      setName('')
+      setCompanyId(DEFAULT_COMPANY_ID)
+      setSvcType('standard')
+      setShowForm(false)
       load()
     } catch { showToast('Failed to create profile', 'error') }
     setSaving(false)
@@ -228,9 +239,28 @@ export default function Profiles({ showToast }) {
               />
             </div>
             <div className="pr-form-field">
+              <label>Company</label>
+              <select
+                value={companyId}
+                onChange={e => {
+                  const id = e.target.value
+                  setCompanyId(id)
+                  setSvcType(defaultPriorityForCompany(id))
+                }}
+                style={{
+                  width: '100%', padding: '10px 12px', borderRadius: 10,
+                  border: '1.5px solid #e5e7eb', fontSize: 14, fontWeight: 600,
+                }}
+              >
+                {COMPANIES.map(c => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="pr-form-field">
               <label>Priority category</label>
               <div className="pr-type-toggle" style={{ flexWrap: 'wrap', gap: 8 }}>
-                {CATEGORIES.map(c => {
+                {prioritiesForCompany(companyId, CATEGORIES).map(c => {
                   const active = svcType === c.value
                   return (
                     <button

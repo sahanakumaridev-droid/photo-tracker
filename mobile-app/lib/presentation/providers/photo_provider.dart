@@ -28,6 +28,8 @@ final uploadPhotoProvider =
       relationTo: params['relationTo'] as String?,
       fileNumber: params['fileNumber'] as String?,
       successful: params['successful'] as bool?,
+      attemptStatus: params['attemptStatus'] as String?,
+      attemptId: params['attemptId'] as int?,
       payRate: params['payRate'] as int?,
       takenAt: params['takenAt'] as String?,
       locationGroupId: params['locationGroupId'] as int?,
@@ -147,5 +149,13 @@ final updateStatusProvider =
     FutureProvider.family<void, (int, String)>((ref, args) async {
   final repository = ref.watch(photoRepositoryProvider);
   await repository.updateStatus(args.$1, args.$2);
+  ref.invalidate(photosProvider);
+});
+
+/// F10 — cascade the same transition to every photo in an attempt at once
+final updateAttemptStatusProvider =
+    FutureProvider.family<void, (int, String)>((ref, args) async {
+  final repository = ref.watch(photoRepositoryProvider);
+  await repository.updateAttemptStatus(args.$1, args.$2);
   ref.invalidate(photosProvider);
 });

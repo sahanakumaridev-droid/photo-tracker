@@ -18,6 +18,7 @@ import '../../providers/auth_provider.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
 import '../../widgets/common/app_logo.dart';
+import '../../widgets/common/pill_chip.dart';
 
 class HomeScreenV2 extends ConsumerStatefulWidget {
   const HomeScreenV2({super.key});
@@ -534,23 +535,7 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
                   ),
                 ),
                 // Category badge
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: cat.softColor,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(cat.icon, size: 11, color: cat.color),
-                    const SizedBox(width: 4),
-                    Text(cat.label,
-                        style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                            color: cat.color)),
-                  ]),
-                ),
+                PriorityChip(category: p.category),
                 const SizedBox(width: 8),
                 // More
                 GestureDetector(
@@ -574,10 +559,12 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
               for (final g in group)
                 WatermarkCaption(
                   takenAtIso: g.takenAt ?? g.timestamp,
-                  address: g.address ?? g.zipCode ?? '',
+                  address: g.address ?? '',
+                  zipCode: g.zipCode,
+                  fileNumber: g.fileNumber,
+                  profileName: g.profileName,
                   latitude: g.latitude,
                   longitude: g.longitude,
-                  serviceLabel: categoryOf(g.category).label,
                   compact: true,
                 ),
             ],

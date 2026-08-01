@@ -23,7 +23,9 @@ class PhotoModel {
     this.servedTo,
     this.relationTo,
     this.fileNumber,
-    this.successful = true,
+    this.successful = false,
+    this.attemptStatus = 'pending',
+    this.attemptId,
     this.profiles,
     this.isFavorited = false,
     this.payRate,
@@ -41,8 +43,27 @@ class PhotoModel {
     final imageUrl = raw.imageUrl.startsWith('http')
         ? raw.imageUrl
         : '${AppConfig.apiBaseUrl}${raw.imageUrl}';
-    return raw.copyWith(imageUrl: imageUrl);
+    final status = _resolveAttemptStatus(json, raw.successful);
+    return raw.copyWith(
+      imageUrl: imageUrl,
+      attemptStatus: status,
+      successful: status == 'successful',
+    );
   }
+
+  static String _resolveAttemptStatus(
+      Map<String, dynamic> json, bool successful) {
+    final raw = (json['attempt_status'] as String?)?.trim().toLowerCase();
+    if (raw == 'pending' || raw == 'successful' || raw == 'unsuccessful') {
+      return raw!;
+    }
+    // Legacy rows / clients that only sent `successful`.
+    if (json.containsKey('successful')) {
+      return successful ? 'successful' : 'unsuccessful';
+    }
+    return 'pending';
+  }
+
   final int id;
   @JsonKey(name: 'image_url')
   final String imageUrl;
@@ -73,9 +94,15 @@ class PhotoModel {
   /// Dispatcher-assigned file number for this job.
   @JsonKey(name: 'file_number')
   final String? fileNumber;
-  /// Whether the attempt was successful. Defaults true.
-  @JsonKey(name: 'successful', defaultValue: true)
+  /// Legacy boolean — kept in sync with [attemptStatus] == successful.
+  @JsonKey(name: 'successful', defaultValue: false)
   final bool successful;
+  /// Attempt outcome: pending | successful | unsuccessful.
+  @JsonKey(name: 'attempt_status', defaultValue: 'pending')
+  final String attemptStatus;
+  /// Parent Attempt id (Profile → Attempt → Photo).
+  @JsonKey(name: 'attempt_id')
+  final int? attemptId;
   final List<ProfileModel>? profiles;
   @JsonKey(name: 'is_favorited', defaultValue: false)
   final bool isFavorited;
@@ -115,6 +142,8 @@ class PhotoModel {
     String? relationTo,
     String? fileNumber,
     bool? successful,
+    String? attemptStatus,
+    int? attemptId,
     List<ProfileModel>? profiles,
     bool? isFavorited,
     int? payRate,
@@ -143,6 +172,8 @@ class PhotoModel {
         relationTo: relationTo ?? this.relationTo,
         fileNumber: fileNumber ?? this.fileNumber,
         successful: successful ?? this.successful,
+        attemptStatus: attemptStatus ?? this.attemptStatus,
+        attemptId: attemptId ?? this.attemptId,
         profiles: profiles ?? this.profiles,
         isFavorited: isFavorited ?? this.isFavorited,
         payRate: payRate ?? this.payRate,

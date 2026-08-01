@@ -22,7 +22,8 @@ import '../screens/settings/profiles_list_screen.dart';
 import '../screens/settings/profiles_management_screen.dart';
 import '../screens/settings/settings_screen_v2.dart';
 import '../screens/profiles/profile_detail_screen.dart';
-import '../screens/upload/upload_screen_v2.dart';
+import '../screens/upload/attempts_dashboard_screen.dart';
+import '../screens/upload/resume_attempt_screen.dart';
 import '../widgets/common/bottom_nav.dart';
 
 final routerProvider = Provider<GoRouter>((ref) {
@@ -82,10 +83,18 @@ final routerProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/upload',
-            builder: (context, state) => UploadScreenV2(
-              initialProfileId: int.tryParse(
-                  state.uri.queryParameters['profileId'] ?? ''),
-            ),
+            builder: (context, state) {
+              final profileId = int.tryParse(
+                  state.uri.queryParameters['profileId'] ?? '');
+              // "Start Attempt" from a specific Profile — keep skipping
+              // straight to the wizard. Otherwise (plain bottom-nav tap):
+              // land on the dashboard so an in-progress attempt can be
+              // resumed instead of always starting blank.
+              if (profileId != null) {
+                return ResumeAttemptScreen(initialProfileId: profileId);
+              }
+              return const AttemptsDashboardScreen();
+            },
           ),
           GoRoute(
             path: '/log',

@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 
 import '../../core/storage/api_cache.dart';
+import '../models/attempt.dart';
 import '../models/photo_model.dart';
 import '../models/profile_model.dart';
 
@@ -39,10 +40,12 @@ class ProfileRepository {
 
   /// Create a new profile. Profile Location + [status] are entirely
   /// optional and independent of any attempt/upload — a profile can be
-  /// created with only a name.
+  /// created with only a name. [company] is the process-serving company
+  /// slug (see [Company.id]).
   Future<ProfileModel> createProfile({
     required String name,
     required String serviceType,
+    String? company,
     int? payRate,
     String? status,
     String? address,
@@ -58,6 +61,7 @@ class ProfileRepository {
         data: {
           'name': name,
           'service_type': serviceType,
+          if (company != null && company.isNotEmpty) 'company': company,
           if (payRate != null) 'pay_rate': payRate,
           'status': status,
           'address': address,
@@ -81,6 +85,7 @@ class ProfileRepository {
     required int profileId,
     required String name,
     required String serviceType,
+    String? company,
     String? note,
     int? payRate,
     String? status,
@@ -97,6 +102,7 @@ class ProfileRepository {
         data: {
           'name': name,
           'service_type': serviceType,
+          if (company != null && company.isNotEmpty) 'company': company,
           if (note != null) 'note': note,
           if (payRate != null) 'pay_rate': payRate,
           'status': status,
@@ -122,7 +128,7 @@ class ProfileRepository {
     }
   }
 
-  /// Get photos for a profile
+  /// Get photos for a profile (legacy).
   Future<List<PhotoModel>> getProfilePhotos(int profileId) async {
     try {
       final response = await _dio.get('/api/profiles/$profileId/photos');
@@ -135,6 +141,47 @@ class ProfileRepository {
         }
       }
       return [];
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  /// Attempts for a profile (newest first) — Profile → Attempt → Photos.
+  Future<List<Attempt>> getProfileAttempts(int profileId) async {
+    try {
+      final response = await _dio.get('/api/profiles/$profileId/attempts');
+      if (response.data is Map) {
+        final data = response.data as Map<String, dynamic>;
+        final rows = data['attempts'];
+        if (rows is List) return attemptsFromJsonList(rows);
+      }
+      // Fallback to legacy photos endpoint.
+      final photos = await getProfilePhotos(profileId);
+      return attemptsFromPhotos(photos);
+    } on DioException catch (e) {
+      try {
+        final photos = await getProfilePhotos(profileId);
+        return attemptsFromPhotos(photos);
+      } catch (_) {
+        throw _handleError(e);
+      }
+    }
+  }
+
+  /// Duplicate an attempt onto other profiles (distinct DB rows).
+  Future<int> duplicateAttempt({
+    required int attemptId,
+    required List<int> profileIds,
+  }) async {
+    try {
+      final response = await _dio.post(
+        '/api/attempts/$attemptId/duplicate',
+        data: {'profile_ids': profileIds},
+      );
+      if (response.data is Map) {
+        return (response.data['duplicated'] as num?)?.toInt() ?? 0;
+      }
+      return 0;
     } on DioException catch (e) {
       throw _handleError(e);
     }

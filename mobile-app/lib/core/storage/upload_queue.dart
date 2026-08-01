@@ -36,7 +36,8 @@ class QueuedUpload {
     this.servedTo,
     this.relationTo,
     this.fileNumber,
-    this.successful = true,
+    this.successful = false,
+    this.attemptStatus = 'pending',
     this.payRate,
     this.locationGroupId,
     this.userId,
@@ -61,6 +62,7 @@ class QueuedUpload {
   final String? relationTo;
   final String? fileNumber;
   final bool successful;
+  final String attemptStatus;
   final int? payRate;
   final int? locationGroupId;
   final int? userId;
@@ -85,6 +87,7 @@ class QueuedUpload {
         'relationTo': relationTo,
         'fileNumber': fileNumber,
         'successful': successful,
+        'attemptStatus': attemptStatus,
         'payRate': payRate,
         'locationGroupId': locationGroupId,
         'userId': userId,
@@ -94,7 +97,11 @@ class QueuedUpload {
         'lastError': lastError,
       };
 
-  static QueuedUpload fromMap(Map<dynamic, dynamic> m) => QueuedUpload(
+  static QueuedUpload fromMap(Map<dynamic, dynamic> m) {
+    final successful = (m['successful'] as bool?) ?? false;
+    final attemptStatus = (m['attemptStatus'] as String?) ??
+        (successful ? 'successful' : 'unsuccessful');
+    return QueuedUpload(
         id: m['id'] as String,
         filePath: m['filePath'] as String,
         profileId: m['profileId'] as int,
@@ -109,7 +116,8 @@ class QueuedUpload {
         servedTo: m['servedTo'] as String?,
         relationTo: m['relationTo'] as String?,
         fileNumber: m['fileNumber'] as String?,
-        successful: (m['successful'] as bool?) ?? true,
+        successful: successful,
+        attemptStatus: attemptStatus,
         payRate: m['payRate'] as int?,
         locationGroupId: m['locationGroupId'] as int?,
         userId: m['userId'] as int?,
@@ -121,6 +129,7 @@ class QueuedUpload {
         attempts: (m['attempts'] as int?) ?? 0,
         lastError: m['lastError'] as String?,
       );
+  }
 }
 
 /// Signature for the actual network upload. Returns normally on success and
@@ -224,7 +233,8 @@ class UploadQueueService {
     String? servedTo,
     String? relationTo,
     String? fileNumber,
-    bool successful = true,
+    bool successful = false,
+    String attemptStatus = 'pending',
     int? payRate,
     int? locationGroupId,
     int? userId,
@@ -249,6 +259,7 @@ class UploadQueueService {
       relationTo: relationTo,
       fileNumber: fileNumber,
       successful: successful,
+      attemptStatus: attemptStatus,
       payRate: payRate,
       locationGroupId: locationGroupId,
       userId: userId,

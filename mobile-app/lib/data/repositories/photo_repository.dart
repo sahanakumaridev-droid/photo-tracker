@@ -50,7 +50,9 @@ class PhotoRepository {
     String? servedTo,          // who service was served to
     String? relationTo,        // servedTo's relation to the profile
     String? fileNumber,        // dispatcher-assigned file number
-    bool? successful,          // whether the attempt was successful
+    bool? successful,          // legacy; prefer attemptStatus
+    String? attemptStatus,     // pending | successful | unsuccessful
+    int? attemptId,            // attach to existing Attempt (multi-photo)
     int? payRate,              // F7
     String? takenAt,           // F6 device capture time (ISO)
     int? locationGroupId,      // F1 append to existing master pin
@@ -67,13 +69,16 @@ class PhotoRepository {
         if (note != null && note.isNotEmpty) 'note': note,
         if (category != null && category.isNotEmpty) 'category': category,
         if (completionType != null && completionType.isNotEmpty)
-          'completion_type': completionType,
+            'completion_type': completionType,
         if (servedTo != null && servedTo.isNotEmpty) 'served_to': servedTo,
         if (relationTo != null && relationTo.isNotEmpty)
-          'relation_to': relationTo,
+            'relation_to': relationTo,
         if (fileNumber != null && fileNumber.isNotEmpty)
-          'file_number': fileNumber,
+            'file_number': fileNumber,
+        if (attemptStatus != null && attemptStatus.isNotEmpty)
+            'attempt_status': attemptStatus,
         if (successful != null) 'successful': successful,
+        if (attemptId != null) 'attempt_id': attemptId,
         if (payRate != null) 'pay_rate': payRate,
         // F6: lock timestamp to device capture time
         'taken_at': takenAt ?? DateTime.now().toUtc().toIso8601String(),
@@ -240,6 +245,17 @@ class PhotoRepository {
   Future<void> updateStatus(int photoId, String status) async {
     try {
       await _dio.patch('/api/photos/$photoId/status',
+          data: {'status': status});
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  /// F10 — cascade the same lifecycle transition to every photo in an
+  /// attempt at once (used when the upload wizard finishes a whole attempt).
+  Future<void> updateAttemptStatus(int attemptId, String status) async {
+    try {
+      await _dio.patch('/api/attempts/$attemptId/status',
           data: {'status': status});
     } on DioException catch (e) {
       throw _handleError(e);

@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/models/attempt.dart';
 import '../../data/models/photo_model.dart';
 import '../../data/models/profile_model.dart';
 import 'repository_providers.dart';
@@ -17,11 +18,20 @@ final profileDetailProvider =
   return repository.getProfilePhotos(profileId);
 });
 
+/// Attempts for a profile — newest first (Profile → Attempt → Photos).
+final profileAttemptsProvider =
+    FutureProvider.family<List<Attempt>, int>((ref, profileId) async {
+  final repository = ref.watch(profileRepositoryProvider);
+  return repository.getProfileAttempts(profileId);
+});
+
 /// Args for [createProfileProvider]. Profile Location + status are
-/// optional — a profile can be created with only a name.
+/// optional — a profile can be created with only a name. [company] is the
+/// process-serving company slug.
 typedef CreateProfileArgs = ({
   String name,
   String serviceType,
+  String? company,
   int? payRate,
   String? status,
   String? address,
@@ -40,6 +50,7 @@ final createProfileProvider =
     return repository.createProfile(
       name: args.name,
       serviceType: args.serviceType,
+      company: args.company,
       payRate: args.payRate,
       status: args.status,
       address: args.address,
@@ -57,6 +68,7 @@ typedef UpdateProfileArgs = ({
   int profileId,
   String name,
   String serviceType,
+  String? company,
   String? note,
   int? payRate,
   String? status,
@@ -77,6 +89,7 @@ final updateProfileProvider =
       profileId: args.profileId,
       name: args.name,
       serviceType: args.serviceType,
+      company: args.company,
       note: args.note,
       payRate: args.payRate,
       status: args.status,

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 import 'app.dart';
+import 'core/network/network_quality.dart';
 import 'core/storage/api_cache.dart';
 import 'core/storage/local_storage.dart';
 import 'core/storage/upload_queue.dart';
@@ -24,6 +25,9 @@ void main() async {
   // The actual network uploader is attached once Riverpod providers are ready
   // (see _QueueAttacher in app.dart).
   await UploadQueueService.instance.init();
+
+  // Latency / offline detector for continual attempt snapshots under poor signal.
+  await NetworkQualityService.instance.init();
 
   // Permissions (camera, photos, location) are requested on the user's first
   // successful login — see requestAppPermissions() in core/utils/permissions.dart.

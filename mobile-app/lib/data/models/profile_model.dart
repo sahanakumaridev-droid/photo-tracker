@@ -1,5 +1,7 @@
 import 'package:json_annotation/json_annotation.dart';
 
+import 'company.dart';
+
 part 'profile_model.g.dart';
 
 @JsonSerializable()
@@ -10,6 +12,8 @@ class ProfileModel {
     required this.serviceType,
     this.note,
     this.payRate,
+    this.company,
+    this.companyName,
     this.status,
     this.address,
     this.city,
@@ -34,6 +38,13 @@ class ProfileModel {
   @JsonKey(name: 'pay_rate')
   final int? payRate;
 
+  /// Process-serving company slug (`first_legal` | `rockstar` | `knox`).
+  final String? company;
+
+  /// Denormalized company display name from the API (optional).
+  @JsonKey(name: 'company_name')
+  final String? companyName;
+
   /// Profile-level lifecycle flag, e.g. "awaiting_attempt". Independent of
   /// any Attempt/Photo status — see Photo.status for that.
   final String? status;
@@ -50,8 +61,13 @@ class ProfileModel {
   final double? longitude;
 
   /// Number of Attempts (Photos) logged against this profile.
+  /// Full attempt rows are loaded as profile members via
+  /// `attemptsFromPhotos` on the profile's photo list (newest first).
   @JsonKey(name: 'attempts_count', defaultValue: 0)
   final int attemptsCount;
+
+  /// Resolved [Company] config for this profile (falls back to default).
+  Company get companyConfig => companyOrDefault(company);
 
   /// True when this profile is still waiting on its first attempt — a
   /// derived display state, not a raw status check, so it naturally clears
@@ -70,6 +86,8 @@ class ProfileModel {
     String? serviceType,
     String? note,
     int? payRate,
+    String? company,
+    String? companyName,
     String? status,
     String? address,
     String? city,
@@ -85,6 +103,8 @@ class ProfileModel {
         serviceType: serviceType ?? this.serviceType,
         note: note ?? this.note,
         payRate: payRate ?? this.payRate,
+        company: company ?? this.company,
+        companyName: companyName ?? this.companyName,
         status: status ?? this.status,
         address: address ?? this.address,
         city: city ?? this.city,

@@ -10,6 +10,7 @@ import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../core/utils/photo_stamp.dart';
 import '../../../core/utils/text_formatters.dart';
+import '../../../data/models/company.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
@@ -195,7 +196,12 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
     return GestureDetector(
       onTap: () {
         HapticFeedback.selectionClick();
-        setState(() => _selectedProfile = p);
+        setState(() {
+          _selectedProfile = p;
+          if (!companyOrDefault(p.company).allowsPriority(_selectedCategory)) {
+            _selectedCategory = defaultPriorityForCompany(p.company);
+          }
+        });
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
@@ -731,15 +737,23 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
     // profilesProvider is watched in build(), so the new profile appears in
     // the list automatically; pre-select it for the user.
     if (created != null && mounted) {
-      setState(() => _selectedProfile = created);
+      setState(() {
+        _selectedProfile = created;
+        if (!companyOrDefault(created.company)
+            .allowsPriority(_selectedCategory)) {
+          _selectedCategory = defaultPriorityForCompany(created.company);
+        }
+      });
     }
   }
 
   Widget _categoryPicker() {
+    final companyId = _selectedProfile?.company;
+    final categories = priorityCategoriesForCompany(companyId);
     return Wrap(
       spacing: 8,
       runSpacing: 8,
-      children: kPhotoCategories.map((c) {
+      children: categories.map((c) {
         final selected = _selectedCategory == c.value;
         return GestureDetector(
           onTap: () {

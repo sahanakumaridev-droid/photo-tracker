@@ -64,10 +64,15 @@ export const getProfilesLive = (onData) => cached('profiles', () => api.get('/pr
 
 // Standard promise-based (used where caching not needed)
 export const getProfiles      = ()         => api.get('/profiles').then(r => r.data)
+export const getCompanies     = ()         => api.get('/companies').then(r => r.data)
 export const createProfile    = (data)     => {
   // Callers may pass FormData; backend expects JSON Body(...)
   const payload = data instanceof FormData
-    ? { name: data.get('name'), service_type: data.get('service_type') }
+    ? {
+        name: data.get('name'),
+        service_type: data.get('service_type'),
+        company: data.get('company') || undefined,
+      }
     : data
   return api.post('/profiles', payload).then(r => r.data).then(r => { invalidate('profiles'); return r })
 }

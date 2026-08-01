@@ -16,6 +16,7 @@ import '../../../core/utils/maps_launcher.dart';
 import '../../../data/models/log_entry_model.dart';
 import '../../providers/location_provider.dart';
 import '../../providers/log_provider.dart';
+import '../../widgets/common/pill_chip.dart';
 
 class LogScreenV2 extends ConsumerStatefulWidget {
   const LogScreenV2({super.key, this.initialCategory});
@@ -1420,33 +1421,14 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                           // Priority (category) badge + distance badge
                           Row(
                             children: [
-                              Builder(builder: (_) {
-                                final cat = categoryOf(log.category);
-                                return Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 8, vertical: 3),
-                                  decoration: BoxDecoration(
-                                    color: cat.softColor,
-                                    borderRadius: BorderRadius.circular(7),
-                                    border: Border.all(
-                                        color: cat.color
-                                            .withValues(alpha: 0.3)),
-                                  ),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(cat.icon,
-                                          size: 11, color: cat.color),
-                                      const SizedBox(width: 4),
-                                      Text(cat.label,
-                                          style: TextStyle(
-                                              fontSize: 10.5,
-                                              fontWeight: FontWeight.w700,
-                                              color: cat.color)),
-                                    ],
-                                  ),
-                                );
-                              }),
+                              PriorityChip(
+                                category: log.category,
+                                radius: 7,
+                                border: true,
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 3),
+                                fontSize: 10.5,
+                              ),
                               if (distLabel != null) ...[
                                 const SizedBox(width: 6),
                                 Container(
