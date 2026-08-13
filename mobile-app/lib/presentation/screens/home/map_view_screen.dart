@@ -14,19 +14,21 @@ import 'package:latlong2/latlong.dart';
 import '../../../core/storage/upload_queue.dart';
 import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
+import '../../../data/models/company.dart';
 import '../../../data/models/photo_model.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
-import 'map_pin_popup_sheet.dart';
 import 'map_upload_sheet.dart';
 
-// ── Design tokens ─────────────────────────────────────────────────────────────
-const _kSurface  = Color(0xFFFFFFFF);
-const _kInk      = Color(0xFF0F0F0F);
-const _kInkMuted = Color(0xFF6B7280);
-const _kSubtle   = Color(0xFF9CA3AF);
-const _kSep      = Color(0xFFE5E7EB);
-const _kAccent   = Color(0xFF7C3AED);
+// ── Design tokens (dark field UI) ─────────────────────────────────────────────
+const _kSurface  = Color(0xFF1C222E);
+const _kInk      = Color(0xFFFFFFFF);
+const _kInkMuted = Color(0xFF94A3B8);
+const _kSubtle   = Color(0xFF6B7A8D);
+const _kSep      = Color(0xFF2A3340);
+const _kAccent   = Color(0xFF4A90E2);
+const _kAlert    = Color(0xFFC2185B);
+const _kFab      = Color(0xCC1C222E);
 
 // Used for the "enable GPS" hint in the filter sheet. (Category colours now
 // come from categoryOf() in category.dart.)
@@ -99,21 +101,10 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
     // before the map is mounted.
   }
 
-  /// Fired by FlutterMap once it's ready to accept camera moves. Centre on the
-  /// user as fast as possible, then refine.
+  /// Fired by FlutterMap once it's ready to accept camera moves.
+  /// Pins are framed as soon as they load — locate FAB still jumps to GPS.
   void _onMapReady() {
-    _centerOnLastKnown(); // instant — from the OS location cache
-    _fetchUserLocation(moveCamera: true); // accurate — refines when it lands
-  }
-
-  /// Snap the camera to the last-known location immediately so the map opens
-  /// on the user instead of a default city while the accurate fix is computed.
-  Future<void> _centerOnLastKnown() async {
-    final last = await LocationService.getLastKnownLocation();
-    // Don't fight a fresh accurate fix if it already arrived first.
-    if (last != null && mounted && _userPosition == null) {
-      _mapController.move(LatLng(last.latitude, last.longitude), 14);
-    }
+    _fetchUserLocation(moveCamera: false);
   }
 
   Future<void> _fetchUserLocation({bool moveCamera = false}) async {
@@ -196,18 +187,28 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
       _mapController.move(LatLng(minLat, minLng), 14);
       return;
     }
-    // A uniform padding isn't enough here: the floating header + filter
-    // pills + search bar + hint pill overlay the top of the screen, the
-    // stats card overlays the bottom, and the zoom/locate button column
-    // (46px wide, 14px from the edge) overlays the right — all far
-    // exceeding a small uniform inset. Without accounting for them, pins
-    // near the edge of the fitted bounds land at the correct geo-coordinate
-    // but render UNDER that UI instead of in the visible map area.
+    // Frame every valid pin (plus awaiting-attempt profile locations) inside
+    // the visible map — search bar on top, jobs sheet + FABs on the bottom
+    // and right. Padding matches the current overlay, not the old filter-pill
+    // layout, so pins are not hidden under chrome.
     final topInset = MediaQuery.of(context).padding.top;
+    final extras = <LatLng>[];
+    final profiles = ref.read(profilesProvider).valueOrNull ?? [];
+    for (final p in profiles) {
+      if (p.hasLocation) extras.add(LatLng(p.latitude!, p.longitude!));
+    }
+    for (final pt in extras) {
+      if (pt.latitude < minLat) minLat = pt.latitude;
+      if (pt.latitude > maxLat) maxLat = pt.latitude;
+      if (pt.longitude < minLng) minLng = pt.longitude;
+      if (pt.longitude > maxLng) maxLng = pt.longitude;
+    }
+
     _mapController.fitCamera(
       CameraFit.bounds(
         bounds: LatLngBounds(LatLng(minLat, minLng), LatLng(maxLat, maxLng)),
-        padding: EdgeInsets.fromLTRB(40, topInset + 230, 90, 220),
+        padding: EdgeInsets.fromLTRB(36, topInset + 72, 62, 118),
+        maxZoom: 14,
       ),
     );
   }
@@ -216,7 +217,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
   // of the group, so a single stray outlier can't force "Fit All" out to a
   // world-scale zoom. Falls back to the full list if that would exclude
   // everything (e.g. the group is small or evenly spread out).
-  static const double _outlierThresholdMi = 50;
+  static const double _outlierThresholdMi = 200;
 
   // (0,0) "null island" or out-of-range values from a bad GPS fix — dropped
   // before computing the median/bounds so a handful of them can't skew the
@@ -259,7 +260,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
     return Scaffold(
       // Full-screen map — no AppBar, body extends to top
       extendBodyBehindAppBar: true,
-      backgroundColor: const Color(0xFFF0F0F0),
+      backgroundColor: const Color(0xFF0F1219),
       body: _MapBody(
         photos: photos,
         searchCtrl: _searchCtrl,
@@ -321,9 +322,21 @@ class _MapBodyState extends ConsumerState<_MapBody> {
   // Debounces the camera fit while the distance slider is being dragged, so
   // it flies once the user settles instead of on every intermediate tick.
   Timer? _filterFitDebounce;
+  List<PhotoModel>? _selectedPhotos;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.searchCtrl.addListener(_onSearchChanged);
+  }
+
+  void _onSearchChanged() {
+    if (mounted) setState(() {});
+  }
 
   @override
   void dispose() {
+    widget.searchCtrl.removeListener(_onSearchChanged);
     _filterFitDebounce?.cancel();
     super.dispose();
   }
@@ -361,7 +374,10 @@ class _MapBodyState extends ConsumerState<_MapBody> {
   }
 
   bool get _anyFilterActive =>
-      _levels.isNotEmpty || _todayOnly || _distanceMode != null;
+      _levels.isNotEmpty ||
+      _todayOnly ||
+      _distanceMode != null ||
+      widget.searchCtrl.text.trim().isNotEmpty;
 
   // Resets every active filter (priority level, today, distance/ZIP) from
   // outside the filter sheet — used by the "no pins match" empty state so a
@@ -373,7 +389,9 @@ class _MapBodyState extends ConsumerState<_MapBody> {
       _distanceMode = null;
       _zip = '';
       _distanceMi = 100;
+      _selectedPhotos = null;
     });
+    widget.searchCtrl.clear();
     _scheduleFilterFit();
   }
 
@@ -425,7 +443,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
         margin: const EdgeInsets.only(bottom: 14),
         padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
         decoration: BoxDecoration(
-          color: const Color(0xFFF7F5FF),
+          color: const Color(0xFF0F1219),
           borderRadius: BorderRadius.circular(16),
         ),
         child: Column(
@@ -664,7 +682,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                                       hintText: 'e.g. 92101',
                                       isDense: true,
                                       filled: true,
-                                      fillColor: Colors.white,
+                                      fillColor: _kSurface,
                                       contentPadding:
                                           const EdgeInsets.symmetric(
                                               horizontal: 14, vertical: 12),
@@ -836,6 +854,49 @@ class _MapBodyState extends ConsumerState<_MapBody> {
     );
   }
 
+  bool _isSelectedPin(double lat, double lng) {
+    final selected = _selectedPhotos;
+    if (selected == null || selected.isEmpty) return false;
+    return (selected.first.latitude - lat).abs() < 1e-5 &&
+        (selected.first.longitude - lng).abs() < 1e-5;
+  }
+
+  String _jobId(PhotoModel p) {
+    final fn = p.fileNumber?.trim();
+    if (fn != null && fn.isNotEmpty) return fn;
+    return '${p.id}';
+  }
+
+  String? _distanceLabel(PhotoModel p) {
+    final pos = widget.userPosition;
+    if (pos == null) return null;
+    final m = Geolocator.distanceBetween(
+        pos.latitude, pos.longitude, p.latitude, p.longitude);
+    final mi = m / 1609.34;
+    if (mi < 0.1) return 'Nearby';
+    return '${mi.toStringAsFixed(1)} mi';
+  }
+
+  String _clientName(PhotoModel p) {
+    final profiles = ref.read(profilesProvider).valueOrNull ?? [];
+    for (final pr in profiles) {
+      if (pr.id == p.profileId) {
+        final named = pr.companyName?.trim();
+        if (named != null && named.isNotEmpty) return named;
+        return companyOrDefault(pr.company).name;
+      }
+    }
+    return '';
+  }
+
+  String _addressOf(PhotoModel p) {
+    final addr = p.address?.trim();
+    if (addr != null && addr.isNotEmpty) return addr;
+    final zip = p.zipCode?.trim();
+    if (zip != null && zip.isNotEmpty) return 'ZIP $zip';
+    return '${p.latitude.toStringAsFixed(5)}, ${p.longitude.toStringAsFixed(5)}';
+  }
+
   // The photos visible on the map after all active filters (service level,
   // distance/zip) + a valid geotag. Shared by build() and the filter sheet's
   // live result count.
@@ -878,6 +939,21 @@ class _MapBodyState extends ConsumerState<_MapBody> {
       }).toList();
     }
 
+    final q = widget.searchCtrl.text.trim().toLowerCase();
+    if (q.isNotEmpty) {
+      filtered = filtered.where((p) {
+        final hay = [
+          p.fileNumber ?? '',
+          p.profileName ?? '',
+          p.zipCode ?? '',
+          p.address ?? '',
+          _clientName(p),
+          '${p.id}',
+        ].join(' ').toLowerCase();
+        return hay.contains(q);
+      }).toList();
+    }
+
     return filtered
         .where((p) => p.latitude != 0 || p.longitude != 0)
         .toList();
@@ -889,17 +965,11 @@ class _MapBodyState extends ConsumerState<_MapBody> {
 
     final geotagged = _visiblePhotos();
     final groups    = _groupByLocation(geotagged);
-    final svcCounts = _countByService(geotagged);
     final hasData   = geotagged.isNotEmpty;
 
-    // The app opens centred on the user's live GPS (handled by the parent's
-    // last-known + accurate fixes). Only fall back to framing the pins once the
-    // location attempt has FINISHED with no fix — otherwise this would yank the
-    // camera away from the user while the GPS fix is still being acquired.
-    if (!_didInitialFit &&
-        hasData &&
-        widget.userPosition == null &&
-        widget.locationAttemptDone) {
+    // Frame every pin once data is on the map. GPS still draws the user
+    // marker; it no longer steals the camera away from jobs.
+    if (!_didInitialFit && hasData) {
       _didInitialFit = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) widget.onFitAll(geotagged);
@@ -921,6 +991,10 @@ class _MapBodyState extends ConsumerState<_MapBody> {
             onMapReady: widget.onMapReady,
             onTap: (_, latLng) {
               HapticFeedback.lightImpact();
+              if (_selectedPhotos != null) {
+                setState(() => _selectedPhotos = null);
+                return;
+              }
               showMapUploadSheet(
                 context,
                 lat: latLng.latitude,
@@ -932,7 +1006,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
           children: [
             TileLayer(
               urlTemplate:
-                  'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+                  'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
               subdomains: const ['a', 'b', 'c', 'd'],
               userAgentPackageName: 'com.example.photo_tracker',
             ),
@@ -962,7 +1036,8 @@ class _MapBodyState extends ConsumerState<_MapBody> {
             // together on screen at the current zoom.
             MarkerClusterLayerWidget(
               options: MarkerClusterLayerOptions(
-                maxClusterRadius: 50,
+                maxClusterRadius: 36,
+                disableClusteringAtZoom: 12,
                 size: const Size(44, 44),
                 markers: groups.entries.map((entry) {
                   final sorted = [...entry.value]
@@ -971,26 +1046,26 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                   final latest  = sorted.first;
                   final color   = categoryOf(_topCategory(sorted)).color;
                   final count   = sorted.length;
+                  final selected = _isSelectedPin(latest.latitude, latest.longitude);
 
                   return Marker(
                     point: LatLng(latest.latitude, latest.longitude),
-                    width:  count > 1 ? 62 : 56,
-                    height: 74,
+                    width: selected ? 120 : (count > 1 ? 62 : 56),
+                    height: selected ? 96 : 74,
                     child: GestureDetector(
                       onTap: () {
                         HapticFeedback.mediumImpact();
-                        showPinPopupSheet(
-                          context,
-                          photos: sorted,
-                          lat: latest.latitude,
-                          lng: latest.longitude,
-                          onUpdated: widget.onRefresh,
+                        setState(() => _selectedPhotos = sorted);
+                        widget.mapController.move(
+                          LatLng(latest.latitude, latest.longitude),
+                          math.max(widget.mapController.camera.zoom, 13),
                         );
                       },
                       child: _PinMarker(
                         imageUrl: latest.imageUrl,
                         color: color,
                         count: count,
+                        label: selected ? _jobId(latest) : null,
                       ),
                     ),
                   );
@@ -1040,7 +1115,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
           ],
         ),
 
-        // ── Top floating control panel ─────────────────────────────────
+        // ── Top: search + filter + retry ────────────────────────────────
         Positioned(
           top: topPad + 10,
           left: 14,
@@ -1048,39 +1123,6 @@ class _MapBodyState extends ConsumerState<_MapBody> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Title + subtitle + refresh
-              _FloatingHeader(
-                onRefresh: widget.onRefresh,
-                photoCount: geotagged.length,
-                pinCount: groups.length,
-              ),
-              const SizedBox(height: 12),
-              // Quick filter pills + Map/List toggle
-              Row(
-                children: [
-                  Expanded(
-                    child: _FilterPillRow(
-                      levels: _levels,
-                      todayOnly: _todayOnly,
-                      onLevelsChanged: (next) => setState(() {
-                        _levels
-                          ..clear()
-                          ..addAll(next);
-                        _scheduleFilterFit();
-                      }),
-                      onTodayChanged: (next) => setState(() {
-                        _todayOnly = next;
-                        _scheduleFilterFit();
-                      }),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  _MapListToggle(onListTap: () => context.push('/home')),
-                ],
-              ),
-              const SizedBox(height: 10),
-              // Search bar — the tune icon opens the single filter sheet
-              // (distance/ZIP + service level).
               _SearchBar(
                 controller: widget.searchCtrl,
                 activeCount: _levels.length +
@@ -1088,50 +1130,79 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                     (_distanceMode != null ? 1 : 0),
                 onFilterTap: _showFilterSheet,
               ),
-              const SizedBox(height: 8),
-              // Contextual hint
-              const _HintPill(),
-              // Offline upload queue indicator (auto-retries in the background).
               const _PendingUploadsPill(),
             ],
           ),
         ),
 
-        // ── Bottom stats card ──────────────────────────────────────────
-        if (hasData)
+        // ── Selected job card + jobs sheet ─────────────────────────────
+        if (hasData || _selectedPhotos != null)
           Positioned(
-            bottom: 16,
-            left: 14,
-            right: 14,
-            child: _BottomCard(
-              count: geotagged.length,
-              groupCount: groups.length,
-              svcCounts: svcCounts,
-              onFitAll: () => widget.onFitAll(geotagged),
-              onViewList: () => context.push('/home'),
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (_selectedPhotos != null && _selectedPhotos!.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+                    child: _JobPreviewCard(
+                      photo: _selectedPhotos!.first,
+                      attempts: _selectedPhotos!.length,
+                      jobId: _jobId(_selectedPhotos!.first),
+                      distance: _distanceLabel(_selectedPhotos!.first),
+                      address: _addressOf(_selectedPhotos!.first),
+                      client: _clientName(_selectedPhotos!.first),
+                      onNewAttempt: () {
+                        final pid = _selectedPhotos!.first.profileId;
+                        if (pid != null && pid != 0) {
+                          context.push('/upload?profileId=$pid');
+                        } else {
+                          context.push('/upload');
+                        }
+                      },
+                      onViewJob: () {
+                        final p = _selectedPhotos!.first;
+                        if (p.profileId != null && p.profileId != 0) {
+                          context.push('/profile/${p.profileId}');
+                        } else {
+                          context.push('/photo/${p.id}');
+                        }
+                      },
+                    ),
+                  ),
+                _BottomCard(
+                  count: geotagged.length,
+                  onViewList: () => context.go('/jobs'),
+                ),
+              ],
             ),
           )
-        // A narrow filter can legitimately match zero pins — don't just
-        // vanish the whole bottom card (and Fit All with it). Give the user
-        // a way back instead of stranding them.
         else if (_anyFilterActive)
           Positioned(
-            bottom: 16,
-            left: 14,
-            right: 14,
-            child: _EmptyFilterCard(onClearFilters: _clearAllFilters),
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+              child: _EmptyFilterCard(onClearFilters: _clearAllFilters),
+            ),
           ),
 
-        // ── Zoom controls: [+] [-] [locate] (must be LAST in Stack for
-        // highest z-index). Locate keeps the exact previous _LocationFab
-        // behavior, just relocated into this vertical stack. ─────────────
+        // ── Map FABs: fit / refresh / locate ───────────────────────────
         Positioned(
           right: 14,
-          bottom: (hasData || _anyFilterActive) ? 204 : 28,
+          bottom: _selectedPhotos != null
+              ? 290
+              : (hasData || _anyFilterActive)
+                  ? 118
+                  : 28,
           child: Material(
             color: Colors.transparent,
             child: _ZoomControls(
-              mapController: widget.mapController,
+              onFitTap: () => widget.onFitAll(geotagged),
+              onRefreshTap: widget.onRefresh,
               userPosition: widget.userPosition,
               loading: widget.fetchingLocation,
               onLocateTap: () {
@@ -1184,11 +1255,11 @@ class _FloatingHeader extends StatelessWidget {
                 children: [
                   TextSpan(
                     text: 'Geo',
-                    style: TextStyle(color: Color(0xFF7C3AED)), // purple
+                    style: TextStyle(color: _kAccent),
                   ),
                   TextSpan(
                     text: 'Tag',
-                    style: TextStyle(color: Color(0xFF5B21B6)), // dark
+                    style: TextStyle(color: _kInk),
                   ),
                 ],
               ),
@@ -1217,20 +1288,14 @@ class _FloatingHeader extends StatelessWidget {
           width: 38,
           height: 38,
           decoration: BoxDecoration(
-            color: _kSurface,
+            color: _kFab,
             shape: BoxShape.circle,
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.1),
-                blurRadius: 8,
-                offset: const Offset(0, 2),
-              ),
-            ],
+            border: Border.all(color: _kSep),
           ),
           child: const Icon(
             Icons.refresh_rounded,
             size: 18,
-            color: _kInkMuted,
+            color: _kInk,
           ),
         ),
       ),
@@ -1246,11 +1311,7 @@ class _FloatingHeader extends StatelessWidget {
           width: 38,
           height: 38,
           decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [_kAccent, Color(0xFF5445E6)],
-            ),
+            color: _kAccent,
             shape: BoxShape.circle,
           ),
           child: const Icon(
@@ -1279,18 +1340,11 @@ class _SearchBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final filtered = activeCount > 0;
     return Container(
-      height: 50,
+      height: 48,
       decoration: BoxDecoration(
-        color: _kSurface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: _kSep, width: 1.5),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.08),
-            blurRadius: 12,
-            offset: const Offset(0, 3),
-          ),
-        ],
+        color: const Color(0xE61C222E),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: _kSep),
       ),
       child: Row(
         children: [
@@ -1303,7 +1357,7 @@ class _SearchBar extends StatelessWidget {
               controller: controller,
               style: const TextStyle(fontSize: 14, color: _kInk),
               decoration: const InputDecoration(
-                hintText: 'Search profiles…',
+                hintText: 'Job number, recipient, zip',
                 hintStyle: TextStyle(color: _kSubtle, fontSize: 14),
                 border: InputBorder.none,
                 contentPadding: EdgeInsets.symmetric(horizontal: 10),
@@ -1311,49 +1365,43 @@ class _SearchBar extends StatelessWidget {
               ),
             ),
           ),
-          // Single filter entry point — opens the filter sheet (profile +
-          // distance/ZIP + service level).
           GestureDetector(
             onTap: () {
               HapticFeedback.lightImpact();
               onFilterTap();
             },
             child: Container(
-              margin: const EdgeInsets.only(right: 8),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              width: 36,
+              height: 36,
+              margin: const EdgeInsets.only(right: 6),
               decoration: BoxDecoration(
-                color: filtered
-                    ? _kAccent.withValues(alpha: 0.1)
-                    : Colors.transparent,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.tune_rounded,
-                    size: 19,
-                    color: filtered ? _kAccent : _kInkMuted,
+                color: _kAccent,
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: _kAccent.withValues(alpha: 0.35),
+                    blurRadius: 8,
                   ),
-                  if (filtered) ...[
-                    const SizedBox(width: 5),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 5, vertical: 1),
-                      decoration: BoxDecoration(
-                        color: _kAccent,
-                        borderRadius: BorderRadius.circular(99),
-                      ),
-                      child: Text(
-                        '$activeCount',
-                        style: const TextStyle(
-                          fontSize: 10,
+                ],
+              ),
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  const Icon(Icons.tune_rounded, size: 18, color: Colors.white),
+                  if (filtered)
+                    Positioned(
+                      top: 4,
+                      right: 4,
+                      child: Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
                           color: Colors.white,
-                          fontWeight: FontWeight.w800,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: _kAccent, width: 1.5),
                         ),
                       ),
                     ),
-                  ],
                 ],
               ),
             ),
@@ -1418,34 +1466,33 @@ class _PendingUploadsPill extends StatelessWidget {
           return Padding(
             padding: const EdgeInsets.only(top: 8),
             child: Align(
-              alignment: Alignment.center,
+              alignment: Alignment.centerLeft,
               child: GestureDetector(
                 onTap: UploadQueueService.instance.process,
                 child: Container(
                   padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                   decoration: BoxDecoration(
-                    color: _kAccent,
+                    color: _kAlert,
                     borderRadius: BorderRadius.circular(20),
                     boxShadow: [
                       BoxShadow(
-                        color: _kAccent.withValues(alpha: 0.3),
-                        blurRadius: 8,
+                        color: _kAlert.withValues(alpha: 0.35),
+                        blurRadius: 10,
                         offset: const Offset(0, 2),
                       ),
                     ],
                   ),
-                  child: Row(
+                  child: const Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.cloud_upload_rounded,
-                          size: 13, color: Colors.white),
-                      const SizedBox(width: 6),
+                      Icon(Icons.warning_rounded,
+                          size: 14, color: Colors.white),
+                      SizedBox(width: 6),
                       Text(
-                        '$count upload${count > 1 ? 's' : ''} pending · '
-                        'retrying…',
-                        style: const TextStyle(
-                          fontSize: 11,
+                        'Retry Uploads',
+                        style: TextStyle(
+                          fontSize: 13,
                           color: Colors.white,
                           fontWeight: FontWeight.w700,
                         ),
@@ -1478,15 +1525,9 @@ class _LocationFab extends StatelessWidget {
       width: 46,
       height: 46,
       decoration: BoxDecoration(
-        color: _kSurface,
+        color: _kFab,
         shape: BoxShape.circle,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.16),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
-          ),
-        ],
+        border: Border.all(color: _kSep),
       ),
       child: loading
           ? const Center(
@@ -1500,11 +1541,9 @@ class _LocationFab extends StatelessWidget {
               ),
             )
           : Icon(
-              userPosition != null
-                  ? Icons.location_on_outlined
-                  : Icons.location_on_outlined,
-              size: 22,
-              color: userPosition != null ? _kAccent : _kSubtle,
+              Icons.my_location_rounded,
+              size: 20,
+              color: userPosition != null ? _kInk : _kSubtle,
             ),
     ),
   );
@@ -1569,186 +1608,182 @@ class _EmptyFilterCard extends StatelessWidget {
   );
 }
 
-// ── Bottom stats card ─────────────────────────────────────────────────────────
-class _BottomCard extends StatelessWidget {
-  const _BottomCard({
-    required this.count,
-    required this.groupCount,
-    required this.svcCounts,
-    required this.onFitAll,
-    required this.onViewList,
+// ── Selected-pin job card (New Attempt / View Job) ────────────────────────────
+class _JobPreviewCard extends StatelessWidget {
+  const _JobPreviewCard({
+    required this.photo,
+    required this.attempts,
+    required this.jobId,
+    required this.address,
+    required this.onNewAttempt,
+    required this.onViewJob,
+    this.distance,
+    this.client,
   });
-  final int              count;
-  final int              groupCount;
-  final Map<String, int> svcCounts;
-  final VoidCallback     onFitAll;
-  final VoidCallback     onViewList;
+
+  final PhotoModel photo;
+  final int attempts;
+  final String jobId;
+  final String? distance;
+  final String address;
+  final String? client;
+  final VoidCallback onNewAttempt;
+  final VoidCallback onViewJob;
 
   @override
   Widget build(BuildContext context) {
-    final svcEntries = svcCounts.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-
     return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
       decoration: BoxDecoration(
-        color: _kSurface,
-        borderRadius: BorderRadius.circular(22),
+        color: const Color(0xF21C222E),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: _kSep),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.11),
-            blurRadius: 22,
+            color: Colors.black.withValues(alpha: 0.35),
+            blurRadius: 24,
             offset: const Offset(0, 8),
           ),
         ],
       ),
       child: Column(
-        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Drag handle
+          Row(
+            children: [
+              Text(jobId,
+                  style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: _kInkMuted)),
+              const Spacer(),
+              if (distance != null)
+                Text(distance!,
+                    style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: _kInkMuted)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            photo.profileName ?? 'Unknown',
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+              color: _kInk,
+              height: 1.25,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            address,
+            style: const TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: _kAccent,
+              height: 1.3,
+            ),
+          ),
+          if (client != null && client!.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            const Text('Client',
+                style: TextStyle(fontSize: 12, color: _kInkMuted)),
+            const SizedBox(height: 2),
+            Text(client!,
+                style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: _kInk)),
+          ],
           const SizedBox(height: 10),
-          Center(
-            child: Container(
-              width: 32,
-              height: 3,
-              decoration: BoxDecoration(
-                color: _kSep,
-                borderRadius: BorderRadius.circular(2),
-              ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: const Color(0xFF2A3340),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(
+              '$attempts Attempt${attempts == 1 ? '' : 's'}',
+              style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: _kInkMuted),
             ),
           ),
           const SizedBox(height: 14),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Header row
-                Row(
-                  children: [
-                    Container(
-                      width: 36,
-                      height: 36,
-                      decoration: BoxDecoration(
-                        color: _kAccent.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: const Icon(
-                        Icons.location_on_rounded,
-                        size: 18,
-                        color: _kAccent,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'Geotagged Photos',
-                            style: TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w700,
-                              color: _kInk,
-                              letterSpacing: -0.2,
-                            ),
-                          ),
-                          Text(
-                            '$count photo${count != 1 ? 's' : ''}'
-                            ' · $groupCount pin${groupCount != 1 ? 's' : ''}',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: _kSubtle,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
+          Row(
+            children: [
+              Expanded(
+                child: _CardBtn(
+                  icon: Icons.add_rounded,
+                  label: 'New Attempt',
+                  onTap: onNewAttempt,
+                  filled: true,
                 ),
-
-                // Service type breakdown
-                if (svcEntries.isNotEmpty) ...[
-                  const SizedBox(height: 14),
-                  Row(
-                    children: svcEntries.map((e) {
-                      final color = categoryOf(e.key).color;
-                      final label = categoryOf(e.key).label;
-                      return Padding(
-                        padding: const EdgeInsets.only(right: 14),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Container(
-                              width: 8,
-                              height: 8,
-                              decoration: BoxDecoration(
-                                color: color,
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                            const SizedBox(width: 5),
-                            Text(
-                              '$label ${e.value}',
-                              style: const TextStyle(
-                                fontSize: 11.5,
-                                fontWeight: FontWeight.w600,
-                                color: _kInkMuted,
-                              ),
-                            ),
-                          ],
-                        ),
-                      );
-                    }).toList(),
-                  ),
-                  const SizedBox(height: 8),
-                  // Proportional color bar
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(4),
-                    child: SizedBox(
-                      height: 4,
-                      child: Row(
-                        children: svcEntries
-                            .map((e) => Expanded(
-                                  flex: e.value,
-                                  child: Container(
-                                      color: categoryOf(e.key).color),
-                                ))
-                            .toList(),
-                      ),
-                    ),
-                  ),
-                ],
-
-                const SizedBox(height: 14),
-                // Action buttons
-                Row(
-                  children: [
-                    Expanded(
-                      child: _CardBtn(
-                        icon: Icons.fullscreen_rounded,
-                        label: 'Fit All',
-                        onTap: onFitAll,
-                        filled: true,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: _CardBtn(
-                        icon: Icons.format_list_bulleted_rounded,
-                        label: 'View List',
-                        onTap: onViewList,
-                        filled: false,
-                      ),
-                    ),
-                  ],
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _CardBtn(
+                  icon: Icons.visibility_outlined,
+                  label: 'View Job',
+                  onTap: onViewJob,
+                  filled: false,
                 ),
-                const SizedBox(height: 4),
-              ],
-            ),
+              ),
+            ],
           ),
-          const SizedBox(height: 8),
         ],
+      ),
+    );
+  }
+}
+
+// ── Bottom jobs sheet ─────────────────────────────────────────────────────────
+class _BottomCard extends StatelessWidget {
+  const _BottomCard({
+    required this.count,
+    required this.onViewList,
+  });
+  final int count;
+  final VoidCallback onViewList;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onViewList,
+      child: Container(
+        decoration: const BoxDecoration(
+          color: Color(0xF20F1219),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+        ),
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: _kSubtle.withValues(alpha: 0.55),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '$count Jobs',
+              style: const TextStyle(
+                fontSize: 22,
+                fontWeight: FontWeight.w800,
+                color: _kInk,
+                letterSpacing: -0.4,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1776,18 +1811,9 @@ class _CardBtn extends StatelessWidget {
     child: Container(
       padding: const EdgeInsets.symmetric(vertical: 13),
       decoration: BoxDecoration(
-        gradient: filled
-            ? const LinearGradient(
-                colors: [Color(0xFF7C3AED), Color(0xFF6D28D9)],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              )
-            : null,
-        color: filled ? null : _kAccent.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(12),
-        border: filled
-            ? null
-            : Border.all(color: _kAccent.withValues(alpha: 0.22)),
+        color: filled ? _kAccent : const Color(0xFF2A3340),
+        borderRadius: BorderRadius.circular(24),
+        border: filled ? null : Border.all(color: _kSep),
         boxShadow: filled
             ? [
                 BoxShadow(
@@ -1801,14 +1827,14 @@ class _CardBtn extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(icon, size: 15, color: filled ? Colors.white : _kAccent),
+          Icon(icon, size: 15, color: Colors.white),
           const SizedBox(width: 6),
           Text(
             label,
-            style: TextStyle(
+            style: const TextStyle(
               fontSize: 13,
               fontWeight: FontWeight.w700,
-              color: filled ? Colors.white : _kAccent,
+              color: Colors.white,
             ),
           ),
         ],
@@ -1823,15 +1849,52 @@ class _PinMarker extends StatelessWidget {
     required this.imageUrl,
     required this.color,
     required this.count,
+    this.label,
   });
   final String imageUrl;
   final Color  color;
   final int    count;
+  final String? label;
 
   @override
   Widget build(BuildContext context) => Column(
     mainAxisSize: MainAxisSize.min,
     children: [
+      if (label != null) ...[
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: _kAccent,
+            borderRadius: BorderRadius.circular(8),
+            boxShadow: [
+              BoxShadow(
+                color: _kAccent.withValues(alpha: 0.4),
+                blurRadius: 8,
+              ),
+            ],
+          ),
+          child: Text(
+            label!,
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: Colors.white,
+            ),
+          ),
+        ),
+        Container(
+          width: 0,
+          height: 0,
+          decoration: const BoxDecoration(
+            border: Border(
+              left: BorderSide(width: 5, color: Colors.transparent),
+              right: BorderSide(width: 5, color: Colors.transparent),
+              top: BorderSide(width: 6, color: _kAccent),
+            ),
+          ),
+        ),
+        const SizedBox(height: 4),
+      ],
       Stack(
         clipBehavior: Clip.none,
         alignment: Alignment.center,
@@ -1950,8 +2013,8 @@ class _AwaitingAttemptMarker extends StatelessWidget {
         height: 34,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: Colors.white,
-          border: Border.all(color: _grey, width: 2),
+        color: const Color(0xFF1C222E),
+        border: Border.all(color: _kAccent, width: 2),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withValues(alpha: 0.12),
@@ -2032,10 +2095,10 @@ class _FilterPillRow extends StatelessWidget {
       duration: const Duration(milliseconds: 150),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
       decoration: BoxDecoration(
-        color: selected ? color : _kSurface,
+        color: selected ? color : const Color(0xCC1C222E),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
-          color: selected ? color : Colors.black.withValues(alpha: 0.08),
+          color: selected ? color : _kSep,
         ),
         boxShadow: selected
             ? [BoxShadow(color: color.withValues(alpha: 0.3), blurRadius: 8)]
@@ -2071,15 +2134,9 @@ class _MapListToggle extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.all(3),
     decoration: BoxDecoration(
-      color: _kSurface,
+      color: const Color(0xCC1C222E),
       borderRadius: BorderRadius.circular(12),
-      boxShadow: [
-        BoxShadow(
-          color: Colors.black.withValues(alpha: 0.06),
-          blurRadius: 8,
-          offset: const Offset(0, 2),
-        ),
-      ],
+      border: Border.all(color: _kSep),
     ),
     child: Row(
       mainAxisSize: MainAxisSize.min,
@@ -2134,30 +2191,26 @@ class _MapListToggle extends StatelessWidget {
 // widget/behavior, just relocated into this stack. ──
 class _ZoomControls extends StatelessWidget {
   const _ZoomControls({
-    required this.mapController,
+    required this.onFitTap,
+    required this.onRefreshTap,
     required this.userPosition,
     required this.loading,
     required this.onLocateTap,
   });
-  final MapController mapController;
+  final VoidCallback onFitTap;
+  final VoidCallback onRefreshTap;
   final Position? userPosition;
   final bool loading;
   final VoidCallback onLocateTap;
-
-  void _zoom(double delta) {
-    final camera = mapController.camera;
-    final next = (camera.zoom + delta).clamp(2.0, 18.0);
-    mapController.move(camera.center, next);
-  }
 
   @override
   Widget build(BuildContext context) => Column(
     mainAxisSize: MainAxisSize.min,
     children: [
-      _zoomBtn(icon: Icons.add_rounded, onTap: () => _zoom(1)),
+      _fabBtn(icon: Icons.crop_free_rounded, onTap: onFitTap),
       const SizedBox(height: 8),
-      _zoomBtn(icon: Icons.remove_rounded, onTap: () => _zoom(-1)),
-      const SizedBox(height: 12),
+      _fabBtn(icon: Icons.refresh_rounded, onTap: onRefreshTap),
+      const SizedBox(height: 8),
       _LocationFab(
         userPosition: userPosition,
         loading: loading,
@@ -2166,7 +2219,7 @@ class _ZoomControls extends StatelessWidget {
     ],
   );
 
-  Widget _zoomBtn({required IconData icon, required VoidCallback onTap}) =>
+  Widget _fabBtn({required IconData icon, required VoidCallback onTap}) =>
       Material(
         color: Colors.transparent,
         child: GestureDetector(
@@ -2175,20 +2228,14 @@ class _ZoomControls extends StatelessWidget {
             onTap();
           },
           child: Container(
-            width: 40,
-            height: 40,
+            width: 44,
+            height: 44,
             decoration: BoxDecoration(
-              color: _kSurface,
+              color: _kFab,
               shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.1),
-                  blurRadius: 8,
-                  offset: const Offset(0, 2),
-                ),
-              ],
+              border: Border.all(color: _kSep),
             ),
-            child: Icon(icon, size: 20, color: _kInkMuted),
+            child: Icon(icon, size: 20, color: _kInk),
           ),
         ),
       );

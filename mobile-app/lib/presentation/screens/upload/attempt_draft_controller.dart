@@ -9,6 +9,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../../core/network/api_client.dart';
 import '../../../core/network/network_quality.dart';
@@ -104,6 +105,17 @@ class AttemptDraftController extends ChangeNotifier {
   /// into [selectedImages] (that list is local-file-path only), so they're
   /// surfaced as a count (see `attempt_photos_screen.dart`), not thumbnails.
   int existingPhotoCount = 0;
+
+  String? _localSnapshotId;
+
+  /// Stable key for this draft's slot in [AttemptSnapshotStore]. Existing
+  /// attempts key off their server id (so cached edits always land back on
+  /// the right record); brand-new attempts get a lazily-generated id that
+  /// persists for the life of this controller, so repeated Quick Saves of
+  /// the same in-progress attempt update one slot instead of piling up.
+  String get snapshotId => existingAttemptId != null
+      ? 'existing_$existingAttemptId'
+      : (_localSnapshotId ??= const Uuid().v4());
 
   bool _disposed = false;
 
@@ -209,8 +221,10 @@ class AttemptDraftController extends ChangeNotifier {
       poorNetwork = poor;
       notifyListeners();
       if (poor) {
-        _ensureSnapshotTimer();
-        unawaited(writeAttemptSnapshot(source: 'poor_network_auto'));
+        // High latency / offline: freeze the location+time from *now*
+        // (while service is bad) and continually snapshot form inputs so
+        // reconnect never substitutes a later GPS fix.
+        unawaited(_beginPoorNetworkCaching());
       } else {
         _snapshotTimer?.cancel();
         _snapshotTimer = null;
@@ -218,11 +232,54 @@ class AttemptDraftController extends ChangeNotifier {
         if (wasPoor) onNetworkImproved?.call();
       }
     });
-    if (poorNetwork) _ensureSnapshotTimer();
+    if (poorNetwork) {
+      unawaited(_beginPoorNetworkCaching());
+    }
+  }
+
+  /// Freeze current/last-known geotag, stamp missing photo times, start the
+  /// 10s continual snapshot loop, and write an immediate snapshot.
+  Future<void> _beginPoorNetworkCaching() async {
+    if (_disposed) return;
+    await _freezeLocationForPoorNetwork();
+    if (_disposed) return;
+    _ensureSnapshotTimer();
+    await writeAttemptSnapshot(source: 'poor_network_auto');
+  }
+
+  /// Lock lat/lng (+ any unset photo capture times) to whatever we know
+  /// while signal is bad — last-known GPS if the form has no fix yet.
+  Future<void> _freezeLocationForPoorNetwork() async {
+    if (locationFrozenFromCache) {
+      _stampMissingTakenAts();
+      return;
+    }
+    if (latitude == null || longitude == null) {
+      try {
+        final last = await Geolocator.getLastKnownPosition();
+        if (last != null && !_disposed) {
+          latitude = last.latitude;
+          longitude = last.longitude;
+          gpsAccuracy = last.accuracy;
+        }
+      } catch (_) {}
+    }
+    if (_disposed) return;
+    _stampMissingTakenAts();
+    if (latitude != null && longitude != null) {
+      locationFrozenFromCache = true;
+      notifyListeners();
+    }
+  }
+
+  void _stampMissingTakenAts() {
+    for (var i = 0; i < takenAts.length; i++) {
+      takenAts[i] ??= DateTime.now().toUtc().toIso8601String();
+    }
   }
 
   void _ensureSnapshotTimer() {
-    _snapshotTimer?.cancel();
+    if (_snapshotTimer != null) return;
     _snapshotTimer = Timer.periodic(const Duration(seconds: 10), (_) {
       if (!poorNetwork || _disposed) return;
       unawaited(writeAttemptSnapshot(source: 'poor_network_auto'));
@@ -258,8 +315,14 @@ class AttemptDraftController extends ChangeNotifier {
       longitude != null &&
       uploadState == AttemptUploadState.idle;
 
+  /// True once this attempt has a photo either newly added this session or
+  /// already sitting on the server from before (see [loadExistingAttempt] /
+  /// [existingPhotoCount]) — resuming an attempt that already has a photo
+  /// must not re-demand a brand-new one just to finish editing other fields.
+  bool get hasPhoto => selectedImages.isNotEmpty || existingPhotoCount > 0;
+
   bool get canUpload =>
-      selectedImages.isNotEmpty &&
+      hasPhoto &&
       selectedProfile != null &&
       latitude != null &&
       fileNumberController.text.trim().isNotEmpty &&
@@ -269,7 +332,7 @@ class AttemptDraftController extends ChangeNotifier {
   /// enabled.
   String missingFieldsHint() {
     final missing = <String>[];
-    if (selectedImages.isEmpty) missing.add('photo');
+    if (!hasPhoto) missing.add('photo');
     if (selectedProfile == null) missing.add('profile');
     if (fileNumberController.text.trim().isEmpty) missing.add('file number');
     if (latitude == null && !isLoadingLocation) missing.add('location');
@@ -279,13 +342,17 @@ class AttemptDraftController extends ChangeNotifier {
   }
 
   /// Continual / manual snapshot. Freezes the location+timestamps currently
-  /// on the form (or last-known GPS if still null).
+  /// on the form (or last-known GPS if still null and not already frozen).
+  /// Subsequent snapshots while frozen update form inputs/photos only —
+  /// lat/lng and already-stamped [takenAts] stay as cached.
   Future<void> writeAttemptSnapshot({required String source}) async {
     if (_snapshotBusy) return;
     if (selectedProfile == null && selectedImages.isEmpty) return;
 
-    // Prefer last-known GPS if we somehow lost coords mid-session.
-    if (latitude == null || longitude == null) {
+    // Prefer last-known GPS only when we still have no coords and nothing
+    // is locked yet. Never replace a frozen geotag.
+    if (!locationFrozenFromCache &&
+        (latitude == null || longitude == null)) {
       try {
         final last = await Geolocator.getLastKnownPosition();
         if (last != null && !_disposed) {
@@ -298,18 +365,20 @@ class AttemptDraftController extends ChangeNotifier {
     }
     if (latitude == null || longitude == null) return;
 
-    // Ensure every photo has a frozen capture time (never regenerate later).
-    for (var i = 0; i < takenAts.length; i++) {
-      takenAts[i] ??= DateTime.now().toUtc().toIso8601String();
-    }
+    // Stamp missing capture times once; never regenerate existing ones.
+    _stampMissingTakenAts();
 
     _snapshotBusy = true;
     try {
       await AttemptSnapshotStore.save(
+        id: snapshotId,
         payload: attemptPayload(source: source),
         photoFiles: List<File>.from(selectedImages),
       );
-      if (!_disposed && source == 'quick_save') {
+      // Quick Save and poor-network autosave both lock GPS/time so reconnect
+      // cannot substitute the user's later location.
+      if (!_disposed &&
+          (source == 'quick_save' || source == 'poor_network_auto')) {
         locationFrozenFromCache = true;
         notifyListeners();
       }
@@ -347,66 +416,17 @@ class AttemptDraftController extends ChangeNotifier {
     return true;
   }
 
-  /// Prefer durable poor-network snapshot; otherwise fall back to pin draft.
+  /// Falls back to the plain pin-draft check. Cached photo/GPS snapshots
+  /// (Quick Save / Save & Exit / poor-network auto-save) are no longer
+  /// auto-offered here on blank-new-attempt open — with multiple snapshots
+  /// now cacheable at once (see [AttemptSnapshotStore]), the Attempts
+  /// Dashboard's "Quick Saved" list is the explicit, unambiguous place to
+  /// resume one instead of guessing which single snapshot to pop up.
   /// Returns true when location was restored from a frozen snapshot.
   Future<bool> maybeRestoreSnapshotOrDraft(
     BuildContext context,
     WidgetRef ref,
   ) async {
-    var snapshot = await AttemptSnapshotStore.read();
-    if (_disposed) return locationFrozenFromCache;
-    // A snapshot quick-saved while resuming a specific existing attempt
-    // belongs to that attempt, not to "a new attempt in progress" — offering
-    // to review it here (the blank-new-attempt entry point) would resume the
-    // wrong record under a misleading dialog. Discard it silently and fall
-    // through to the plain pin-draft check below.
-    if (snapshot != null && snapshot['existingAttemptId'] != null) {
-      await AttemptSnapshotStore.clear();
-      snapshot = null;
-    }
-    final pendingSnapshot = snapshot;
-    if (pendingSnapshot != null && context.mounted) {
-      final review = await showDialog<String>(
-        context: context,
-        useRootNavigator: true,
-        builder: (dialogCtx) {
-          final name = pendingSnapshot['profileName'] as String? ?? 'profile';
-          final when = pendingSnapshot['snapshotAt'] as String? ?? '';
-          return AlertDialog(
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(20)),
-            title: const Text('Cached attempt ready'),
-            content: Text(
-              'A quick-saved attempt for $name was stored while the network '
-              'was poor.\n\n'
-              'Location and timestamp are frozen from the cache'
-              '${when.isNotEmpty ? ' ($when)' : ''}. '
-              'Review and upload without refreshing GPS.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(dialogCtx, 'discard'),
-                child: const Text('Discard'),
-              ),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(dialogCtx, 'review'),
-                child: const Text('Review'),
-              ),
-            ],
-          );
-        },
-      );
-      if (_disposed) return locationFrozenFromCache;
-      if (review == 'review') {
-        await applyAttemptMap(pendingSnapshot, freezeLocation: true, ref: ref);
-        _offeredSnapshotAt = pendingSnapshot['snapshotAt'] as String?;
-        return true;
-      }
-      if (review == 'discard') {
-        await AttemptSnapshotStore.clear();
-      }
-    }
-    if (_disposed) return locationFrozenFromCache;
     await maybeRestoreDraft(context, ref);
     return locationFrozenFromCache;
   }
@@ -416,11 +436,30 @@ class AttemptDraftController extends ChangeNotifier {
     WidgetRef ref,
   ) async {
     if (_disposed || uploadState != AttemptUploadState.idle) return;
-    final snapshot = await AttemptSnapshotStore.read();
+    final snapshot = await AttemptSnapshotStore.read(snapshotId);
     if (_disposed || snapshot == null) return;
     final at = snapshot['snapshotAt'] as String?;
     if (at != null && at == _offeredSnapshotAt) return;
     if (!context.mounted) return;
+
+    final profileName = snapshot['profileName'] as String?;
+    final address = (snapshot['address'] as String?)?.trim();
+    final lat = snapshot['latitude'];
+    final lng = snapshot['longitude'];
+    final photoCount = (snapshot['photoPaths'] as List?)?.length ?? 0;
+
+    final lines = <String>[
+      if (profileName != null && profileName.isNotEmpty)
+        'Profile: $profileName',
+      if (address != null && address.isNotEmpty) 'Location: $address',
+      if (lat != null && lng != null)
+        'Cached GPS: '
+            '${(lat as num).toStringAsFixed(5)}, '
+            '${(lng as num).toStringAsFixed(5)}',
+      if (photoCount > 0)
+        '$photoCount photo${photoCount == 1 ? '' : 's'} cached',
+      if (at != null) 'Snapshot: $at',
+    ];
 
     final review = await showDialog<bool>(
       context: context,
@@ -429,10 +468,10 @@ class AttemptDraftController extends ChangeNotifier {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Text('Network improved'),
         content: Text(
-          'Your latest cached attempt'
-          '${snapshot['profileName'] != null ? ' for ${snapshot['profileName']}' : ''} '
-          'is ready to review.\n\n'
-          'Upload will use the cached location/time — not your current GPS.',
+          'Your latest cached attempt is ready to review and save.\n\n'
+          '${lines.isEmpty ? '' : '${lines.join('\n')}\n\n'}'
+          'Upload will use the cached location and capture time from when '
+          'signal was bad — not your current GPS or clock.',
         ),
         actions: [
           TextButton(
@@ -447,13 +486,40 @@ class AttemptDraftController extends ChangeNotifier {
       ),
     );
     if (_disposed) return;
+    // Remember we already offered this snapshot either way, so probe ticks
+    // don't re-spam the dialog. "Later" still leaves the draft frozen and
+    // visible under Drafts on the Attempts dashboard.
+    _offeredSnapshotAt = at;
     if (review == true) {
       await applyAttemptMap(snapshot, freezeLocation: true, ref: ref);
-      _offeredSnapshotAt = at;
       if (context.mounted) {
-        showSnack(context, 'Cached location locked — review fields, then upload.');
+        showSnack(
+          context,
+          'Cached location locked — review fields, then upload.',
+        );
       }
+    } else if (!_disposed) {
+      // Keep freeze even if they dismiss — reconnect must not refresh GPS.
+      locationFrozenFromCache = true;
+      notifyListeners();
     }
+  }
+
+  /// Loads a locally-cached snapshot (Attempts Dashboard → "Quick Saved" →
+  /// tap a card) into this draft. Adopts the snapshot's own id as this
+  /// controller's [snapshotId] — for an existing-attempt snapshot that's
+  /// already true via [existingAttemptId]; for a brand-new-attempt snapshot
+  /// this makes further edits/Quick Saves overwrite the same cached slot
+  /// instead of forking a duplicate.
+  Future<void> resumeFromLocalSnapshot(
+    Map<String, dynamic> snapshot, {
+    required WidgetRef ref,
+  }) async {
+    existingAttemptId = snapshot['existingAttemptId'] as int?;
+    if (existingAttemptId == null) {
+      _localSnapshotId = snapshot['snapshotId'] as String?;
+    }
+    await applyAttemptMap(snapshot, freezeLocation: true, ref: ref);
   }
 
   Future<void> applyAttemptMap(
@@ -549,13 +615,12 @@ class AttemptDraftController extends ChangeNotifier {
     // population itself, not just for edits made afterward.
     existingAttemptId = attempt.id;
     existingPhotoCount = attempt.photos.length;
-    // Also clear anything already sitting in the shared local-draft slot —
-    // it may hold a stale local draft, or (defensively, in case this ever
-    // runs before existingAttemptId takes effect) a copy of this very
-    // population — either way it must not surface as "Resume Draft?" the
-    // next time an unrelated new attempt is started.
+    // Also clear anything already sitting in this attempt's own snapshot
+    // slot — it may hold a stale local snapshot from before this reload;
+    // either way it must not surface as a stale "Quick Saved" card once
+    // fresh server data has just been loaded on top of it.
     await LocalStorage.clearPinDraft();
-    await AttemptSnapshotStore.clear();
+    await AttemptSnapshotStore.clear(snapshotId);
     final map = <String, dynamic>{
       'note': attempt.note,
       'address': attempt.address,
@@ -762,6 +827,16 @@ class AttemptDraftController extends ChangeNotifier {
     BuildContext context,
     WidgetRef ref,
   ) async {
+    if (locationFrozenFromCache) {
+      if (context.mounted) {
+        showSnack(
+          context,
+          'Location is locked from cache. Unlock from the hub banner to change it.',
+          isError: true,
+        );
+      }
+      return;
+    }
     latitude = picked.latLng.latitude;
     longitude = picked.latLng.longitude;
     locationError = false;
@@ -1031,7 +1106,7 @@ class AttemptDraftController extends ChangeNotifier {
     saveDraft();
   }
 
-  void setSelectedProfile(ProfileModel p) {
+  void setSelectedProfile(ProfileModel p, {WidgetRef? ref}) {
     selectedProfile = p;
     companyId = companyOrDefault(p.company).id;
     if (!companyOrDefault(companyId).allowsPriority(selectedCategory)) {
@@ -1039,6 +1114,40 @@ class AttemptDraftController extends ChangeNotifier {
     }
     notifyListeners();
     saveDraft();
+    // Prefill from this profile's most recent attempt (delivery style / pay
+    // rate tend to repeat per-profile) — only for a brand-new attempt with
+    // nothing typed yet; never clobber a real resumed record or edits the
+    // user already made.
+    if (ref != null && existingAttemptId == null) {
+      unawaited(_prefillFromLatestAttempt(p.id, ref));
+    }
+  }
+
+  Future<void> _prefillFromLatestAttempt(int profileId, WidgetRef ref) async {
+    try {
+      final attempts = await ref.read(profileAttemptsProvider(profileId).future);
+      if (_disposed || attempts.isEmpty) return;
+      // Selecting a different profile mid-picker before this resolves must
+      // not stomp on it — only apply if this is still the active selection.
+      if (selectedProfile?.id != profileId) return;
+      final latest = attempts.first;
+      var changed = false;
+      if (deliveryStyle == null &&
+          kDeliveryStyles.contains(latest.completionType)) {
+        deliveryStyle = latest.completionType;
+        changed = true;
+      }
+      if (payRateController.text.trim().isEmpty && latest.payRate != null) {
+        payRateController.text = latest.payRate.toString();
+        changed = true;
+      }
+      if (changed) {
+        notifyListeners();
+        saveDraft();
+      }
+    } catch (_) {
+      // Best-effort convenience — silently skip on failure.
+    }
   }
 
   void setSelectedCategory(String value) {
@@ -1260,7 +1369,7 @@ class AttemptDraftController extends ChangeNotifier {
       }
 
       await LocalStorage.clearPinDraft();
-      await AttemptSnapshotStore.clear();
+      await AttemptSnapshotStore.clear(snapshotId);
       HapticFeedback.heavyImpact();
       uploadState = AttemptUploadState.success;
       lastUploadedPhotoId = lastId;
@@ -1278,7 +1387,7 @@ class AttemptDraftController extends ChangeNotifier {
       // to persist.
       final queued = watermarked.length - uploadedCount;
       await LocalStorage.clearPinDraft();
-      await AttemptSnapshotStore.clear();
+      await AttemptSnapshotStore.clear(snapshotId);
       HapticFeedback.heavyImpact();
       uploadState = AttemptUploadState.success;
       locationFrozenFromCache = false;

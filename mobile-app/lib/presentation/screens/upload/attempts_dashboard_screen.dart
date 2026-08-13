@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import '../../../core/storage/attempt_snapshot_store.dart';
 import '../../../core/utils/attempt_status.dart';
 import '../../../data/models/attempt.dart';
 import '../../../data/models/company.dart';
@@ -12,27 +13,56 @@ import '../../../data/models/profile_model.dart';
 import '../../providers/log_provider.dart';
 import '../../providers/profile_provider.dart';
 import '../../widgets/common/pill_chip.dart';
-import '../../widgets/common/stat_card.dart';
 import 'resume_attempt_screen.dart';
 
-/// The default screen for the Upload tab. Shows the Total/Pending/
-/// Successful/Unsuccessful stat cards (relocated from the Log screen) plus
-/// a list of pending attempts, each resumable into a wizard pre-filled with
-/// its real, already-saved server data — not a blank form. "+ New Attempt"
-/// still opens a blank wizard, identical to the old default `/upload`
-/// behavior.
-class AttemptsDashboardScreen extends ConsumerWidget {
+/// Locally-cached attempts (Quick Save / Save & Exit / poor-network
+/// auto-save) — not yet, or not fully, uploaded to the server.
+final localSnapshotsProvider =
+    FutureProvider.autoDispose<List<Map<String, dynamic>>>(
+        (ref) => AttemptSnapshotStore.readAll());
+
+/// One photo row per Attempt (multi-photo attempts would otherwise appear
+/// repeatedly). Prefer [LogEntryModel.attemptId]; fall back to photo id.
+List<LogEntryModel> _uniqueByAttempt(Iterable<LogEntryModel> logs) {
+  final seen = <int>{};
+  final out = <LogEntryModel>[];
+  for (final log in logs) {
+    final key = log.attemptId ?? log.id;
+    if (seen.add(key)) out.add(log);
+  }
+  return out;
+}
+
+/// Resolve a log photo row to its real [Attempt] (log.id is a photo id).
+Attempt? _matchAttempt(List<Attempt> attempts, LogEntryModel log) {
+  if (log.attemptId != null) {
+    for (final a in attempts) {
+      if (a.id == log.attemptId) return a;
+    }
+  }
+  for (final a in attempts) {
+    if (a.id == log.id) return a;
+    for (final p in a.photos) {
+      if (p.id == log.id) return a;
+    }
+  }
+  return null;
+}
+
+/// Upload-tab home: compact summary + Pending / Unsuccessful tabs.
+/// "New Attempt" lives in the header (no FAB overlapping the bottom nav).
+class AttemptsDashboardScreen extends ConsumerStatefulWidget {
   const AttemptsDashboardScreen({super.key});
 
-  // ── Design tokens (matches resume_attempt_screen.dart's palette — this
-  // screen is reached from the same Upload tab) ──
-  static const Color _canvas = Color(0xFFF7F5FF);
-  static const Color _surface = Color(0xFFFFFFFF);
-  static const Color _ink = Color(0xFF0F0F0F);
-  static const Color _inkMuted = Color(0xFF6B7280);
-  static const Color _inkSubtle = Color(0xFF9CA3AF);
-  static const Color _accent = Color(0xFF7C3AED);
-  static const Color _accentSoft = Color(0xFFEDE9FE);
+  static const Color _canvas = Color(0xFF0F1219);
+  static const Color _surface = Color(0xFF1C222E);
+  static const Color _ink = Color(0xFFFFFFFF);
+  static const Color _inkMuted = Color(0xFF94A3B8);
+  static const Color _inkSubtle = Color(0xFF6B7A8D);
+  static const Color _accent = Color(0xFF4A90E2);
+  static const Color _accentSoft = Color(0x1F4A90E2);
+  static const Color _border = Color(0xFF2A3340);
+  static const Color _divider = Color(0xFF2A3340);
 
   static const _emptyFilters = (
     date: null,
@@ -44,233 +74,423 @@ class AttemptsDashboardScreen extends ConsumerWidget {
   );
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final logAsync = ref.watch(logProvider(_emptyFilters));
+  ConsumerState<AttemptsDashboardScreen> createState() =>
+      _AttemptsDashboardScreenState();
+}
+
+class _AttemptsDashboardScreenState
+    extends ConsumerState<AttemptsDashboardScreen>
+    with SingleTickerProviderStateMixin {
+  late final TabController _tabController;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(() {
+      if (!_tabController.indexIsChanging) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final logAsync =
+        ref.watch(logProvider(AttemptsDashboardScreen._emptyFilters));
+    final snapshots = ref.watch(localSnapshotsProvider).valueOrNull ??
+        const <Map<String, dynamic>>[];
 
     return Scaffold(
-      backgroundColor: _canvas,
+      backgroundColor: AttemptsDashboardScreen._canvas,
       body: SafeArea(
         bottom: false,
         child: logAsync.when(
           loading: () => const Center(
-            child: CircularProgressIndicator(color: _accent),
+            child: CircularProgressIndicator(
+                color: AttemptsDashboardScreen._accent),
           ),
           error: (err, _) => _buildError(context, ref, err),
-          data: (logs) => _buildBody(context, ref, logs),
-        ),
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        backgroundColor: _accent,
-        foregroundColor: Colors.white,
-        onPressed: () => _startNewAttempt(context),
-        icon: const Icon(Icons.add_rounded),
-        label: const Text(
-          'New Attempt',
-          style: TextStyle(fontWeight: FontWeight.w700),
+          data: (logs) => _buildBody(context, ref, logs, snapshots),
         ),
       ),
     );
   }
 
-  void _startNewAttempt(BuildContext context) {
+  Future<void> _startNewAttempt(BuildContext context, WidgetRef ref) async {
     HapticFeedback.mediumImpact();
-    Navigator.of(context).push(
+    await Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const ResumeAttemptScreen()),
     );
+    ref.invalidate(localSnapshotsProvider);
+    ref.invalidate(logProvider(AttemptsDashboardScreen._emptyFilters));
   }
 
   Widget _buildBody(
     BuildContext context,
     WidgetRef ref,
     List<LogEntryModel> logs,
+    List<Map<String, dynamic>> snapshots,
   ) {
-    final pending = logs
-        .where((l) => normalizeAttemptStatus(l.attemptStatus) ==
-            kAttemptStatusPending)
-        .toList()
-      ..sort((a, b) => (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
+    final pending = _uniqueByAttempt(
+      logs.where((l) =>
+          normalizeAttemptStatus(l.attemptStatus) == kAttemptStatusPending),
+    )..sort((a, b) => (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
 
-    return CustomScrollView(
-      slivers: [
-        SliverToBoxAdapter(child: _buildHeader()),
-        SliverToBoxAdapter(child: _buildStatRow(logs)),
-        SliverToBoxAdapter(child: _buildSectionLabel(pending.length)),
-        if (pending.isEmpty)
-          SliverToBoxAdapter(child: _buildEmptyPending(context))
-        else
-          SliverList.builder(
-            itemCount: pending.length,
-            itemBuilder: (context, i) => Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-              child: _PendingAttemptCard(log: pending[i]),
+    final unsuccessful = _uniqueByAttempt(
+      logs.where((l) =>
+          normalizeAttemptStatus(l.attemptStatus) ==
+          kAttemptStatusUnsuccessful),
+    )..sort((a, b) => (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
+
+    final showingPending = _tabController.index == 0;
+    final activeList = showingPending ? pending : unsuccessful;
+    // Clearance for the elevated Upload tab in the shell bottom nav.
+    final bottomPad = MediaQuery.of(context).padding.bottom + 88.0;
+
+    return Column(
+      children: [
+        _buildHeader(context, ref),
+        _buildStatStrip(logs),
+        _buildTabs(
+          pendingCount: pending.length,
+          unsuccessfulCount: unsuccessful.length,
+        ),
+        Expanded(
+          child: RefreshIndicator(
+            color: AttemptsDashboardScreen._accent,
+            onRefresh: () async {
+              ref.invalidate(localSnapshotsProvider);
+              ref.invalidate(
+                  logProvider(AttemptsDashboardScreen._emptyFilters));
+              await ref.read(
+                  logProvider(AttemptsDashboardScreen._emptyFilters).future);
+            },
+            child: CustomScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              slivers: [
+                if (showingPending && snapshots.isNotEmpty) ...[
+                  SliverToBoxAdapter(
+                    child: _buildDraftsBanner(snapshots.length),
+                  ),
+                  SliverList.builder(
+                    itemCount: snapshots.length,
+                    itemBuilder: (context, i) => Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                      child: _QuickSavedCard(snapshot: snapshots[i]),
+                    ),
+                  ),
+                  if (activeList.isNotEmpty)
+                    const SliverToBoxAdapter(
+                      child: Padding(
+                        padding: EdgeInsets.fromLTRB(20, 8, 20, 8),
+                        child: Text(
+                          'On server',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: AttemptsDashboardScreen._inkSubtle,
+                            letterSpacing: 0.2,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+                if (activeList.isEmpty &&
+                    !(showingPending && snapshots.isNotEmpty))
+                  SliverFillRemaining(
+                    hasScrollBody: false,
+                    child: _buildEmptyList(isPending: showingPending),
+                  )
+                else if (activeList.isNotEmpty)
+                  SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                    sliver: SliverList.separated(
+                      itemCount: activeList.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 8),
+                      itemBuilder: (context, i) => _AttemptListCard(
+                        log: activeList[i],
+                        statusValue: showingPending
+                            ? kAttemptStatusPending
+                            : kAttemptStatusUnsuccessful,
+                      ),
+                    ),
+                  ),
+                SliverToBoxAdapter(child: SizedBox(height: bottomPad)),
+              ],
             ),
           ),
-        const SliverToBoxAdapter(child: SizedBox(height: 100)),
+        ),
       ],
     );
   }
 
-  // ── Header ──────────────────────────────────────────────────────────────
-  Widget _buildHeader() => Container(
-        color: _surface,
-        padding: const EdgeInsets.fromLTRB(20, 16, 20, 14),
-        child: const Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Attempts',
-              style: TextStyle(
-                fontSize: 28,
-                fontWeight: FontWeight.w800,
-                color: _ink,
-                letterSpacing: -0.8,
-                height: 1.1,
-              ),
-            ),
-            SizedBox(height: 2),
-            Text(
-              'Resume an in-progress attempt or start a new one',
-              style: TextStyle(
-                fontSize: 13,
-                color: _inkSubtle,
-                fontWeight: FontWeight.w400,
-              ),
-            ),
-          ],
-        ),
-      );
-
-  // ── Stat row — Total/Pending/Successful/Unsuccessful over every attempt
-  // app-wide, same counting pattern the Log screen's stat row used. ──
-  Widget _buildStatRow(List<LogEntryModel> logs) {
-    final total = logs.length;
-    int countOf(String status) => logs
-        .where((l) => normalizeAttemptStatus(l.attemptStatus) == status)
-        .length;
-    final cards = [
-      StatCard(
-        label: 'Total',
-        value: '$total',
-        icon: CupertinoIcons.square_grid_2x2_fill,
-        iconColor: _accent,
-        iconBg: _accentSoft,
-      ),
-      StatCard(
-        label: kAttemptStatuses[0].label,
-        value: '${countOf(kAttemptStatusPending)}',
-        icon: kAttemptStatuses[0].icon,
-        iconColor: kAttemptStatuses[0].color,
-        iconBg: kAttemptStatuses[0].softColor,
-      ),
-      StatCard(
-        label: kAttemptStatuses[1].label,
-        value: '${countOf(kAttemptStatusSuccessful)}',
-        icon: kAttemptStatuses[1].icon,
-        iconColor: kAttemptStatuses[1].color,
-        iconBg: kAttemptStatuses[1].softColor,
-      ),
-      StatCard(
-        label: kAttemptStatuses[2].label,
-        value: '${countOf(kAttemptStatusUnsuccessful)}',
-        icon: kAttemptStatuses[2].icon,
-        iconColor: kAttemptStatuses[2].color,
-        iconBg: kAttemptStatuses[2].softColor,
-      ),
-    ];
+  Widget _buildHeader(BuildContext context, WidgetRef ref) {
     return Container(
-      color: _surface,
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      child: Column(
+      color: AttemptsDashboardScreen._surface,
+      padding: const EdgeInsets.fromLTRB(20, 14, 16, 12),
+      child: Row(
         children: [
-          Row(children: [
-            Expanded(child: cards[0]),
-            const SizedBox(width: 10),
-            Expanded(child: cards[1]),
-          ]),
-          const SizedBox(height: 10),
-          Row(children: [
-            Expanded(child: cards[2]),
-            const SizedBox(width: 10),
-            Expanded(child: cards[3]),
-          ]),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Attempts',
+                  style: TextStyle(
+                    fontSize: 26,
+                    fontWeight: FontWeight.w800,
+                    color: AttemptsDashboardScreen._ink,
+                    letterSpacing: -0.6,
+                    height: 1.15,
+                  ),
+                ),
+                SizedBox(height: 2),
+                Text(
+                  'Track, resume, or start a new job',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: AttemptsDashboardScreen._inkSubtle,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Material(
+            color: AttemptsDashboardScreen._accent,
+            borderRadius: BorderRadius.circular(12),
+            child: InkWell(
+              onTap: () => _startNewAttempt(context, ref),
+              borderRadius: BorderRadius.circular(12),
+              child: const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.add_rounded, size: 18, color: Colors.white),
+                    SizedBox(width: 4),
+                    Text(
+                      'New',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildSectionLabel(int count) => Padding(
-        padding: const EdgeInsets.fromLTRB(20, 20, 20, 10),
+  Widget _buildStatStrip(List<LogEntryModel> logs) {
+    final unique = _uniqueByAttempt(logs);
+    int countOf(String status) => unique
+        .where((l) => normalizeAttemptStatus(l.attemptStatus) == status)
+        .length;
+
+    final items = [
+      (
+        'Total',
+        '${unique.length}',
+        AttemptsDashboardScreen._accent,
+        AttemptsDashboardScreen._accentSoft,
+      ),
+      (
+        'Pending',
+        '${countOf(kAttemptStatusPending)}',
+        kAttemptStatuses[0].color,
+        kAttemptStatuses[0].softColor,
+      ),
+      (
+        'Done',
+        '${countOf(kAttemptStatusSuccessful)}',
+        kAttemptStatuses[1].color,
+        kAttemptStatuses[1].softColor,
+      ),
+      (
+        'Failed',
+        '${countOf(kAttemptStatusUnsuccessful)}',
+        kAttemptStatuses[2].color,
+        kAttemptStatuses[2].softColor,
+      ),
+    ];
+
+    return Container(
+      color: AttemptsDashboardScreen._surface,
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+        decoration: BoxDecoration(
+          color: AttemptsDashboardScreen._canvas,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: AttemptsDashboardScreen._border),
+        ),
         child: Row(
           children: [
-            const Text(
-              'Pending Attempts',
-              style: TextStyle(
-                fontSize: 15,
+            for (var i = 0; i < items.length; i++) ...[
+              if (i > 0)
+                Container(
+                  width: 1,
+                  height: 28,
+                  color: AttemptsDashboardScreen._border,
+                ),
+              Expanded(
+                child: Column(
+                  children: [
+                    Text(
+                      items[i].$2,
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        color: items[i].$3,
+                        letterSpacing: -0.4,
+                        height: 1.1,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      items[i].$1,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                        color: AttemptsDashboardScreen._inkMuted,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTabs({
+    required int pendingCount,
+    required int unsuccessfulCount,
+  }) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AttemptsDashboardScreen._surface,
+        border: Border(
+          bottom: BorderSide(color: AttemptsDashboardScreen._border),
+        ),
+      ),
+      child: TabBar(
+        controller: _tabController,
+        indicatorColor: AttemptsDashboardScreen._accent,
+        indicatorWeight: 2.5,
+        labelColor: AttemptsDashboardScreen._ink,
+        unselectedLabelColor: AttemptsDashboardScreen._inkMuted,
+        labelStyle: const TextStyle(
+          fontSize: 14,
+          fontWeight: FontWeight.w700,
+        ),
+        unselectedLabelStyle: const TextStyle(
+          fontSize: 14,
+          fontWeight: FontWeight.w500,
+        ),
+        tabs: [
+          Tab(
+            child: _TabLabel(
+              title: 'Pending',
+              count: pendingCount,
+              active: _tabController.index == 0,
+            ),
+          ),
+          Tab(
+            child: _TabLabel(
+              title: 'Unsuccessful',
+              count: unsuccessfulCount,
+              active: _tabController.index == 1,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDraftsBanner(int count) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+      child: Row(
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: const BoxDecoration(
+              color: Color(0xFFF59E0B),
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            'Drafts on this device · $count',
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFFB45309),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyList({required bool isPending}) {
+    final opt = isPending ? kAttemptStatuses[0] : kAttemptStatuses[2];
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 40),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                color: opt.softColor,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(opt.icon, size: 26, color: opt.color),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              isPending ? 'No pending attempts' : 'No unsuccessful attempts',
+              style: const TextStyle(
+                fontSize: 16,
                 fontWeight: FontWeight.w700,
-                color: _ink,
+                color: AttemptsDashboardScreen._ink,
               ),
             ),
-            const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-              decoration: BoxDecoration(
-                color: _accentSoft,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                '$count',
-                style: const TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  color: _accent,
-                ),
+            const SizedBox(height: 6),
+            Text(
+              isPending
+                  ? 'Tap New to start logging a service attempt.'
+                  : 'Failed attempts will appear in this tab.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 13,
+                color: AttemptsDashboardScreen._inkMuted,
+                height: 1.4,
               ),
             ),
           ],
         ),
-      );
-
-  Widget _buildEmptyPending(BuildContext context) => Padding(
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 40),
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(vertical: 36, horizontal: 20),
-          decoration: BoxDecoration(
-            color: _surface,
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: const Color(0xFFE5E7EB)),
-          ),
-          child: Column(
-            children: [
-              Container(
-                width: 64,
-                height: 64,
-                decoration: const BoxDecoration(
-                  color: _accentSoft,
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(CupertinoIcons.checkmark_seal,
-                    size: 30, color: _accent),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'No pending attempts',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                  color: _ink,
-                ),
-              ),
-              const SizedBox(height: 6),
-              const Text(
-                'Everything is up to date. Start a new attempt to begin.',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 13, color: _inkMuted, height: 1.4),
-              ),
-            ],
-          ),
-        ),
-      );
+      ),
+    );
+  }
 
   Widget _buildError(BuildContext context, WidgetRef ref, Object err) =>
       Center(
@@ -287,25 +507,27 @@ class AttemptsDashboardScreen extends ConsumerWidget {
                 style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w700,
-                  color: _ink,
+                  color: AttemptsDashboardScreen._ink,
                 ),
               ),
               const SizedBox(height: 8),
               Text(
                 err.toString().replaceAll('Exception: ', ''),
                 textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 13, color: _inkSubtle),
+                style: const TextStyle(
+                    fontSize: 13, color: AttemptsDashboardScreen._inkSubtle),
                 maxLines: 3,
                 overflow: TextOverflow.ellipsis,
               ),
               const SizedBox(height: 20),
               ElevatedButton(
-                onPressed: () => ref.invalidate(logProvider(_emptyFilters)),
+                onPressed: () => ref.invalidate(
+                    logProvider(AttemptsDashboardScreen._emptyFilters)),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: _accent,
+                  backgroundColor: AttemptsDashboardScreen._accent,
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14)),
+                      borderRadius: BorderRadius.circular(12)),
                 ),
                 child: const Text('Try again'),
               ),
@@ -315,27 +537,67 @@ class AttemptsDashboardScreen extends ConsumerWidget {
       );
 }
 
-/// One pending-attempt row: profile name, company, priority chip, relative
-/// time, and a Resume button that fetches the profile's full attempts to
-/// find the matching real [Attempt] before opening the wizard.
-class _PendingAttemptCard extends ConsumerStatefulWidget {
-  const _PendingAttemptCard({required this.log});
+class _TabLabel extends StatelessWidget {
+  const _TabLabel({
+    required this.title,
+    required this.count,
+    required this.active,
+  });
 
-  final LogEntryModel log;
+  final String title;
+  final int count;
+  final bool active;
 
   @override
-  ConsumerState<_PendingAttemptCard> createState() =>
-      _PendingAttemptCardState();
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(title),
+        const SizedBox(width: 6),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+          decoration: BoxDecoration(
+            color: active
+                ? AttemptsDashboardScreen._accentSoft
+                : AttemptsDashboardScreen._divider,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(
+            '$count',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: active
+                  ? AttemptsDashboardScreen._accent
+                  : AttemptsDashboardScreen._inkMuted,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 }
 
-class _PendingAttemptCardState extends ConsumerState<_PendingAttemptCard> {
-  static const Color _surface = Color(0xFFFFFFFF);
-  static const Color _ink = Color(0xFF0F0F0F);
-  static const Color _inkMuted = Color(0xFF6B7280);
-  static const Color _inkSubtle = Color(0xFF9CA3AF);
-  static const Color _accent = Color(0xFF7C3AED);
+class _AttemptListCard extends ConsumerStatefulWidget {
+  const _AttemptListCard({
+    required this.log,
+    required this.statusValue,
+  });
 
+  final LogEntryModel log;
+  final String statusValue;
+
+  @override
+  ConsumerState<_AttemptListCard> createState() => _AttemptListCardState();
+}
+
+class _AttemptListCardState extends ConsumerState<_AttemptListCard> {
   bool _loading = false;
+
+  AttemptStatusOption get _status =>
+      attemptStatusByValue(widget.statusValue) ?? kAttemptStatuses.first;
 
   String _relativeTime(String? ts) {
     if (ts == null) return '';
@@ -364,13 +626,7 @@ class _PendingAttemptCardState extends ConsumerState<_PendingAttemptCard> {
     try {
       final attempts =
           await ref.read(profileAttemptsProvider(profileId).future);
-      Attempt? match;
-      for (final a in attempts) {
-        if (a.id == log.id) {
-          match = a;
-          break;
-        }
-      }
+      final match = _matchAttempt(attempts, log);
       if (!mounted) return;
       if (match == null) {
         _showSnack('Could not find that attempt — it may have changed.',
@@ -383,6 +639,8 @@ class _PendingAttemptCardState extends ConsumerState<_PendingAttemptCard> {
           builder: (_) => ResumeAttemptScreen(resumeAttempt: match),
         ),
       );
+      ref.invalidate(localSnapshotsProvider);
+      ref.invalidate(logProvider(AttemptsDashboardScreen._emptyFilters));
     } catch (_) {
       if (mounted) {
         _showSnack('Could not load this attempt. Try again.', isError: true);
@@ -402,7 +660,7 @@ class _PendingAttemptCardState extends ConsumerState<_PendingAttemptCard> {
             isError ? const Color(0xFFEF4444) : const Color(0xFF10B981),
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 88),
       ),
     );
   }
@@ -418,102 +676,332 @@ class _PendingAttemptCardState extends ConsumerState<_PendingAttemptCard> {
         break;
       }
     }
-    final companyName = profile?.companyName ??
-        companyOrDefault(profile?.company).name;
+    final companyName =
+        profile?.companyName ?? companyOrDefault(profile?.company).name;
+    final status = _status;
+    final subtitle = (log.fileNumber?.trim().isNotEmpty ?? false)
+        ? 'File #${log.fileNumber} · $companyName'
+        : (log.address?.trim().isNotEmpty ?? false)
+            ? '${log.address} · $companyName'
+            : companyName;
+    final isUnsuccessful =
+        widget.statusValue == kAttemptStatusUnsuccessful;
 
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: _surface,
-        borderRadius: BorderRadius.circular(18),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 12,
-            offset: const Offset(0, 2),
+    return Material(
+      color: AttemptsDashboardScreen._surface,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: _loading ? null : _resume,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: AttemptsDashboardScreen._border),
           ),
-        ],
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  log.profileName ?? profile?.name ?? 'Unknown profile',
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                    color: _ink,
-                    letterSpacing: -0.2,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+          child: Row(
+            children: [
+              Container(
+                width: 3,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: status.color,
+                  borderRadius: BorderRadius.circular(2),
                 ),
-                const SizedBox(height: 3),
-                Text(
-                  companyName,
-                  style: const TextStyle(fontSize: 12.5, color: _inkMuted),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 8),
-                Row(
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    PriorityChip(
-                      category: log.category,
-                      radius: 7,
-                      border: true,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      fontSize: 10.5,
-                    ),
-                    const SizedBox(width: 8),
-                    const Icon(CupertinoIcons.clock,
-                        size: 11, color: _inkSubtle),
-                    const SizedBox(width: 3),
                     Text(
-                      _relativeTime(log.timestamp),
-                      style: const TextStyle(fontSize: 11.5, color: _inkSubtle),
+                      log.profileName ?? profile?.name ?? 'Unknown profile',
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        color: AttemptsDashboardScreen._ink,
+                        letterSpacing: -0.2,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        color: AttemptsDashboardScreen._inkMuted,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        _MiniChip(
+                          label: status.label,
+                          fg: status.color,
+                          bg: status.softColor,
+                        ),
+                        const SizedBox(width: 6),
+                        PriorityChip(
+                          category: log.category,
+                          radius: 6,
+                          border: false,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 7, vertical: 2),
+                          fontSize: 10,
+                        ),
+                        const Spacer(),
+                        Text(
+                          _relativeTime(log.timestamp),
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: AttemptsDashboardScreen._inkSubtle,
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 10),
-          SizedBox(
-            height: 36,
-            child: ElevatedButton(
-              onPressed: _loading ? null : _resume,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _accent,
-                foregroundColor: Colors.white,
-                disabledBackgroundColor: _accent.withValues(alpha: 0.5),
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-                elevation: 0,
               ),
-              child: _loading
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
+              const SizedBox(width: 4),
+              if (_loading)
+                const SizedBox(
+                  width: 36,
+                  height: 36,
+                  child: Center(
+                    child: SizedBox(
+                      width: 18,
+                      height: 18,
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        color: Colors.white,
+                        color: AttemptsDashboardScreen._accent,
                       ),
-                    )
-                  : const Text(
-                      'Resume',
-                      style: TextStyle(
-                          fontSize: 13, fontWeight: FontWeight.w700),
                     ),
-            ),
+                  ),
+                )
+              else
+                Tooltip(
+                  message: isUnsuccessful ? 'Open' : 'Resume',
+                  child: IconButton(
+                    onPressed: _resume,
+                    icon: Icon(
+                      isUnsuccessful
+                          ? CupertinoIcons.chevron_right
+                          : CupertinoIcons.play_arrow_solid,
+                      size: 18,
+                      color: AttemptsDashboardScreen._accent,
+                    ),
+                    style: IconButton.styleFrom(
+                      backgroundColor: AttemptsDashboardScreen._accentSoft,
+                      minimumSize: const Size(36, 36),
+                      fixedSize: const Size(36, 36),
+                    ),
+                  ),
+                ),
+            ],
           ),
-        ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MiniChip extends StatelessWidget {
+  const _MiniChip({
+    required this.label,
+    required this.fg,
+    required this.bg,
+  });
+
+  final String label;
+  final Color fg;
+  final Color bg;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
+          color: fg,
+        ),
+      ),
+    );
+  }
+}
+
+class _QuickSavedCard extends ConsumerStatefulWidget {
+  const _QuickSavedCard({required this.snapshot});
+
+  final Map<String, dynamic> snapshot;
+
+  @override
+  ConsumerState<_QuickSavedCard> createState() => _QuickSavedCardState();
+}
+
+class _QuickSavedCardState extends ConsumerState<_QuickSavedCard> {
+  static const Color _amber = Color(0xFFF59E0B);
+  static const Color _amberSoft = Color(0x26F59E0B);
+  static const Color _amberBorder = Color(0x66F59E0B);
+
+  bool _opening = false;
+
+  String? get _subtitle {
+    final snapshot = widget.snapshot;
+    final fileNumber = (snapshot['fileNumber'] as String?)?.trim();
+    if (fileNumber != null && fileNumber.isNotEmpty) return 'File #$fileNumber';
+    final address = (snapshot['address'] as String?)?.trim();
+    if (address != null && address.isNotEmpty) return address;
+    final style = (snapshot['completionType'] as String?)?.trim();
+    if (style != null && style.isNotEmpty) return style;
+    return null;
+  }
+
+  String _relativeTime(String? ts) {
+    if (ts == null) return '';
+    try {
+      final dt = DateTime.parse(ts).toLocal();
+      final diff = DateTime.now().difference(dt);
+      if (diff.inMinutes < 1) return 'Just now';
+      if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+      if (diff.inHours < 24) return '${diff.inHours}h ago';
+      if (diff.inDays == 1) return 'Yesterday';
+      if (diff.inDays < 7) return '${diff.inDays}d ago';
+      return DateFormat('MMM d').format(dt);
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Future<void> _resume() async {
+    setState(() => _opening = true);
+    HapticFeedback.selectionClick();
+    try {
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) =>
+              ResumeAttemptScreen(localSnapshot: widget.snapshot),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _opening = false);
+      ref.invalidate(localSnapshotsProvider);
+      ref.invalidate(logProvider(AttemptsDashboardScreen._emptyFilters));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final snapshot = widget.snapshot;
+    final isExisting = snapshot['existingAttemptId'] != null;
+    final photoCount = (snapshot['photoPaths'] as List?)?.length ?? 0;
+
+    return Material(
+      color: _amberSoft,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: _opening ? null : _resume,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: _amberBorder),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(Icons.sd_storage_outlined,
+                    size: 16, color: _amber),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      isExisting ? 'Unsynced edit' : 'Local draft',
+                      style: const TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: _amber,
+                        letterSpacing: 0.2,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      (snapshot['profileName'] as String?) ??
+                          'Unknown profile',
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: AttemptsDashboardScreen._ink,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      [
+                        if (_subtitle != null) _subtitle!,
+                        if (photoCount > 0)
+                          '$photoCount photo${photoCount > 1 ? 's' : ''}',
+                        _relativeTime(snapshot['snapshotAt'] as String?),
+                      ].where((s) => s.isNotEmpty).join(' · '),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AttemptsDashboardScreen._inkMuted,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              if (_opening)
+                const SizedBox(
+                  width: 36,
+                  height: 36,
+                  child: Center(
+                    child: SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: _amber,
+                      ),
+                    ),
+                  ),
+                )
+              else
+                IconButton(
+                  onPressed: _resume,
+                  icon: const Icon(CupertinoIcons.play_arrow_solid,
+                      size: 18, color: _amber),
+                  style: IconButton.styleFrom(
+                    backgroundColor: const Color(0xFF1C222E),
+                    minimumSize: const Size(36, 36),
+                    fixedSize: const Size(36, 36),
+                  ),
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }

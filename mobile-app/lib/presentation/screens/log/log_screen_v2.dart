@@ -10,6 +10,7 @@ import 'package:shimmer/shimmer.dart';
 
 import '../../../config/app_config.dart';
 import '../../../core/network/api_client.dart';
+import '../../../core/utils/attempt_status.dart';
 import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../core/utils/maps_launcher.dart';
@@ -32,19 +33,18 @@ class LogScreenV2 extends ConsumerStatefulWidget {
 class _LogScreenV2State extends ConsumerState<LogScreenV2>
     with TickerProviderStateMixin {
   // ── Design tokens ─────────────────────────────────────────────────────────
-  static const Color _canvas = Color(0xFFF2F2F2);
-  static const Color _surface = Color(0xFFFFFFFF);
-  static const Color _surfaceElevated = Color(0xFFFAFAFA);
-  static const Color _ink = Color(0xFF0F0F0F);
-  static const Color _inkMuted = Color(0xFF6B7280);
-  static const Color _inkSubtle = Color(0xFF9CA3AF);
-  static const Color _separator = Color(0xFFE5E7EB);
-  static const Color _accent = Color(0xFF7C3AED);
-  static const Color _accentSoft = Color(0xFFEDE9FE);
+  static const Color _canvas = Color(0xFF0F1219);
+  static const Color _surface = Color(0xFF1C222E);
+  static const Color _surfaceElevated = Color(0xFF242B38);
+  static const Color _ink = Color(0xFFFFFFFF);
+  static const Color _inkMuted = Color(0xFF94A3B8);
+  static const Color _inkSubtle = Color(0xFF6B7A8D);
+  static const Color _separator = Color(0xFF2A3340);
+  static const Color _accent = Color(0xFF4A90E2);
+  static const Color _accentSoft = Color(0x1F4A90E2);
   static const Color _rushRed = Color(0xFFDC2626);
-  static const Color _rushRedSoft = Color(0xFFFEF2F2);
-  // Filter bar — noticeably darker than the page canvas
-  static const Color _filterBar = Color(0xFFD8DCE6);
+  static const Color _rushRedSoft = Color(0x26DC2626);
+  static const Color _filterBar = Color(0xFF1C222E);
 
   // ── State ─────────────────────────────────────────────────────────────────
   DateTime? _selectedDate;
@@ -388,7 +388,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                 child: const Text('Cancel')),
             ElevatedButton(
                 onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('Send Excel')),
+                child: const Text('Send')),
           ],
         ),
       ),
@@ -1319,6 +1319,8 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     }
     final imageUrl = '${AppConfig.apiBaseUrl}${log.imageUrl}';
     final selected = _selectedLogIds.contains(log.id);
+    final unsuccessful =
+        normalizeAttemptStatus(log.attemptStatus) == kAttemptStatusUnsuccessful;
 
     return GestureDetector(
       onTap: _selectionMode
@@ -1346,7 +1348,12 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
           ],
           border: selected
               ? Border.all(color: _accent, width: 2)
-              : Border(left: BorderSide(color: cat.color, width: 3)),
+              : Border(
+                  left: BorderSide(
+                    color: unsuccessful ? const Color(0xFFDC2626) : cat.color,
+                    width: unsuccessful ? 4 : 3,
+                  ),
+                ),
         ),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(18),
@@ -1421,6 +1428,25 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                           // Priority (category) badge + distance badge
                           Row(
                             children: [
+                              if (unsuccessful) ...[
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 7, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFFEE2E2),
+                                    borderRadius: BorderRadius.circular(7),
+                                    border: Border.all(
+                                        color: const Color(0xFFDC2626)
+                                            .withValues(alpha: 0.3)),
+                                  ),
+                                  child: const Text('No',
+                                      style: TextStyle(
+                                          fontSize: 10.5,
+                                          fontWeight: FontWeight.w700,
+                                          color: Color(0xFFDC2626))),
+                                ),
+                                const SizedBox(width: 6),
+                              ],
                               PriorityChip(
                                 category: log.category,
                                 radius: 7,
@@ -1753,7 +1779,7 @@ class _LocationTextState extends State<_LocationText> {
   // ZIP or raw coordinates, in which case Maps falls back to lat/lng.
   String? _queryAddress;
   bool _fetching = false;
-  static const Color _accent = Color(0xFF7C3AED);
+  static const Color _accent = Color(0xFF4A90E2);
 
   @override
   void initState() {

@@ -66,13 +66,13 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
   Widget build(BuildContext context) => Scaffold(
       // Center color (#5445E6) matches the logo's own background square so
       // it blends in instead of showing as a mismatched box.
-      backgroundColor: const Color(0xFF5445E6),
+      backgroundColor: const Color(0xFF0F1219),
       body: Container(
         decoration: const BoxDecoration(
           gradient: RadialGradient(
             center: Alignment(0, -0.25),
             radius: 1.4,
-            colors: [Color(0xFF5445E6), Color(0xFF7C3AED)],
+            colors: [Color(0xFF1C222E), Color(0xFF0F1219)],
           ),
         ),
         child: Center(

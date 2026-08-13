@@ -28,20 +28,20 @@ class _ProfilesManagementScreenState
   // ── Design tokens — matches the rest of the app (Upload screen, Profile
   // Detail): soft-lavender canvas, white cards with a subtle shadow, colored
   // icon badges per section. ─────────────────────────────────────────────────
-  static const Color _canvas = Color(0xFFF7F5FF);
-  static const Color _surface = Color(0xFFFFFFFF);
-  static const Color _ink = Color(0xFF0F0F0F);
-  static const Color _inkMuted = Color(0xFF6B7280);
-  static const Color _inkSubtle = Color(0xFF9CA3AF);
-  static const Color _separator = Color(0xFFE5E7EB);
-  static const Color _accent = Color(0xFF7C3AED);
-  static const Color _accentSoft = Color(0xFFEDE9FE);
+  static const Color _canvas = Color(0xFF0F1219);
+  static const Color _surface = Color(0xFF1C222E);
+  static const Color _ink = Color(0xFFFFFFFF);
+  static const Color _inkMuted = Color(0xFF94A3B8);
+  static const Color _inkSubtle = Color(0xFF6B7A8D);
+  static const Color _separator = Color(0xFF2A3340);
+  static const Color _accent = Color(0xFF4A90E2);
+  static const Color _accentSoft = Color(0x1F4A90E2);
   static const Color _successGreen = Color(0xFF10B981);
   static const Color _errorRed = Color(0xFFEF4444);
   static const LinearGradient _btnGradient = LinearGradient(
     begin: Alignment.centerLeft,
     end: Alignment.centerRight,
-    colors: [Color(0xFF8B5CF6), Color(0xFF6D28D9)],
+    colors: [Color(0xFF64B5F6), Color(0xFF4A90E2)],
   );
 
   late TextEditingController _nameController;
@@ -376,7 +376,7 @@ class _ProfilesManagementScreenState
                   : const LinearGradient(
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
-                      colors: [Color(0xFFEDE9FE), Color(0xFFDDD6FE)],
+                      colors: [Color(0x1F4A90E2), Color(0x334A90E2)],
                     ),
               borderRadius: BorderRadius.circular(10),
               boxShadow: done

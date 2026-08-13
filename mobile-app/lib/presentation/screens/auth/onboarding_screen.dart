@@ -22,12 +22,12 @@ class OnboardingScreen extends ConsumerStatefulWidget {
 
 class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   // ── Design tokens ──────────────────────────────────────────────────────────
-  static const Color _accent = Color(0xFF7C3AED);
-  static const Color _accent2 = Color(0xFF5B21B6);
-  static const Color _ink = Color(0xFF0F0F0F);
-  static const Color _inkMuted = Color(0xFF6B7280);
-  static const Color _inkSubtle = Color(0xFF9CA3AF);
-  static const Color _canvas = Color(0xFFFFFFFF);
+  static const Color _accent = Color(0xFF4A90E2);
+  static const Color _accent2 = Color(0xFF1E88E5);
+  static const Color _ink = Color(0xFFFFFFFF);
+  static const Color _inkMuted = Color(0xFF94A3B8);
+  static const Color _inkSubtle = Color(0xFF6B7A8D);
+  static const Color _canvas = Color(0xFF0F1219);
 
   final PageController _controller = PageController();
   int _page = 0;
@@ -354,7 +354,7 @@ class _CategoryIllustration extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const accent = Color(0xFF7C3AED);
+    const accent = Color(0xFF4A90E2);
     return Stack(
       alignment: Alignment.center,
       clipBehavior: Clip.none,

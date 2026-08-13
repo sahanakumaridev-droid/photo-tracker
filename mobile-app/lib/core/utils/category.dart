@@ -21,28 +21,28 @@ const List<PhotoCategory> kPhotoCategories = <PhotoCategory>[
     value: 'asap',
     label: 'ASAP',
     color: Color(0xFFEF4444),
-    softColor: Color(0xFFFEE2E2),
+    softColor: Color(0x26EF4444),
     icon: CupertinoIcons.bolt_fill,
   ),
   PhotoCategory(
     value: 'special',
     label: 'Special',
-    color: Color(0xFFC2410C), // orange-700: dark enough to read on light bg
-    softColor: Color(0xFFFFEDD5), // orange-100: light so text pops
+    color: Color(0xFFC2410C),
+    softColor: Color(0x26C2410C),
     icon: CupertinoIcons.star_fill,
   ),
   PhotoCategory(
     value: 'standard',
     label: 'Standard',
     color: Color(0xFF10B981),
-    softColor: Color(0xFFD1FAE5),
+    softColor: Color(0x2610B981),
     icon: CupertinoIcons.checkmark_seal_fill,
   ),
   PhotoCategory(
     value: 'next_day',
     label: 'Next Day',
-    color: Color(0xFFB45309), // amber-700: dark brown-gold, clear on yellow bg
-    softColor: Color(0xFFFEF3C7), // amber-100: light yellow so text pops
+    color: Color(0xFFB45309),
+    softColor: Color(0x26B45309),
     icon: CupertinoIcons.calendar,
   ),
 ];

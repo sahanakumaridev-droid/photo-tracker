@@ -37,12 +37,11 @@ class _CreateProfileDialog extends ConsumerStatefulWidget {
 }
 
 class _CreateProfileDialogState extends ConsumerState<_CreateProfileDialog> {
-  static const Color _accent = Color(0xFF7C3AED);
-  static const Color _canvas = Color(0xFFF7F5FF);
-  static const Color _inkMuted = Color(0xFF6B7280);
+  static const Color _accent = Color(0xFF4A90E2);
+  static const Color _canvas = Color(0xFF1C222E);
+  static const Color _inkMuted = Color(0xFF94A3B8);
 
   final _nameCtrl = TextEditingController();
-  final _payRateCtrl = TextEditingController();
   late String _companyId;
   bool _saving = false;
 
@@ -55,14 +54,12 @@ class _CreateProfileDialogState extends ConsumerState<_CreateProfileDialog> {
   @override
   void dispose() {
     _nameCtrl.dispose();
-    _payRateCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _create() async {
     final name = _nameCtrl.text.trim();
     if (name.isEmpty || _saving) return;
-    final payRate = int.tryParse(_payRateCtrl.text.trim());
     setState(() => _saving = true);
     try {
       // Service level is chosen per-photo during upload, not on the profile,
@@ -72,7 +69,7 @@ class _CreateProfileDialogState extends ConsumerState<_CreateProfileDialog> {
         name: name,
         serviceType: defaultPriorityForCompany(_companyId),
         company: _companyId,
-        payRate: payRate,
+        payRate: null,
         status: null,
         address: null,
         city: null,
@@ -110,7 +107,8 @@ class _CreateProfileDialogState extends ConsumerState<_CreateProfileDialog> {
               autofocus: true,
               textCapitalization: TextCapitalization.words,
               inputFormatters: const [TitleCaseInputFormatter()],
-              textInputAction: TextInputAction.next,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => _create(),
               decoration: InputDecoration(
                 hintText: 'Profile name',
                 filled: true,
@@ -169,34 +167,9 @@ class _CreateProfileDialogState extends ConsumerState<_CreateProfileDialog> {
               },
             ),
             const SizedBox(height: 6),
-            Text(
-              'Priority levels and pay rates follow this company.',
-              style: const TextStyle(fontSize: 12, color: _inkMuted),
-            ),
-            const SizedBox(height: 14),
-            TextField(
-              controller: _payRateCtrl,
-              keyboardType: TextInputType.number,
-              textInputAction: TextInputAction.done,
-              onSubmitted: (_) => _create(),
-              decoration: InputDecoration(
-                hintText: 'Pay rate (optional)',
-                prefixText: r'$',
-                filled: true,
-                fillColor: _canvas,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide.none,
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide.none,
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: const BorderSide(color: _accent, width: 1.5),
-                ),
-              ),
+            const Text(
+              'Priority levels follow this company.',
+              style: TextStyle(fontSize: 12, color: _inkMuted),
             ),
           ],
         ),

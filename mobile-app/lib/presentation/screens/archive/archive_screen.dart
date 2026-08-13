@@ -82,11 +82,11 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppTheme.offWhite,
+      backgroundColor: AppTheme.darkBg,
       appBar: AppBar(
         title: const Text('Archive'),
-        backgroundColor: AppTheme.white,
-        foregroundColor: AppTheme.black,
+        backgroundColor: AppTheme.darkSurface,
+        foregroundColor: AppTheme.darkText,
         elevation: 0,
       ),
       body: Column(
@@ -105,7 +105,7 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
                     label: Text(s[1]),
                     selected: sel,
                     selectedColor: AppTheme.primary,
-                    backgroundColor: AppTheme.white,
+                    backgroundColor: AppTheme.darkSurface,
                     labelStyle: TextStyle(
                         color: sel ? Colors.white : const Color(0xFF6B7280),
                         fontWeight: FontWeight.w700,
@@ -113,7 +113,7 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
                     side: BorderSide(
                         color: sel
                             ? AppTheme.primary
-                            : const Color(0xFFE5E7EB)),
+                            : AppTheme.darkBorder),
                     onSelected: (_) {
                       setState(() => _status = s[0]);
                       _load();
@@ -162,7 +162,7 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
                 prefixIcon: const Icon(CupertinoIcons.search, size: 20),
                 isDense: true,
                 filled: true,
-                fillColor: AppTheme.white,
+                fillColor: AppTheme.darkElevated,
                 contentPadding:
                     const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
                 border: OutlineInputBorder(
@@ -191,13 +191,13 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
                     label: Text(l[1]),
                     selected: sel,
                     selectedColor: c,
-                    backgroundColor: AppTheme.white,
+                    backgroundColor: AppTheme.darkSurface,
                     labelStyle: TextStyle(
                         color: sel ? Colors.white : const Color(0xFF6B7280),
                         fontWeight: FontWeight.w600,
                         fontSize: 12.5),
                     side: BorderSide(
-                        color: sel ? c : const Color(0xFFE5E7EB)),
+                        color: sel ? c : AppTheme.darkBorder),
                     onSelected: (_) {
                       setState(() => _level = l[0]);
                       _load();
@@ -283,7 +283,7 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
     final c = _color(cat);
     final img = r['image_url'] as String?;
     return Material(
-      color: AppTheme.white,
+      color: AppTheme.darkSurface,
       borderRadius: BorderRadius.circular(14),
       child: InkWell(
         borderRadius: BorderRadius.circular(14),
@@ -291,7 +291,7 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
         child: Container(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFEEEDF4)),
+        border: Border.all(color: AppTheme.darkBorder),
       ),
       child: IntrinsicHeight(
         child: Row(
@@ -321,7 +321,7 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
                         placeholder: (_, __) => Container(
                           width: 52,
                           height: 52,
-                          color: const Color(0xFFF3F4F6),
+                          color: AppTheme.darkElevated,
                         ),
                         errorWidget: (_, __, ___) => _imgFallback(),
                       )
@@ -389,7 +389,7 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
   Widget _imgFallback() => Container(
         width: 52,
         height: 52,
-        color: const Color(0xFFF1F5F9),
+        color: AppTheme.darkElevated,
         child: const Icon(CupertinoIcons.photo_fill_on_rectangle_fill, color: Color(0xFF94A3B8)),
       );
 }

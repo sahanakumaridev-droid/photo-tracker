@@ -15,13 +15,13 @@ class LoadingSkeleton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Shimmer.fromColors(
-    baseColor: Colors.grey[300]!,
-    highlightColor: Colors.grey[100]!,
+    baseColor: const Color(0xFF1C222E),
+    highlightColor: const Color(0xFF2A3340),
     child: Container(
       width: width,
       height: height,
       decoration: BoxDecoration(
-        color: Colors.grey[300],
+        color: const Color(0xFF1C222E),
         borderRadius: borderRadius ?? BorderRadius.circular(4),
       ),
     ),
@@ -36,7 +36,7 @@ class LoadingSkeletonCard extends StatelessWidget {
     decoration: BoxDecoration(
       borderRadius: BorderRadius.circular(16),
       border: Border.all(
-        color: Colors.grey[300]!,
+        color: const Color(0xFF2A3340),
         width: 1,
       ),
     ),
@@ -46,11 +46,11 @@ class LoadingSkeletonCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Shimmer.fromColors(
-            baseColor: Colors.grey[300]!,
-            highlightColor: Colors.grey[100]!,
+            baseColor: const Color(0xFF1C222E),
+            highlightColor: const Color(0xFF2A3340),
             child: Container(
               height: 200,
-              color: Colors.grey[300],
+              color: const Color(0xFF1C222E),
             ),
           ),
           const Padding(
@@ -86,12 +86,12 @@ class PhotoCardSkeleton extends StatelessWidget {
       children: [
         Expanded(
           child: Container(
-            color: Colors.grey[300],
+            color: const Color(0xFF1C222E),
             child: Shimmer.fromColors(
-              baseColor: Colors.grey[300]!,
-              highlightColor: Colors.grey[100]!,
+              baseColor: const Color(0xFF1C222E),
+              highlightColor: const Color(0xFF2A3340),
               child: Container(
-                color: Colors.grey[300],
+                color: const Color(0xFF1C222E),
               ),
             ),
           ),
@@ -126,13 +126,13 @@ class ProfileListSkeleton extends StatelessWidget {
     margin: const EdgeInsets.only(bottom: 12),
     child: ListTile(
       leading: Shimmer.fromColors(
-        baseColor: Colors.grey[300]!,
-        highlightColor: Colors.grey[100]!,
+        baseColor: const Color(0xFF1C222E),
+        highlightColor: const Color(0xFF2A3340),
         child: Container(
           width: 48,
           height: 48,
           decoration: BoxDecoration(
-            color: Colors.grey[300],
+            color: const Color(0xFF1C222E),
             borderRadius: BorderRadius.circular(8),
           ),
         ),

@@ -12,6 +12,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../../config/app_config.dart';
 import '../../../core/network/api_client.dart';
+import '../../../core/utils/attempt_status.dart';
 import '../../../core/utils/category.dart';
 import '../../../core/utils/job_pdf.dart';
 import '../../../core/utils/location_service.dart';
@@ -33,14 +34,14 @@ class PhotoDetailScreen extends ConsumerStatefulWidget {
 
 class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
   // ── Design tokens (matches HomeScreenV2) ─────────────────────────────────
-  static const Color _canvas = Color(0xFFF2F4F7);
-  static const Color _surface = Color(0xFFFFFFFF);
-  static const Color _ink = Color(0xFF0D1117);
-  static const Color _inkMuted = Color(0xFF4B5563);
-  static const Color _inkSubtle = Color(0xFF9CA3AF);
-  static const Color _separator = Color(0xFFE5E7EB);
-  static const Color _accent = Color(0xFF7C3AED);
-  static const Color _accentSoft = Color(0xFFEDE9FE);
+  static const Color _canvas = Color(0xFF0F1219);
+  static const Color _surface = Color(0xFF1C222E);
+  static const Color _ink = Color(0xFFFFFFFF);
+  static const Color _inkMuted = Color(0xFF94A3B8);
+  static const Color _inkSubtle = Color(0xFF6B7A8D);
+  static const Color _separator = Color(0xFF2A3340);
+  static const Color _accent = Color(0xFF4A90E2);
+  static const Color _accentSoft = Color(0x1F4A90E2);
   static const Color _rushRed = Color(0xFFDC2626);
   static const Color _standardGreen = Color(0xFF10B981);
   static const Color _airportBlue = Color(0xFF0284C7);
@@ -153,6 +154,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
               content: Text('Status updated to ${_statusLabel(status)}'),
               backgroundColor: _statusColor(status),
               behavior: SnackBarBehavior.floating,
+              duration: const Duration(seconds: 3),
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(10),
               ),
@@ -193,6 +195,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
               content: Text('Reverted to ${_statusLabel(previous)}'),
               backgroundColor: _statusColor(previous),
               behavior: SnackBarBehavior.floating,
+              duration: const Duration(seconds: 3),
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(10),
               ),
@@ -1062,106 +1065,95 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Profile name + service type row
                   _buildProfileHeader(photo, svcColor),
-                  const SizedBox(height: 10),
+                  const SizedBox(height: 14),
 
-                  // F10 — job lifecycle status
-                  _buildStatusCard(photo),
-                  const SizedBox(height: 10),
+                  _buildDetailsGroup(
+                    title: 'Job',
+                    children: [
+                      _detailRow(
+                        'File Number',
+                        (photo.fileNumber != null &&
+                                photo.fileNumber!.trim().isNotEmpty)
+                            ? photo.fileNumber!
+                            : '—',
+                      ),
+                      _detailRow(
+                        'Job Status',
+                        (photo.status ?? 'open').replaceAll('_', ' '),
+                      ),
+                      if (photo.payRate != null)
+                        _detailRow('Payout', '\$${photo.payRate}'),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
 
-                  // Status summary (only when job is closed)
                   if (photo.status == 'completed' ||
                       photo.status == 'archived') ...[
                     _buildStatusSummaryCard(photo),
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 12),
                   ],
 
-                  // Payout
-                  if (photo.payRate != null) ...[
-                    _buildInfoCard(
-                      icon: Icons.attach_money,
-                      label: 'Payout',
-                      value: '\$${photo.payRate}',
-                      iconColor: const Color(0xFF16A34A),
-                    ),
-                    const SizedBox(height: 10),
-                  ],
-
-                  // Info cards
-                  _buildInfoCard(
-                    icon: Icons.access_time_rounded,
-                    label: 'Captured',
-                    value: _formatTs(photo.timestamp),
-                    iconColor: _accent,
-                    trailing: _withinTsWindow(photo)
-                        ? TextButton.icon(
-                            onPressed: () => _editTimestamp(photo),
-                            icon: const Icon(Icons.edit_outlined, size: 15),
-                            label: const Text('Edit'),
-                            style: TextButton.styleFrom(
-                              foregroundColor: _accent,
-                              padding: const EdgeInsets.symmetric(horizontal: 8),
-                              minimumSize: const Size(0, 0),
-                              tapTargetSize:
-                                  MaterialTapTargetSize.shrinkWrap,
-                            ),
-                          )
-                        : const Padding(
-                            padding: EdgeInsets.only(top: 2),
-                            child: Icon(Icons.lock_outlined,
-                                size: 15, color: _inkSubtle),
-                          ),
+                  _buildDetailsGroup(
+                    title: 'Attempt',
+                    children: [
+                      _detailRow(
+                        'Attempt Status',
+                        attemptStatusByValue(photo.attemptStatus)?.label ??
+                            photo.attemptStatus,
+                      ),
+                      _detailRow(
+                        'Captured',
+                        _formatTs(photo.timestamp),
+                        trailing: _withinTsWindow(photo)
+                            ? TextButton(
+                                onPressed: () => _editTimestamp(photo),
+                                child: const Text('Edit'),
+                              )
+                            : null,
+                      ),
+                      _detailRow(
+                        'Delivery Style',
+                        (photo.completionType != null &&
+                                photo.completionType!.trim().isNotEmpty)
+                            ? photo.completionType!
+                            : '—',
+                      ),
+                      _detailRow(
+                        'Served To',
+                        (photo.servedTo != null &&
+                                photo.servedTo!.trim().isNotEmpty)
+                            ? photo.servedTo!
+                            : '—',
+                      ),
+                      _detailRow(
+                        'Relation To',
+                        (photo.relationTo != null &&
+                                photo.relationTo!.trim().isNotEmpty)
+                            ? photo.relationTo!
+                            : '—',
+                      ),
+                      _detailRow(
+                        'Note',
+                        (photo.note != null && photo.note!.trim().isNotEmpty)
+                            ? photo.note!
+                            : '—',
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 10),
+                  const SizedBox(height: 12),
 
-                  // Location card with map action
                   _buildLocationCard(photo),
-                  const SizedBox(height: 10),
+                  const SizedBox(height: 12),
 
-                  // Note card (if present)
-                  if (photo.note != null && photo.note!.isNotEmpty) ...[
-                    _buildInfoCard(
-                      icon: Icons.description_outlined,
-                      label: 'Note',
-                      value: photo.note!,
-                      iconColor: const Color(0xFF0284C7),
-                    ),
-                    const SizedBox(height: 10),
-                  ],
+                  _buildStatusCard(photo),
 
-                  // Delivery Style — captured on upload (completion_type)
-                  if (photo.completionType != null &&
-                      photo.completionType!.isNotEmpty) ...[
-                    _buildInfoCard(
-                      icon: Icons.assignment_turned_in_outlined,
-                      label: 'Delivery Style',
-                      value: photo.completionType!,
-                      iconColor: const Color(0xFF7C3AED),
-                    ),
-                    const SizedBox(height: 10),
-                  ],
-
-                  // Served To — captured on upload (served_to). Always shown so
-                  // the field is visibly part of every service record.
-                  _buildInfoCard(
-                    icon: Icons.person_outline,
-                    label: 'Served To',
-                    value: (photo.servedTo != null &&
-                            photo.servedTo!.trim().isNotEmpty)
-                        ? photo.servedTo!
-                        : '—',
-                    iconColor: const Color(0xFF0891B2),
-                  ),
-                  const SizedBox(height: 10),
-
-                  // Profiles tags (if multiple)
-                  if (photo.profiles != null && photo.profiles!.isNotEmpty)
+                  if (photo.profiles != null && photo.profiles!.isNotEmpty) ...[
+                    const SizedBox(height: 12),
                     _buildProfileTags(photo),
+                  ],
 
                   const SizedBox(height: 24),
-
-                  // Delete button only — Edit is in the AppBar pencil icon
                   _buildDeleteButton(photo),
                   const SizedBox(height: 32),
                 ],
@@ -1246,6 +1238,71 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
           ],
         ),
       );
+
+  Widget _buildDetailsGroup({
+    required String title,
+    required List<Widget> children,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+      decoration: BoxDecoration(
+        color: _surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF2A3340)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title.toUpperCase(),
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.7,
+              color: _inkMuted,
+            ),
+          ),
+          const SizedBox(height: 4),
+          ...children,
+        ],
+      ),
+    );
+  }
+
+  Widget _detailRow(String label, String value, {Widget? trailing}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 118,
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                color: _inkMuted,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: _ink,
+                height: 1.3,
+              ),
+            ),
+          ),
+          if (trailing != null) trailing,
+        ],
+      ),
+    );
+  }
 
   // ── F10: job lifecycle status card ────────────────────────────────────────
   Widget _buildStatusCard(PhotoModel photo) {
@@ -1417,14 +1474,14 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                   ? stepColor
                   : isCompleted
                       ? stepColor.withValues(alpha: 0.12)
-                      : const Color(0xFFF2F4F7),
+                      : const Color(0xFF242B38),
               shape: BoxShape.circle,
               border: Border.all(
                 color: isActive
                     ? stepColor
                     : isCompleted
                         ? stepColor.withValues(alpha: 0.5)
-                        : const Color(0xFFDDE2E8),
+                        : const Color(0xFF2A3340),
                 width: isActive ? 0 : 1.5,
               ),
               boxShadow: isActive
@@ -2177,14 +2234,14 @@ class _EditPhotoSheet extends ConsumerStatefulWidget {
 
 class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
   // ── Design tokens ─────────────────────────────────────────────────────────
-  static const Color _canvas = Color(0xFFF2F4F7);
-  static const Color _surface = Color(0xFFFFFFFF);
-  static const Color _ink = Color(0xFF0D1117);
-  static const Color _inkMuted = Color(0xFF4B5563);
-  static const Color _inkSubtle = Color(0xFF9CA3AF);
-  static const Color _separator = Color(0xFFE5E7EB);
-  static const Color _accent = Color(0xFF7C3AED);
-  static const Color _accentSoft = Color(0xFFEDE9FE);
+  static const Color _canvas = Color(0xFF0F1219);
+  static const Color _surface = Color(0xFF1C222E);
+  static const Color _ink = Color(0xFFFFFFFF);
+  static const Color _inkMuted = Color(0xFF94A3B8);
+  static const Color _inkSubtle = Color(0xFF6B7A8D);
+  static const Color _separator = Color(0xFF2A3340);
+  static const Color _accent = Color(0xFF4A90E2);
+  static const Color _accentSoft = Color(0x1F4A90E2);
   static const Color _successGreen = Color(0xFF10B981);
   static const Color _errorRed = Color(0xFFDC2626);
 
@@ -2694,7 +2751,7 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
                   const SizedBox(height: 24),
 
                   // ── Divider before destructive/replace actions ────────────
-                  const Divider(height: 1, color: Color(0xFFE5E7EB)),
+                  const Divider(height: 1, color: _separator),
                   const SizedBox(height: 20),
 
                   // ── Edit location ────────────────────────────────────────

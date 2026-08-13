@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 import 'app.dart';
+import 'config/theme.dart';
 import 'core/network/network_quality.dart';
 import 'core/storage/api_cache.dart';
 import 'core/storage/local_storage.dart';
@@ -10,6 +12,7 @@ import 'core/storage/upload_queue.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setSystemUIOverlayStyle(AppTheme.overlayDark);
 
   // Initialize Hive for local storage
   await Hive.initFlutter();

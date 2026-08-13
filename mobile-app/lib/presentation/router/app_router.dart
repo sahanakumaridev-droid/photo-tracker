@@ -15,6 +15,7 @@ import '../screens/home/edit_location_screen.dart';
 import '../screens/home/home_screen_v2.dart';
 import '../screens/home/map_view_screen.dart';
 import '../screens/home/photo_detail_screen.dart';
+import '../screens/jobs/jobs_screen.dart';
 import '../screens/log/log_screen_v2.dart';
 import '../screens/more/more_screen.dart';
 import '../screens/schedule/schedule_screen.dart';
@@ -80,6 +81,10 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: '/map',
             builder: (context, state) => const MapViewScreen(),
+          ),
+          GoRoute(
+            path: '/jobs',
+            builder: (context, state) => const JobsScreen(),
           ),
           GoRoute(
             path: '/upload',
@@ -169,17 +174,15 @@ class _ShellScaffold extends ConsumerStatefulWidget {
 }
 
 class _ShellScaffoldState extends ConsumerState<_ShellScaffold> {
-  // Index map (matches BottomNav): 0 Home (map) · 1 Earnings · 2 Log · 3
-  // Upload. "Home" now IS the map view (the default screen); the old feed
-  // screen (/home) is a pushed sub-view reached via "View List", so it also
-  // highlights the Home tab rather than showing no selection.
+  // Index map (matches BottomNav): 0 Home (map) · 1 Jobs · 2 Log ·
+  // 3 Earnings. Upload lives in each screen's app bar, not the tab bar.
   int _indexForLocation(String loc) {
     if (loc.startsWith('/map')) return 0;
     if (loc.startsWith('/home')) return 0;
-    if (loc.startsWith('/earnings')) return 1;
+    if (loc.startsWith('/jobs')) return 1;
     if (loc.startsWith('/log')) return 2;
-    if (loc.startsWith('/upload')) return 3;
-    return -1; // settings/archive/etc — no tab highlighted
+    if (loc.startsWith('/earnings')) return 3;
+    return -1;
   }
 
   @override
@@ -197,15 +200,15 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold> {
 
   void _onTabTap(int index, int currentIndex) {
     // Tapping the current (Home/map) tab again triggers a data refresh.
-    if (index == currentIndex && index == 0) {
+    if (index == currentIndex && (index == 0 || index == 1)) {
       ref.invalidate(photosProvider);
       ref.invalidate(profilesProvider);
     }
     switch (index) {
       case 0: context.go('/map'); break;
-      case 1: context.go('/earnings'); break;
+      case 1: context.go('/jobs'); break;
       case 2: context.go('/log'); break;
-      case 3: context.go('/upload'); break;
+      case 3: context.go('/earnings'); break;
     }
   }
 }

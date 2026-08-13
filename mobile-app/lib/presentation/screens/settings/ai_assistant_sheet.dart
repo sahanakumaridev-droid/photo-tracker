@@ -9,7 +9,7 @@ Future<void> showAiAssistantSheet(BuildContext context) {
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
-    backgroundColor: Colors.white,
+    backgroundColor: const Color(0xFF1C222E),
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
     ),
@@ -31,11 +31,11 @@ class _AiAssistantSheet extends StatefulWidget {
 }
 
 class _AiAssistantSheetState extends State<_AiAssistantSheet> {
-  static const Color _ink = Color(0xFF0F0F0F);
-  static const Color _muted = Color(0xFF6B7280);
-  static const Color _bg = Color(0xFFFAFAFA);
-  static const Color _hair = Color(0xFFE5E7EB);
-  static const Color _purple = Color(0xFF7C3AED);
+  static const Color _ink = Color(0xFFFFFFFF);
+  static const Color _muted = Color(0xFF94A3B8);
+  static const Color _bg = Color(0xFF0F1219);
+  static const Color _hair = Color(0xFF2A3340);
+  static const Color _purple = Color(0xFF4A90E2);
 
   final _controller = TextEditingController();
   final _scroll = ScrollController();
@@ -167,7 +167,7 @@ class _AiAssistantSheetState extends State<_AiAssistantSheet> {
             height: 40,
             decoration: BoxDecoration(
               gradient: const LinearGradient(
-                  colors: [Color(0xFF7C3AED), Color(0xFF4F46E5)]),
+                  colors: [Color(0xFF4A90E2), Color(0xFF1E88E5)]),
               borderRadius: BorderRadius.circular(12),
             ),
             child: const Icon(Icons.auto_awesome_rounded,
@@ -324,7 +324,7 @@ class _AiAssistantSheetState extends State<_AiAssistantSheet> {
                       height: 38,
                       decoration: BoxDecoration(
                         gradient: const LinearGradient(
-                            colors: [Color(0xFF7C3AED), Color(0xFF4F46E5)]),
+                            colors: [Color(0xFF4A90E2), Color(0xFF1E88E5)]),
                         borderRadius: BorderRadius.circular(11),
                       ),
                       child: const Icon(Icons.arrow_upward_rounded,

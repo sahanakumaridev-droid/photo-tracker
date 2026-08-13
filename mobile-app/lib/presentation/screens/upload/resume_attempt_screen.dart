@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/utils/attempt_status.dart';
+import '../../../core/utils/file_number.dart';
 import '../../../data/models/attempt.dart';
 import '../../../data/models/company.dart';
 import '../../../data/models/profile_model.dart';
@@ -14,6 +15,7 @@ import 'attempt_details_screen.dart';
 import 'attempt_draft_controller.dart';
 import 'attempt_location_screen.dart';
 import 'attempt_photos_screen.dart';
+import 'attempts_dashboard_screen.dart';
 
 /// The "Resume Attempt" hub — a checklist screen. Company/Profile/Priority/
 /// File Number are inline editable rows (no partial-attempt record exists
@@ -29,6 +31,7 @@ class ResumeAttemptScreen extends ConsumerStatefulWidget {
     super.key,
     this.initialProfileId,
     this.resumeAttempt,
+    this.localSnapshot,
   });
 
   /// "Add to Existing Profile" — pre-selects that profile and locks
@@ -41,6 +44,13 @@ class ResumeAttemptScreen extends ConsumerStatefulWidget {
   /// local draft/snapshot restore flow.
   final Attempt? resumeAttempt;
 
+  /// A locally-cached snapshot to resume (Attempts Dashboard → "Quick
+  /// Saved" → tap a card). When set, `initState` loads it via
+  /// [AttemptDraftController.resumeFromLocalSnapshot] — frozen
+  /// location/timestamp, no fresh GPS fetch, same as the poor-network
+  /// review flow.
+  final Map<String, dynamic>? localSnapshot;
+
   @override
   ConsumerState<ResumeAttemptScreen> createState() =>
       _ResumeAttemptScreenState();
@@ -48,14 +58,14 @@ class ResumeAttemptScreen extends ConsumerStatefulWidget {
 
 class _ResumeAttemptScreenState extends ConsumerState<ResumeAttemptScreen> {
   // ── Design tokens ─────────────────────────────────────────────────────────
-  static const Color _canvas = Color(0xFFF7F5FF);
-  static const Color _surface = Color(0xFFFFFFFF);
-  static const Color _ink = Color(0xFF0F0F0F);
-  static const Color _inkMuted = Color(0xFF6B7280);
-  static const Color _inkSubtle = Color(0xFF9CA3AF);
-  static const Color _separator = Color(0xFFE5E7EB);
-  static const Color _accent = Color(0xFF7C3AED);
-  static const Color _accentSoft = Color(0xFFEDE9FE);
+  static const Color _canvas = Color(0xFF0F1219);
+  static const Color _surface = Color(0xFF1C222E);
+  static const Color _ink = Color(0xFFFFFFFF);
+  static const Color _inkMuted = Color(0xFF94A3B8);
+  static const Color _inkSubtle = Color(0xFF6B7A8D);
+  static const Color _separator = Color(0xFF2A3340);
+  static const Color _accent = Color(0xFF4A90E2);
+  static const Color _accentSoft = Color(0x1F4A90E2);
   static const Color _successGreen = Color(0xFF10B981);
   static const Color _errorRed = Color(0xFFEF4444);
 
@@ -89,6 +99,15 @@ class _ResumeAttemptScreenState extends ConsumerState<ResumeAttemptScreen> {
       await controller.loadExistingAttempt(resumeAttempt, ref: ref);
       if (!mounted) return;
       unawaited(controller.fetchLocation(context, ref));
+      controller.startPoorNetworkMonitoring();
+      return;
+    }
+    final localSnapshot = widget.localSnapshot;
+    if (localSnapshot != null) {
+      // Frozen location/timestamp by design — do not re-fetch fresh GPS,
+      // same contract as the poor-network "Review & Save" flow.
+      await controller.resumeFromLocalSnapshot(localSnapshot, ref: ref);
+      if (!mounted) return;
       controller.startPoorNetworkMonitoring();
       return;
     }
@@ -204,7 +223,7 @@ class _ResumeAttemptScreenState extends ConsumerState<ResumeAttemptScreen> {
         : 'Poor network — auto-caching attempt';
     final body = frozen
         ? 'Upload will use the cached geotag and capture time from when signal was bad — not your current GPS.'
-        : 'Inputs are snapshotted continually. Tap Quick Save to freeze this attempt, then review when signal returns.';
+        : 'Inputs are snapshotted every few seconds. Location/time will lock to the last known fix while signal stays poor.';
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
       decoration: BoxDecoration(
@@ -601,45 +620,104 @@ class _ResumeAttemptScreenState extends ConsumerState<ResumeAttemptScreen> {
         ),
       );
 
-  Widget _buildFileNumberRow() => _rowCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _rowLabel('File Number', Icons.tag_rounded),
-            const SizedBox(height: 10),
-            TextField(
-              controller: controller.fileNumberController,
-              style: const TextStyle(fontSize: 14, color: _ink),
-              decoration: InputDecoration(
-                hintText: 'e.g. 24-00123',
-                hintStyle: const TextStyle(color: _inkSubtle, fontSize: 14),
-                prefixIcon: const Padding(
-                  padding: EdgeInsets.only(left: 12, right: 8),
-                  child: Icon(Icons.tag_rounded, size: 18, color: _inkSubtle),
+  Widget _buildFileNumberRow() {
+    final isNa = controller.fileNumberController.text.trim().toUpperCase() ==
+        kFileNumberNA;
+    return _rowCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              _rowLabel('File Number', Icons.tag_rounded),
+              const SizedBox(width: 4),
+              const Text(
+                '*',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFFDC2626),
                 ),
-                prefixIconConstraints:
-                    const BoxConstraints(minWidth: 40, minHeight: 40),
-                filled: true,
-                fillColor: _canvas,
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 0, vertical: 13),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: controller.fileNumberController,
+            style: const TextStyle(fontSize: 14, color: _ink),
+            decoration: InputDecoration(
+              hintText: 'e.g. 24-00123',
+              hintStyle: const TextStyle(color: _inkSubtle, fontSize: 14),
+              prefixIcon: const Padding(
+                padding: EdgeInsets.only(left: 12, right: 8),
+                child: Icon(Icons.tag_rounded, size: 18, color: _inkSubtle),
+              ),
+              prefixIconConstraints:
+                  const BoxConstraints(minWidth: 40, minHeight: 40),
+              filled: true,
+              fillColor: _canvas,
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 0, vertical: 13),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide.none,
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide.none,
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: _accent, width: 1.5),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: GestureDetector(
+              onTap: () {
+                HapticFeedback.selectionClick();
+                if (isNa) {
+                  controller.fileNumberController.clear();
+                } else {
+                  controller.fileNumberController.text = kFileNumberNA;
+                  controller.fileNumberController.selection =
+                      TextSelection.collapsed(offset: kFileNumberNA.length);
+                }
+                controller.notifyListeners();
+              },
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                decoration: BoxDecoration(
+                  color: isNa ? _accentSoft : _canvas,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: isNa ? _accent : const Color(0xFFE5E7EB),
+                  ),
                 ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(color: _accent, width: 1.5),
+                child: Text(
+                  kFileNumberNA,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                    color: isNa ? _accent : _inkMuted,
+                  ),
                 ),
               ),
             ),
-          ],
-        ),
-      );
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Required. Choose N/A when there is no dispatcher file number — '
+            'watermarks will show the profile name instead.',
+            style: TextStyle(fontSize: 11.5, color: _inkSubtle, height: 1.35),
+          ),
+        ],
+      ),
+    );
+  }
 
   // ── Progress bar + checklist ────────────────────────────────────────────
   bool get _servedToDone =>
@@ -650,7 +728,7 @@ class _ResumeAttemptScreenState extends ConsumerState<ResumeAttemptScreen> {
     var n = 0;
     if (controller.selectedProfile != null) n++; // Profile
     n++; // Company — always has a default
-    if (controller.selectedImages.isNotEmpty) n++; // Photos
+    if (controller.hasPhoto) n++; // Photos
     if (controller.latitude != null && !controller.isLoadingLocation) n++;
     if (_servedToDone) n++; // Serve To
     if (controller.deliveryStyle != null) n++; // Delivery Style
@@ -716,11 +794,14 @@ class _ResumeAttemptScreenState extends ConsumerState<ResumeAttemptScreen> {
         _checklistRow(
           icon: Icons.camera_alt_rounded,
           label: 'Photos',
-          done: controller.selectedImages.isNotEmpty,
-          caption: controller.selectedImages.isEmpty
-              ? 'Add at least one photo'
-              : '${controller.selectedImages.length} photo'
-                  '${controller.selectedImages.length > 1 ? 's' : ''} added',
+          done: controller.hasPhoto,
+          caption: controller.selectedImages.isNotEmpty
+              ? '${controller.selectedImages.length} photo'
+                  '${controller.selectedImages.length > 1 ? 's' : ''} added'
+              : controller.existingPhotoCount > 0
+                  ? '${controller.existingPhotoCount} photo'
+                      '${controller.existingPhotoCount > 1 ? 's' : ''} already on this attempt'
+                  : 'Add at least one photo',
           onTap: () => Navigator.of(context).push(
             MaterialPageRoute(
               builder: (_) => AttemptPhotosScreen(controller: controller),
@@ -752,14 +833,14 @@ class _ResumeAttemptScreenState extends ConsumerState<ResumeAttemptScreen> {
           label: 'Serve To',
           done: _servedToDone,
           caption: servedToCaption,
-          onTap: () => _pushDetails(),
+          onTap: _pushDetails,
         ),
         _checklistRow(
           icon: Icons.assignment_turned_in_outlined,
           label: 'Delivery Style',
           done: controller.deliveryStyle != null,
           caption: controller.deliveryStyle ?? 'Not set',
-          onTap: () => _pushDetails(),
+          onTap: _pushDetails,
         ),
         _checklistRow(
           icon: Icons.attach_money_rounded,
@@ -768,7 +849,7 @@ class _ResumeAttemptScreenState extends ConsumerState<ResumeAttemptScreen> {
           caption: controller.payRateController.text.trim().isEmpty
               ? 'Optional — not set'
               : '\$${controller.payRateController.text.trim()}',
-          onTap: () => _pushDetails(),
+          onTap: _pushDetails,
         ),
         _checklistRow(
           icon: Icons.edit_outlined,
@@ -777,14 +858,14 @@ class _ResumeAttemptScreenState extends ConsumerState<ResumeAttemptScreen> {
           caption: controller.noteController.text.trim().isEmpty
               ? 'Optional — not set'
               : controller.noteController.text.trim(),
-          onTap: () => _pushDetails(),
+          onTap: _pushDetails,
         ),
         _checklistRow(
           icon: Icons.flag_rounded,
           label: 'Attempt Status',
           done: true,
           caption: statusOpt.label,
-          onTap: () => _pushDetails(),
+          onTap: _pushDetails,
           isLast: true,
         ),
       ],
@@ -902,6 +983,10 @@ class _ResumeAttemptScreenState extends ConsumerState<ResumeAttemptScreen> {
                           final saved =
                               await controller.quickSaveAttempt(context);
                           if (!saved || !context.mounted) return;
+                          // Invalidate here, not just on the dashboard's
+                          // post-pop — this screen can also exit via
+                          // `context.go` (no pop), which skips that path.
+                          ref.invalidate(localSnapshotsProvider);
                           if (Navigator.of(context).canPop()) {
                             Navigator.of(context).pop();
                           } else if (controller.isExistingProfileAttempt) {
@@ -913,12 +998,15 @@ class _ResumeAttemptScreenState extends ConsumerState<ResumeAttemptScreen> {
                         }
                       : null,
                   icon: const Icon(Icons.sd_storage_outlined, size: 18),
-                  label: const Text('Quick Save',
+                  label: const Text('Pending Attempt',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                          fontSize: 14, fontWeight: FontWeight.w700)),
+                          fontSize: 13, fontWeight: FontWeight.w700)),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: _accent,
                     disabledForegroundColor: _inkSubtle,
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
                     side: BorderSide(
                         color: _accent.withValues(alpha: 0.45), width: 1.5),
                     shape: RoundedRectangleBorder(
@@ -932,7 +1020,10 @@ class _ResumeAttemptScreenState extends ConsumerState<ResumeAttemptScreen> {
               child: SizedBox(
                 height: 48,
                 child: ElevatedButton.icon(
-                  onPressed: () {
+                  onPressed: () async {
+                    final saved = await controller.quickSaveAttempt(context);
+                    if (!saved || !context.mounted) return;
+                    ref.invalidate(localSnapshotsProvider);
                     if (Navigator.of(context).canPop()) {
                       Navigator.of(context).pop();
                     } else if (controller.isExistingProfileAttempt) {
@@ -987,7 +1078,7 @@ class _ResumeAttemptScreenState extends ConsumerState<ResumeAttemptScreen> {
 
           void select(ProfileModel p) {
             HapticFeedback.selectionClick();
-            controller.setSelectedProfile(p);
+            controller.setSelectedProfile(p, ref: ref);
             Navigator.pop(sheetCtx);
           }
 

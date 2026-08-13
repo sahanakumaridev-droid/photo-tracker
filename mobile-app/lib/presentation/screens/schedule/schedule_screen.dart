@@ -76,11 +76,11 @@ class _ScheduleScreenState extends ConsumerState<ScheduleScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppTheme.offWhite,
+      backgroundColor: AppTheme.darkBg,
       appBar: AppBar(
         title: const Text('Schedule'),
-        backgroundColor: AppTheme.white,
-        foregroundColor: AppTheme.black,
+        backgroundColor: AppTheme.darkSurface,
+        foregroundColor: AppTheme.darkText,
         elevation: 0,
       ),
       body: _loading
@@ -106,14 +106,14 @@ class _ScheduleScreenState extends ConsumerState<ScheduleScreen>
         padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
           gradient: const LinearGradient(
-            colors: [Color(0xFF2A1B4D), Color(0xFF7C3AED)],
+            colors: [Color(0xFF0F1219), Color(0xFF1C222E)],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           ),
           borderRadius: BorderRadius.circular(20),
           boxShadow: [
             BoxShadow(
-                color: const Color(0xFF7C3AED).withValues(alpha: 0.30),
+                color: const Color(0xFF4A90E2).withValues(alpha: 0.30),
                 blurRadius: 22,
                 offset: const Offset(0, 8)),
           ],
@@ -122,7 +122,7 @@ class _ScheduleScreenState extends ConsumerState<ScheduleScreen>
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text('Active jobs',
-                style: TextStyle(color: Color(0xFFCBB6FF), fontSize: 13, fontWeight: FontWeight.w600)),
+                style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13, fontWeight: FontWeight.w600)),
             const SizedBox(height: 2),
             Text('$_total',
                 style: const TextStyle(
@@ -151,7 +151,7 @@ class _ScheduleScreenState extends ConsumerState<ScheduleScreen>
                                 fontSize: 15)),
                         Text(q.label,
                             style: const TextStyle(
-                                color: Color(0xFFCBB6FF), fontSize: 9.5)),
+                                color: Color(0xFF94A3B8), fontSize: 9.5)),
                       ],
                     ),
                   ),
@@ -179,10 +179,10 @@ class _ScheduleScreenState extends ConsumerState<ScheduleScreen>
                 duration: const Duration(milliseconds: 180),
                 padding: const EdgeInsets.symmetric(horizontal: 14),
                 decoration: BoxDecoration(
-                  color: sel ? q.color : AppTheme.white,
+                  color: sel ? q.color : AppTheme.darkSurface,
                   borderRadius: BorderRadius.circular(22),
                   border: Border.all(
-                      color: sel ? q.color : const Color(0xFFE5E7EB)),
+                      color: sel ? q.color : AppTheme.darkBorder),
                   boxShadow: sel
                       ? [BoxShadow(color: q.color.withValues(alpha: 0.35), blurRadius: 10, offset: const Offset(0, 4))]
                       : null,
@@ -271,7 +271,7 @@ class _ScheduleScreenState extends ConsumerState<ScheduleScreen>
 
     return Container(
       decoration: BoxDecoration(
-        color: AppTheme.white,
+        color: AppTheme.darkSurface,
         borderRadius: BorderRadius.circular(16),
         boxShadow: const [
           BoxShadow(

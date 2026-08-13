@@ -21,6 +21,7 @@ class LogEntryModel {
     this.fileNumber,
     this.profiles,
     this.attemptStatus = 'pending',
+    this.attemptId,
   });
 
   factory LogEntryModel.fromJson(Map<String, dynamic> json) =>
@@ -51,6 +52,10 @@ class LogEntryModel {
   /// Attempt outcome — pending | successful | unsuccessful.
   @JsonKey(name: 'attempt_status', defaultValue: 'pending')
   final String attemptStatus;
+
+  /// Parent Attempt id when the row is a photo under Profile → Attempt → Photo.
+  @JsonKey(name: 'attempt_id')
+  final int? attemptId;
 
   Map<String, dynamic> toJson() => _$LogEntryModelToJson(this);
 }

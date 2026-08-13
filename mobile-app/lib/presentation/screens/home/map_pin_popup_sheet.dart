@@ -89,12 +89,12 @@ class _PinPopupSheet extends ConsumerStatefulWidget {
 
 class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
   // Design tokens
-  static const _bg = Color(0xFF0F0E1A);
-  static const _surface = Color(0xFF1A1830);
-  static const _divider = Color(0x14FFFFFF);
-  static const _textPrimary = Color(0xFFE2E8F0);
+  static const _bg = Color(0xFF0F1219);
+  static const _surface = Color(0xFF1C222E);
+  static const _divider = Color(0xFF2A3340);
+  static const _textPrimary = Color(0xFFFFFFFF);
   static const _textMuted = Color(0xFF94A3B8);
-  static const _accent = Color(0xFF6366F1);
+  static const _accent = Color(0xFF4A90E2);
   // Radius used to surface nearby profiles first in the profile dropdown —
   // matches the main Upload tab's profile picker.
   static const double _kProfileProximityFt = 200;
@@ -846,6 +846,51 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
                   ),
                 ),
               ),
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Builder(builder: (_) {
+                final isNa =
+                    _fileNumberCtrl.text.trim().toUpperCase() == kFileNumberNA;
+                return GestureDetector(
+                  onTap: () {
+                    HapticFeedback.selectionClick();
+                    setState(() {
+                      if (isNa) {
+                        _fileNumberCtrl.clear();
+                      } else {
+                        _fileNumberCtrl.text = kFileNumberNA;
+                      }
+                    });
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: isNa
+                          ? Colors.white.withValues(alpha: 0.16)
+                          : Colors.white.withValues(alpha: 0.06),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: isNa
+                            ? Colors.white.withValues(alpha: 0.45)
+                            : Colors.white.withValues(alpha: 0.12),
+                      ),
+                    ),
+                    child: Text(
+                      kFileNumberNA,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: isNa
+                            ? Colors.white
+                            : Colors.white.withValues(alpha: 0.55),
+                      ),
+                    ),
+                  ),
+                );
+              }),
             ),
             const SizedBox(height: 10),
           ],

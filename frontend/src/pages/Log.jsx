@@ -1051,7 +1051,7 @@ export default function Log() {
               <button className="btn btn-green" style={{ fontSize: 12, padding: '8px 16px' }}
                 onClick={handleExportExcel}
                 disabled={exportRows.length === 0 || selectedRecipients.size === 0 || exportingExcel}>
-                {exportingExcel ? 'Sending…' : '📊 Export Excel & Send'}
+                {exportingExcel ? 'Sending…' : 'Send'}
               </button>
             </div>
           </div>

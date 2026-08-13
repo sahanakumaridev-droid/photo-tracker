@@ -18,14 +18,14 @@ class EditLocationScreen extends ConsumerStatefulWidget {
 
 class _EditLocationScreenState extends ConsumerState<EditLocationScreen> {
   // Design tokens
-  static const _canvas = Color(0xFFF2F4F7);
-  static const _surface = Color(0xFFFFFFFF);
-  static const _ink = Color(0xFF0D1117);
-  static const _inkMuted = Color(0xFF4B5563);
-  static const _inkSubtle = Color(0xFF9CA3AF);
-  static const _separator = Color(0xFFE5E7EB);
-  static const _accent = Color(0xFF5B5BD6);
-  static const _accentSoft = Color(0xFFEEEEFD);
+  static const _canvas = Color(0xFF0F1219);
+  static const _surface = Color(0xFF1C222E);
+  static const _ink = Color(0xFFFFFFFF);
+  static const _inkMuted = Color(0xFF94A3B8);
+  static const _inkSubtle = Color(0xFF6B7A8D);
+  static const _separator = Color(0xFF2A3340);
+  static const _accent = Color(0xFF4A90E2);
+  static const _accentSoft = Color(0x1F4A90E2);
   static const _errorRed = Color(0xFFDC2626);
 
   late final MapController _mapController;
@@ -172,7 +172,7 @@ class _EditLocationScreenState extends ConsumerState<EditLocationScreen> {
               children: [
                 TileLayer(
                   urlTemplate:
-                      'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+                      'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
                   subdomains: const ['a', 'b', 'c', 'd'],
                   userAgentPackageName: 'com.example.photo_tracker',
                 ),

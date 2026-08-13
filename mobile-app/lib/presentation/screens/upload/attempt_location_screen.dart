@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:shimmer/shimmer.dart';
@@ -16,13 +17,13 @@ class AttemptLocationScreen extends ConsumerWidget {
   final AttemptDraftController controller;
 
   // ── Design tokens ─────────────────────────────────────────────────────────
-  static const Color _canvas = Color(0xFFF7F5FF);
-  static const Color _surface = Color(0xFFFFFFFF);
-  static const Color _ink = Color(0xFF0F0F0F);
-  static const Color _inkMuted = Color(0xFF6B7280);
-  static const Color _inkSubtle = Color(0xFF9CA3AF);
-  static const Color _accent = Color(0xFF7C3AED);
-  static const Color _accentSoft = Color(0xFFEDE9FE);
+  static const Color _canvas = Color(0xFF0F1219);
+  static const Color _surface = Color(0xFF1C222E);
+  static const Color _ink = Color(0xFFFFFFFF);
+  static const Color _inkMuted = Color(0xFF94A3B8);
+  static const Color _inkSubtle = Color(0xFF6B7A8D);
+  static const Color _accent = Color(0xFF4A90E2);
+  static const Color _accentSoft = Color(0x1F4A90E2);
   static const Color _errorRed = Color(0xFFEF4444);
 
   @override
@@ -61,6 +62,14 @@ class AttemptLocationScreen extends ConsumerWidget {
   }
 
   Future<void> _openMapPicker(BuildContext context, WidgetRef ref) async {
+    if (controller.locationFrozenFromCache) {
+      controller.showSnack(
+        context,
+        'Location is locked from cache. Unlock from the hub banner to change it.',
+        isError: true,
+      );
+      return;
+    }
     final initial = (controller.latitude != null && controller.longitude != null)
         ? LatLng(controller.latitude!, controller.longitude!)
         : null;
@@ -105,20 +114,30 @@ class AttemptLocationScreen extends ConsumerWidget {
                       vertical: 6,
                     ),
                     decoration: BoxDecoration(
-                      color: _accentSoft,
+                      color: controller.locationFrozenFromCache
+                          ? const Color(0xFFF3F4F6)
+                          : _accentSoft,
                       borderRadius: BorderRadius.circular(20),
                     ),
-                    child: const Row(
+                    child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.map_outlined, size: 13, color: _accent),
-                        SizedBox(width: 4),
+                        Icon(
+                          Icons.map_outlined,
+                          size: 13,
+                          color: controller.locationFrozenFromCache
+                              ? const Color(0xFF9CA3AF)
+                              : _accent,
+                        ),
+                        const SizedBox(width: 4),
                         Text(
                           'Pick on Map',
                           style: TextStyle(
                             fontSize: 11,
                             fontWeight: FontWeight.w600,
-                            color: _accent,
+                            color: controller.locationFrozenFromCache
+                                ? const Color(0xFF9CA3AF)
+                                : _accent,
                           ),
                         ),
                       ],
@@ -314,6 +333,96 @@ class AttemptLocationScreen extends ConsumerWidget {
               ),
               const SizedBox(height: 14),
 
+              // ── Map preview — exact pin the user picked/captured ──
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => _openMapPicker(context, ref),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: SizedBox(
+                    height: 140,
+                    child: IgnorePointer(
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          FlutterMap(
+                            options: MapOptions(
+                              initialCenter: LatLng(
+                                controller.latitude!,
+                                controller.longitude!,
+                              ),
+                              initialZoom: 16,
+                              interactionOptions: const InteractionOptions(
+                                flags: InteractiveFlag.none,
+                              ),
+                            ),
+                            children: [
+                              TileLayer(
+                                urlTemplate:
+                                    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+                                subdomains: const ['a', 'b', 'c', 'd'],
+                                userAgentPackageName:
+                                    'com.example.photo_tracker',
+                              ),
+                              MarkerLayer(markers: [
+                                Marker(
+                                  point: LatLng(
+                                    controller.latitude!,
+                                    controller.longitude!,
+                                  ),
+                                  width: 32,
+                                  height: 32,
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      color: _accent,
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                          color: Colors.white, width: 2.5),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: _accent
+                                              .withValues(alpha: 0.4),
+                                          blurRadius: 6,
+                                        ),
+                                      ],
+                                    ),
+                                    child: const Icon(
+                                      Icons.location_on_rounded,
+                                      color: Colors.white,
+                                      size: 18,
+                                    ),
+                                  ),
+                                ),
+                              ]),
+                            ],
+                          ),
+                          Positioned(
+                            right: 8,
+                            bottom: 8,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.6),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Text(
+                                'Tap to adjust',
+                                style: TextStyle(
+                                    fontSize: 10,
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+
               // ── Lat / Lon (read-only) ─────────────────────────────
               Container(
                 padding: const EdgeInsets.symmetric(
@@ -414,7 +523,7 @@ class AttemptLocationScreen extends ConsumerWidget {
                   : const LinearGradient(
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
-                      colors: [Color(0xFFEDE9FE), Color(0xFFDDD6FE)],
+                      colors: [Color(0x1F4A90E2), Color(0x334A90E2)],
                     ),
               borderRadius: BorderRadius.circular(10),
               boxShadow: done

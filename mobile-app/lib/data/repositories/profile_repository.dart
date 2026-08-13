@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:photo_tracker/data/models/company.dart' show Company;
 
 import '../../core/storage/api_cache.dart';
 import '../models/attempt.dart';

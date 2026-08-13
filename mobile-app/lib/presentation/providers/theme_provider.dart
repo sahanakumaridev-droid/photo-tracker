@@ -6,12 +6,11 @@ final themeProvider = StateNotifierProvider<ThemeNotifier, ThemeState>(
   (ref) => ThemeNotifier(),
 );
 
-/// Fixed brand accent — the accent-colour picker was removed; the app uses a
-/// single purple throughout so theming stays simple and fast.
-const Color kBrandAccent = Color(0xFF7C3AED);
+/// Fixed brand accent — field-app blue from the mobile reference UI.
+const Color kBrandAccent = Color(0xFF4A90E2);
 
 class ThemeState {
-  ThemeState({this.mode = ThemeMode.light});
+  ThemeState({this.mode = ThemeMode.dark});
   final ThemeMode mode;
 
   // Kept so existing call sites (`themeState.accentColor`) keep working without
@@ -34,10 +33,10 @@ class ThemeNotifier extends StateNotifier<ThemeState> {
   Future<void> _loadTheme() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final isDark = prefs.getBool(_kDarkKey) ?? false;
+      final isDark = prefs.getBool(_kDarkKey) ?? true;
       state = ThemeState(mode: isDark ? ThemeMode.dark : ThemeMode.light);
     } on Exception {
-      // Keep the default light theme.
+      // Keep the default dark theme.
     }
   }
 

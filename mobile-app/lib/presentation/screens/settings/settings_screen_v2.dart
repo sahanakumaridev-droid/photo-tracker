@@ -24,14 +24,14 @@ final aiDataUsageProvider = StateProvider<bool>((ref) => false);
 class SettingsScreenV2 extends ConsumerWidget {
   const SettingsScreenV2({super.key});
 
-  static const Color _ink = Color(0xFF0F0F0F);
-  static const Color _muted = Color(0xFF6B7280);
-  static const Color _purple = Color(0xFF7C3AED);
+  static const Color _ink = Color(0xFFFFFFFF);
+  static const Color _muted = Color(0xFF94A3B8);
+  static const Color _purple = Color(0xFF4A90E2);
   static const Color _green = Color(0xFF10B981);
   static const Color _red = Color(0xFFEF4444);
-  static const Color _bg = Color(0xFFFAFAFA);
-  static const Color _card = Color(0xFFFFFFFF);
-  static const Color _hair = Color(0xFFE5E7EB);
+  static const Color _bg = Color(0xFF0F1219);
+  static const Color _card = Color(0xFF1C222E);
+  static const Color _hair = Color(0xFF2A3340);
 
   static const List<BoxShadow> _softShadow = [
     BoxShadow(color: Color(0x0A0F172A), blurRadius: 12, offset: Offset(0, 4)),

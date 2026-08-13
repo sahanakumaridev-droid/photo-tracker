@@ -97,8 +97,9 @@ class Profile(Base):
     name         = Column(String, nullable=False)
     service_type = Column(String, default="standard")
     note         = Column(Text, nullable=True)
-    # Standing pay rate (whole dollars) for this profile — summed across all
-    # profiles to produce "Total Available Earnings" on the Earnings screen.
+    # Standing pay rate (whole dollars) for this profile — summed across
+    # non-completed profiles (including brand-new ones) to produce
+    # "Total Available Earnings" on the Earnings screen.
     pay_rate     = Column(Integer, nullable=True)
 
     # Process-serving company slug (see companies.py). Drives allowed priority
@@ -1938,18 +1939,26 @@ def earnings_summary(period: str = "today", user_id: Optional[int] = None,
     highest = _job_summary(max(jobs, key=lambda j: (j.pay_rate or 0), default=None))
     lowest  = _job_summary(min(jobs, key=lambda j: (j.pay_rate or 0), default=None))
 
-    # "Available" earnings: standing pay rates on non-completed profiles.
-    # New profiles (no attempts yet) and profiles with every job closed out
-    # do not contribute — those closed jobs already count toward Total Earnings.
+    # "Available" earnings: standing pay rates on every profile that is not
+    # fully closed out. Brand-new profiles (no attempts yet) DO count — their
+    # pay rate is money still up for grabs. Only exclude profiles whose every
+    # attempt/photo is already completed or archived (those dollars already
+    # roll into Total Earnings via completed jobs).
     available_earnings = 0
     for p in db.query(Profile).all():
         if not p.pay_rate:
             continue
-        photos = list(p.photos or [])
-        if not photos:
-            continue  # new profile — exclude
-        if all((ph.status or "") in ("completed", "archived") for ph in photos):
-            continue  # fully completed profile
+        attempts = list(getattr(p, "attempts", None) or [])
+        if attempts:
+            if all((a.status or "") in ("completed", "archived") for a in attempts):
+                continue
+        else:
+            photos = list(p.photos or [])
+            if photos and all(
+                (ph.status or "") in ("completed", "archived") for ph in photos
+            ):
+                continue
+            # No attempts and no photos → new profile → include
         available_earnings += p.pay_rate
 
     db.close()
@@ -2327,16 +2336,22 @@ def _street_zip(address, zip_code=None):
     return ", ".join(p for p in (street, zip_val) if p)
 
 
+def _is_file_number_na(value):
+    """True when file number is missing or the explicit N/A sentinel."""
+    v = (value or "").strip()
+    return not v or v.upper() == "N/A"
+
+
 def _photo_caption(ph):
     """Caption lines burned into an exported photo:
-      FILE-123                 (file number, or profile name when no file #)
+      FILE-123                 (file number, or profile name when N/A / empty)
       2025-07-03 14:30 PST
       4822 Reno Drive, 92101
       32.690861, -117.113289
     Priority / service level is intentionally omitted."""
     lines = []
     file_no = (ph.file_number or "").strip()
-    if file_no:
+    if not _is_file_number_na(file_no):
         lines.append(file_no)
     else:
         name = ""
@@ -2756,8 +2771,11 @@ def _job_photo_caption(rec):
     export record (already formatted by the client). Priority / service level
     is intentionally omitted from watermarks."""
     lines = []
-    heading = (rec.get("file_number") or "").strip() or (
-        rec.get("profile_name") or "").strip()
+    file_no = (rec.get("file_number") or "").strip()
+    if not _is_file_number_na(file_no):
+        heading = file_no
+    else:
+        heading = (rec.get("profile_name") or "").strip()
     if heading:
         lines.append(heading)
     if rec.get("date_time"):

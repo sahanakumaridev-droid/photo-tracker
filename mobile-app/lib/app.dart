@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -59,9 +60,9 @@ class _PhotoTrackerAppState extends ConsumerState<PhotoTrackerApp> {
 
     return MaterialApp.router(
       title: 'Geo Tag',
-      theme: AppTheme.lightTheme(themeState.accentColor),
-      // Dark mode was removed — the app uses a single light theme everywhere.
-      themeMode: ThemeMode.light,
+      theme: AppTheme.darkTheme(themeState.accentColor),
+      darkTheme: AppTheme.darkTheme(themeState.accentColor),
+      themeMode: ThemeMode.dark,
       locale: locale,
       routerConfig: router,
       debugShowCheckedModeBanner: false,
@@ -69,10 +70,13 @@ class _PhotoTrackerAppState extends ConsumerState<PhotoTrackerApp> {
       // Covers every screen (incl. numeric pads like Pay Rate that have no
       // "Done" key on iOS). Translucent hit-testing lets buttons still receive
       // their own taps; only taps on empty space unfocus the active field.
-      builder: (context, child) => GestureDetector(
-        behavior: HitTestBehavior.translucent,
-        onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
-        child: child,
+      builder: (context, child) => AnnotatedRegion<SystemUiOverlayStyle>(
+        value: AppTheme.overlayDark,
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+          child: child,
+        ),
       ),
       localizationsDelegates: const [
         AppLocalizations.delegate,

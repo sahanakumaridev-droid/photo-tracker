@@ -29,12 +29,12 @@ class HomeScreenV2 extends ConsumerStatefulWidget {
 
 class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
   // ── Palette ──────────────────────────────────────────────────────────────
-  static const Color _ink        = Color(0xFF0F0F0F);
-  static const Color _muted      = Color(0xFF6B7280);
-  static const Color _purple     = Color(0xFF7C3AED);
-  static const Color _purpleSoft = Color(0xFFEDE9FE);
-  static const Color _bg         = Color(0xFFFAFAFA);
-  static const Color _card       = Color(0xFFFFFFFF);
+  static const Color _ink        = Color(0xFFFFFFFF);
+  static const Color _muted      = Color(0xFF94A3B8);
+  static const Color _purple     = Color(0xFF4A90E2);
+  static const Color _purpleSoft = Color(0x1F4A90E2);
+  static const Color _bg         = Color(0xFF0F1219);
+  static const Color _card       = Color(0xFF1C222E);
 
 
   final Set<int> _optimisticFlips = {};
@@ -185,7 +185,7 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
     return Container(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
-          colors: [Color(0xFF1E1B4B), Color(0xFF312E81)],
+          colors: [Color(0xFF0F1219), Color(0xFF1C222E)],
           begin: Alignment.centerLeft,
           end: Alignment.centerRight,
         ),
@@ -214,11 +214,11 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
                     children: [
                       TextSpan(
                         text: 'Geo',
-                        style: TextStyle(color: Color(0xFFA78BFA)), // violet
+                        style: TextStyle(color: Color(0xFF4A90E2)),
                       ),
                       TextSpan(
                         text: 'Tag',
-                        style: TextStyle(color: Color(0xFF7C3AED)), // purple
+                        style: TextStyle(color: Color(0xFFFFFFFF)),
                       ),
                     ],
                   ),
@@ -321,8 +321,8 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
             child: _filterChip(
               label: 'ALL',
               icon: Icons.apps_rounded,
-              color: const Color(0xFF312E81),
-              softColor: const Color(0xFFEEF2FF),
+              color: _purple,
+              softColor: _purpleSoft,
               selected: _selectedCategory == null,
               onTap: () {
                 HapticFeedback.selectionClick();
@@ -851,7 +851,7 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
         width: w,
         height: h,
         decoration: BoxDecoration(
-            color: Colors.white, borderRadius: BorderRadius.circular(r)),
+            color: _card, borderRadius: BorderRadius.circular(r)),
       );
 }
 

@@ -40,11 +40,11 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
   void _openCreateProfile() => context.push('/profiles-management');
 
   // ── Design tokens ─────────────────────────────────────────────────────────
-  static const Color _grayBg   = Color(0xFFF8FAFC);
-  static const Color _grayText = Color(0xFF6B7280);
-  static const Color _graySubtle = Color(0xFF94A3B8);
-  static const Color _accent   = Color(0xFF7C3AED);
-  static const Color _border   = Color(0xFFE2E8F0);
+  static const Color _grayBg   = Color(0xFF1C222E);
+  static const Color _grayText = Color(0xFF94A3B8);
+  static const Color _graySubtle = Color(0xFF6B7A8D);
+  static const Color _accent   = Color(0xFF4A90E2);
+  static const Color _border   = Color(0xFF2A3340);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -124,7 +124,7 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
       appBar: AppBar(
         title: Text(_searchQuery.isEmpty ? 'Profiles' : 'Search results'),
         elevation: 0,
-        backgroundColor: Colors.white,
+        backgroundColor: const Color(0xFF0F1219),
         foregroundColor: _grayText,
         actions: [
           IconButton(
@@ -249,7 +249,7 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
                           )
                         : null,
                     filled: true,
-                    fillColor: const Color(0xFFF1F5F9),
+                    fillColor: const Color(0xFF242B38),
                     contentPadding: const EdgeInsets.symmetric(
                         horizontal: 16, vertical: 12),
                     border: OutlineInputBorder(
@@ -366,7 +366,7 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
 
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: const Color(0xFF1C222E),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: _border, width: 1),
         boxShadow: [

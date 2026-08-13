@@ -1,13 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-/// Premium consumer tab bar — a floating, solid pill that sits with
-/// margin above the bottom edge, with a centered, elevated Upload button.
-///
-/// Index map (matches the router shell):
-///   0 Home (map) · 1 Earnings · 2 Log · 3 Capture/Upload
-/// Settings lives behind the top-bar avatar. "Home" now IS the map view; the
-/// old feed screen is reachable via the "View List" button on the map.
+import '../../../config/theme.dart';
+
+/// Flat dark tab bar matching the field-app reference: icon + label,
+/// blue when active, muted grey otherwise.
 class BottomNav extends StatelessWidget {
   const BottomNav({
     required this.currentIndex,
@@ -18,7 +15,7 @@ class BottomNav extends StatelessWidget {
   final int currentIndex;
   final ValueChanged<int> onTap;
 
-  static const Color _muted = Color(0xFF9CA3AF);
+  static const Color _muted = AppTheme.darkTextTertiary;
 
   void _go(int i) {
     HapticFeedback.selectionClick();
@@ -27,68 +24,32 @@ class BottomNav extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Follow the user's chosen accent so the picker recolours the whole app.
     final accent = Theme.of(context).colorScheme.primary;
-    return SafeArea(
-      top: false,
-      minimum: const EdgeInsets.only(bottom: 8),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-        child: Container(
-          height: 64,
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(28),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.08),
-                blurRadius: 20,
-                offset: const Offset(0, 8),
-              ),
-            ],
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: AppTheme.overlayDark,
+      child: Container(
+        decoration: const BoxDecoration(
+          color: AppTheme.darkNav,
+          border: Border(
+            top: BorderSide(color: AppTheme.darkBorder, width: 0.5),
           ),
-          child: Row(
-            children: [
-              _tab(0, Icons.home_outlined, Icons.home_rounded, 'Home', accent),
-              _tab(1, Icons.attach_money, Icons.monetization_on, 'Earnings',
-                  accent),
-              _tab(2, Icons.article_outlined, Icons.description_rounded, 'Log',
-                  accent),
-              // End gap — hosts the floating Upload button above its own cell.
-              Expanded(
-                child: SizedBox(
-                  height: 64,
-                  child: Stack(
-                    clipBehavior: Clip.none,
-                    alignment: Alignment.bottomCenter,
-                    children: [
-                      Positioned(
-                        top: -22,
-                        child: _UploadButton(
-                          active: currentIndex == 3,
-                          accent: accent,
-                          onTap: () => _go(3),
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 9),
-                        child: AnimatedDefaultTextStyle(
-                          duration: const Duration(milliseconds: 180),
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: currentIndex == 3
-                                ? FontWeight.w700
-                                : FontWeight.w600,
-                            color: currentIndex == 3 ? accent : _muted,
-                          ),
-                          child: const Text('Upload'),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
+        ),
+        child: SafeArea(
+          top: false,
+          child: SizedBox(
+            height: 60,
+            child: Row(
+              children: [
+                _tab(0, Icons.home_outlined, Icons.home_rounded, 'Home',
+                    accent),
+                _tab(1, Icons.work_outline_rounded, Icons.work_rounded, 'Jobs',
+                    accent),
+                _tab(2, Icons.receipt_long_outlined, Icons.receipt_long_rounded,
+                    'Log', accent),
+                _tab(3, Icons.payments_outlined, Icons.payments_rounded,
+                    'Earnings', accent),
+              ],
+            ),
           ),
         ),
       ),
@@ -105,89 +66,28 @@ class BottomNav extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
+            AnimatedScale(
+              scale: active ? 1.0 : 0.96,
+              duration: const Duration(milliseconds: 160),
               curve: Curves.easeOut,
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-              decoration: BoxDecoration(
-                color: active
-                    ? accent.withValues(alpha: 0.12)
-                    : Colors.transparent,
-                borderRadius: BorderRadius.circular(14),
+              child: Icon(
+                active ? activeIcon : icon,
+                size: 22,
+                color: active ? accent : _muted,
               ),
-              child: Icon(active ? activeIcon : icon,
-                  size: 20, color: active ? accent : _muted),
             ),
             const SizedBox(height: 4),
-            Text(label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: active ? FontWeight.w700 : FontWeight.w500,
-                    color: active ? accent : _muted)),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// Floating Upload FAB with a brand gradient, glow shadow, and a tactile
-/// press-down scale animation.
-class _UploadButton extends StatefulWidget {
-  const _UploadButton(
-      {required this.active, required this.accent, required this.onTap});
-
-  final bool active;
-  final Color accent;
-  final VoidCallback onTap;
-
-  @override
-  State<_UploadButton> createState() => _UploadButtonState();
-}
-
-class _UploadButtonState extends State<_UploadButton> {
-  bool _pressed = false;
-
-  void _setPressed(bool value) => setState(() => _pressed = value);
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTapDown: (_) => _setPressed(true),
-      onTapUp: (_) => _setPressed(false),
-      onTapCancel: () => _setPressed(false),
-      onTap: widget.onTap,
-      child: AnimatedScale(
-        scale: _pressed ? 0.92 : 1.0,
-        duration: const Duration(milliseconds: 120),
-        curve: Curves.easeOut,
-        child: Container(
-          width: 60,
-          height: 60,
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                widget.accent,
-                Color.lerp(widget.accent, const Color(0xFF5445E6), 0.5)!,
-              ],
-            ),
-            shape: BoxShape.circle,
-            border: Border.all(color: Colors.white, width: 4),
-            boxShadow: [
-              BoxShadow(
-                color: widget.accent
-                    .withValues(alpha: widget.active ? 0.45 : 0.35),
-                blurRadius: 18,
-                offset: const Offset(0, 8),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                color: active ? accent : _muted,
               ),
-            ],
-          ),
-          child: const Icon(Icons.upload_rounded,
-              color: Colors.white, size: 28),
+            ),
+          ],
         ),
       ),
     );

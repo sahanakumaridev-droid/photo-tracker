@@ -29,11 +29,11 @@ class LocationPickerMap extends StatefulWidget {
 }
 
 class _LocationPickerMapState extends State<LocationPickerMap> {
-  static const Color _accent = Color(0xFF7C3AED);
-  static const Color _ink = Color(0xFF0F0F0F);
-  static const Color _inkMuted = Color(0xFF6B7280);
-  static const Color _inkSubtle = Color(0xFF94A3B8);
-  static const Color _surface = Color(0xFFFFFFFF);
+  static const Color _accent = Color(0xFF4A90E2);
+  static const Color _ink = Color(0xFFFFFFFF);
+  static const Color _inkMuted = Color(0xFF94A3B8);
+  static const Color _inkSubtle = Color(0xFF6B7A8D);
+  static const Color _surface = Color(0xFF1C222E);
 
   late MapController _mapController;
   final TextEditingController _searchController = TextEditingController();
@@ -212,7 +212,7 @@ class _LocationPickerMapState extends State<LocationPickerMap> {
   Widget build(BuildContext context) {
     if (_loadingInitial || _pinPosition == null) {
       return Scaffold(
-        backgroundColor: Colors.white,
+        backgroundColor: const Color(0xFF0F1219),
         body: Center(
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             const CircularProgressIndicator(color: _accent),
@@ -268,7 +268,7 @@ class _LocationPickerMapState extends State<LocationPickerMap> {
           ),
           children: [
             TileLayer(
-              urlTemplate: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+              urlTemplate: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
               subdomains: const ['a', 'b', 'c', 'd'],
               userAgentPackageName: 'com.example.photo_tracker',
             ),

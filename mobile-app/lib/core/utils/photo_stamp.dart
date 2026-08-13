@@ -8,6 +8,11 @@ import 'package:image/image.dart' as img;
 import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'file_number.dart';
+
+export 'file_number.dart'
+    show kFileNumberNA, isAbsentFileNumber, watermarkFileHeading;
+
 /// Photo timestamp + watermark helpers.
 ///
 /// The timestamp always comes from the photo itself (EXIF capture time),
@@ -103,9 +108,10 @@ List<String> buildStampLines({
   String? serviceLabel,
 }) {
   final lines = <String>[];
-  final heading = (fileNumber ?? '').trim().isNotEmpty
-      ? fileNumber!.trim()
-      : (profileName ?? '').trim();
+  final heading = watermarkFileHeading(
+    fileNumber: fileNumber,
+    profileName: profileName,
+  );
   if (heading.isNotEmpty) lines.add(heading);
   final ts = formatStampFriendly(takenAtIso);
   if (ts.isNotEmpty) lines.add(ts);
@@ -373,7 +379,7 @@ class WatermarkBar extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.schedule_rounded, size: 10, color: Colors.white),
+            const Icon(Icons.schedule_rounded, size: 10, color: Colors.white),
             const SizedBox(width: 3),
             Flexible(
               child: Text(

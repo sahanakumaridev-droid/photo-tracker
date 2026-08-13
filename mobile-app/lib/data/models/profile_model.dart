@@ -33,8 +33,8 @@ class ProfileModel {
   final String serviceType;
   final String? note;
 
-  /// Standing pay rate (whole dollars) for this profile — summed across all
-  /// profiles to produce "Total Available Earnings" on the Earnings screen.
+  /// Standing pay rate (whole dollars) for this profile — summed across
+  /// non-completed profiles (including new ones) for Total Available Earnings.
   @JsonKey(name: 'pay_rate')
   final int? payRate;
 

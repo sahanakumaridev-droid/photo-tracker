@@ -9,7 +9,6 @@ import '../../../data/models/company.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/profile_provider.dart';
 import '../../widgets/common/loading_skeleton.dart';
-import '../../widgets/common/pill_chip.dart';
 
 /// Profile detail: profile-specific info (header + addresses) above a
 /// newest-first Service Attempts list. Tapping an attempt opens attempt
@@ -26,10 +25,10 @@ class ProfileDetailScreen extends ConsumerStatefulWidget {
 
 class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
   // Shared light/purple theme — matches the rest of the app.
-  static const Color _surface = Colors.white;
-  static const Color _ink = AppTheme.lightText;
-  static const Color _muted = AppTheme.lightTextSecondary;
-  static const Color _hair = AppTheme.lightBorder;
+  static const Color _surface = Color(0xFF1C222E);
+  static const Color _ink = AppTheme.darkText;
+  static const Color _muted = AppTheme.darkTextSecondary;
+  static const Color _hair = AppTheme.darkBorder;
   static const Color _accent = AppTheme.primary;
 
   /// Collapse long attempt lists; user expands via "+N more".
@@ -57,6 +56,7 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
     }
 
     return Scaffold(
+      backgroundColor: AppTheme.darkBg,
       appBar: AppBar(
         elevation: 0,
         surfaceTintColor: Colors.transparent,
@@ -74,7 +74,7 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
           TextButton.icon(
             onPressed: _startAttempt,
             icon: const Icon(CupertinoIcons.plus, size: 16, color: _accent),
-            label: const Text('Add Attempt',
+            label: const Text('Add to Existing Profile',
                 style: TextStyle(
                     color: _accent,
                     fontWeight: FontWeight.w700,
@@ -214,16 +214,6 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                 ? Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Container(
-                        width: 40,
-                        height: 40,
-                        decoration: const BoxDecoration(
-                            color: AppTheme.primarySoft,
-                            shape: BoxShape.circle),
-                        child: const Icon(CupertinoIcons.location_solid,
-                            color: AppTheme.primary, size: 18),
-                      ),
-                      const SizedBox(width: 12),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -246,6 +236,9 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                           ],
                         ),
                       ),
+                      const SizedBox(width: 10),
+                      const Icon(CupertinoIcons.location_solid,
+                          color: _muted, size: 20),
                     ],
                   )
                 : Row(
@@ -427,15 +420,6 @@ class _AttemptRow extends StatelessWidget {
                         fontSize: 15,
                         fontWeight: FontWeight.w700,
                         color: _ink),
-                  ),
-                  const SizedBox(height: 6),
-                  StatusChip(
-                    status: attempt.attemptStatus,
-                    radius: 6,
-                    border: true,
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    fontSize: 11,
                   ),
                   const SizedBox(height: 4),
                   Text(
