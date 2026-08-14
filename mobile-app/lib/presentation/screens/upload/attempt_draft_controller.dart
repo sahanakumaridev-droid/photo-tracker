@@ -31,14 +31,9 @@ import 'location_picker_map.dart';
 /// Attempt upload lifecycle: idle → uploading → processing → success | failed.
 enum AttemptUploadState { idle, uploading, processing, success, failed }
 
-/// Owns every field and every piece of business logic that used to live on
-/// `_UploadScreenV2State` in `upload_screen_v2.dart`. This is a near-verbatim
-/// relocation (not a rewrite): every `setState(() { field = x; })` in the old
-/// file becomes `field = x; notifyListeners();` here.
-///
-/// It's created once by the ResumeAttemptScreen hub and shared, by
-/// constructor injection, with every pushed sub-screen (Photos / Location /
-/// Details) so they all observe and mutate the same in-flight attempt.
+/// Owns every field and piece of business logic for a new or resumed attempt.
+/// Created once by ResumeAttemptScreen and injected into the composer
+/// so the single-screen form observes one draft.
 ///
 /// `BuildContext`/`WidgetRef` are never stored on the controller — methods
 /// that need them (dialogs, provider reads) take them as parameters, passed
@@ -68,6 +63,8 @@ class AttemptDraftController extends ChangeNotifier {
   // Radius used to surface "Nearby" profiles first in the profile picker,
   // and to find candidates for the post-upload "Duplicate Attempt?" offer.
   static const double kProfileProximityFt = 200;
+
+  static const int kMaxAttemptsPerJob = 5;
 
   static const List<String> kServedToPresets = [
     'Same as profile',
@@ -716,10 +713,54 @@ class AttemptDraftController extends ChangeNotifier {
           }
           notifyListeners();
           saveDraft();
+          unawaited(_prefillLockedProfile(p, ref));
           break;
         }
       }
     } catch (_) {/* keep going without a pre-selected profile */}
+  }
+
+  void _prefillProfileStandingFields(ProfileModel p) {
+    if (payRateController.text.trim().isEmpty && p.payRate != null) {
+      payRateController.text = '${p.payRate}';
+    }
+    if (addressController.text.trim().isEmpty) {
+      final parts = [
+        p.address,
+        p.city,
+        p.state,
+        p.postalCode,
+      ].where((s) => s != null && s.trim().isNotEmpty).map((s) => s!.trim());
+      if (parts.isNotEmpty) addressController.text = parts.join(', ');
+    }
+  }
+
+  /// Records GPS at the moment a photo is captured so the attempt tag
+  /// matches the shutter, not a later form-open location.
+  Future<void> _stampGeotagAtCapture() async {
+    if (locationFrozenFromCache && latitude != null) return;
+    try {
+      Position? pos = await Geolocator.getLastKnownPosition();
+      pos ??= await LocationService.getCurrentLocation();
+      if (pos == null || _disposed) return;
+      latitude = pos.latitude;
+      longitude = pos.longitude;
+      gpsAccuracy = pos.accuracy;
+      locationError = false;
+      locationErrorMsg = null;
+      notifyListeners();
+      saveDraft();
+      final address = await LocationService.reverseGeocode(
+        pos.latitude,
+        pos.longitude,
+      );
+      if (!_disposed &&
+          address != null &&
+          address.isNotEmpty &&
+          addressController.text.trim().isEmpty) {
+        addressController.text = address;
+      }
+    } catch (_) {}
   }
 
   // ── Location ────────────────────────────────────────────────────────────
@@ -831,7 +872,7 @@ class AttemptDraftController extends ChangeNotifier {
       if (context.mounted) {
         showSnack(
           context,
-          'Location is locked from cache. Unlock from the hub banner to change it.',
+          'Location is locked from cache. Unlock from the banner to change it.',
           isError: true,
         );
       }
@@ -987,6 +1028,7 @@ class AttemptDraftController extends ChangeNotifier {
           notifyListeners();
         }
         saveDraft();
+        unawaited(_stampGeotagAtCapture());
         return;
       }
 
@@ -1004,6 +1046,7 @@ class AttemptDraftController extends ChangeNotifier {
           notifyListeners();
         }
         saveDraft();
+        unawaited(_stampGeotagAtCapture());
       }
     } on PlatformException catch (e) {
       debugPrint('[Picker] PlatformException: ${e.code} – ${e.message}');
@@ -1119,8 +1162,16 @@ class AttemptDraftController extends ChangeNotifier {
     // nothing typed yet; never clobber a real resumed record or edits the
     // user already made.
     if (ref != null && existingAttemptId == null) {
-      unawaited(_prefillFromLatestAttempt(p.id, ref));
+      unawaited(_prefillLockedProfile(p, ref));
     }
+  }
+
+  /// Latest attempt first (file #, pay, delivery, served to), then standing
+  /// profile fields fill whatever is still empty — never clobber typed values.
+  Future<void> _prefillLockedProfile(ProfileModel p, WidgetRef ref) async {
+    await _prefillFromLatestAttempt(p.id, ref);
+    if (_disposed || selectedProfile?.id != p.id) return;
+    _prefillProfileStandingFields(p);
   }
 
   Future<void> _prefillFromLatestAttempt(int profileId, WidgetRef ref) async {
@@ -1139,6 +1190,21 @@ class AttemptDraftController extends ChangeNotifier {
       }
       if (payRateController.text.trim().isEmpty && latest.payRate != null) {
         payRateController.text = latest.payRate.toString();
+        changed = true;
+      }
+      if (fileNumberController.text.trim().isEmpty &&
+          (latest.fileNumber ?? '').trim().isNotEmpty) {
+        fileNumberController.text = latest.fileNumber!.trim();
+        changed = true;
+      }
+      if (servedToController.text.trim().isEmpty &&
+          (latest.servedTo ?? '').trim().isNotEmpty) {
+        servedToController.text = latest.servedTo!.trim();
+        changed = true;
+      }
+      if (relationToController.text.trim().isEmpty &&
+          (latest.relationTo ?? '').trim().isNotEmpty) {
+        relationToController.text = latest.relationTo!.trim();
         changed = true;
       }
       if (changed) {

@@ -13,6 +13,8 @@ import '../../providers/location_provider.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
 import '../../widgets/common/upload_app_bar_button.dart';
+import '../upload/attempt_draft_controller.dart';
+import '../upload/attempt_limits.dart';
 
 /// List of the same jobs shown as pins on the map.
 class JobsScreen extends ConsumerStatefulWidget {
@@ -197,9 +199,18 @@ class _JobsScreenState extends ConsumerState<JobsScreen> {
                         recipient: job.recipient,
                         address: job.address,
                         client: job.client,
-                        attempts: job.photos.length,
-                        onNewAttempt: () {
+                        attempts: job.attemptCount,
+                        atCap: job.attemptCount >=
+                            AttemptDraftController.kMaxAttemptsPerJob,
+                        onNewAttempt: () async {
                           final pid = job.profile?.id;
+                          final ok = await ensureCanStartNewAttempt(
+                            context,
+                            ref,
+                            profileId: pid,
+                            knownCount: job.attemptCount,
+                          );
+                          if (!ok || !context.mounted) return;
                           if (pid != null) {
                             context.push('/upload?profileId=$pid');
                           } else {
@@ -232,6 +243,11 @@ class _JobRow {
 
   final ProfileModel? profile;
   final List<PhotoModel> photos;
+
+  int get attemptCount => jobAttemptCount(
+        photos: photos,
+        profileAttemptsCount: profile?.attemptsCount,
+      );
 
   PhotoModel? get latest => photos.isEmpty ? null : photos.first;
 
@@ -341,6 +357,7 @@ class _JobCard extends StatelessWidget {
     required this.onViewJob,
     this.distance,
     this.client,
+    this.atCap = false,
   });
 
   final String jobId;
@@ -349,6 +366,7 @@ class _JobCard extends StatelessWidget {
   final String address;
   final String? client;
   final int attempts;
+  final bool atCap;
   final VoidCallback onNewAttempt;
   final VoidCallback onViewJob;
 
@@ -420,11 +438,14 @@ class _JobCard extends StatelessWidget {
               borderRadius: BorderRadius.circular(20),
             ),
             child: Text(
-              '$attempts Attempt${attempts == 1 ? '' : 's'}',
-              style: const TextStyle(
+              '$attempts of ${AttemptDraftController.kMaxAttemptsPerJob} '
+              'attempt${attempts == 1 ? '' : 's'}',
+              style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
-                  color: AppTheme.darkTextSecondary),
+                  color: atCap
+                      ? const Color(0xFFFBBF24)
+                      : AppTheme.darkTextSecondary),
             ),
           ),
           const SizedBox(height: 14),
@@ -432,9 +453,9 @@ class _JobCard extends StatelessWidget {
             children: [
               Expanded(
                 child: _ActionBtn(
-                  icon: Icons.add_rounded,
-                  label: 'New Attempt',
-                  filled: true,
+                  icon: atCap ? Icons.block_rounded : Icons.add_rounded,
+                  label: atCap ? 'Max attempts' : 'New Attempt',
+                  filled: !atCap,
                   onTap: onNewAttempt,
                 ),
               ),

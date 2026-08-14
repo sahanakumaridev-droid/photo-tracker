@@ -9,6 +9,8 @@ import '../../../data/models/company.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/profile_provider.dart';
 import '../../widgets/common/loading_skeleton.dart';
+import '../upload/attempt_draft_controller.dart';
+import '../upload/attempt_limits.dart';
 
 /// Profile detail: profile-specific info (header + addresses) above a
 /// newest-first Service Attempts list. Tapping an attempt opens attempt
@@ -35,7 +37,16 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
   static const int _kInitialVisible = 4;
   bool _showAllAttempts = false;
 
-  void _startAttempt() {
+  Future<void> _startAttempt() async {
+    final known =
+        ref.read(profileAttemptsProvider(widget.profileId)).valueOrNull?.length;
+    final ok = await ensureCanStartNewAttempt(
+      context,
+      ref,
+      profileId: widget.profileId,
+      knownCount: known,
+    );
+    if (!ok || !context.mounted) return;
     context.push('/upload?profileId=${widget.profileId}');
   }
 
@@ -55,6 +66,10 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
       }
     }
 
+    final attemptCount = attemptsAsync.valueOrNull?.length ?? 0;
+    final atCap =
+        attemptCount >= AttemptDraftController.kMaxAttemptsPerJob;
+
     return Scaffold(
       backgroundColor: AppTheme.darkBg,
       appBar: AppBar(
@@ -73,12 +88,20 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
         actions: [
           TextButton.icon(
             onPressed: _startAttempt,
-            icon: const Icon(CupertinoIcons.plus, size: 16, color: _accent),
-            label: const Text('Add to Existing Profile',
-                style: TextStyle(
-                    color: _accent,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 13)),
+            icon: Icon(
+              atCap ? CupertinoIcons.exclamationmark_circle : CupertinoIcons.plus,
+              size: 16,
+              color: atCap ? const Color(0xFFFBBF24) : _accent,
+            ),
+            label: Text(
+              atCap
+                  ? 'Max ${AttemptDraftController.kMaxAttemptsPerJob} attempts'
+                  : 'Add to Existing Profile',
+              style: TextStyle(
+                  color: atCap ? const Color(0xFFFBBF24) : _accent,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13),
+            ),
           ),
         ],
       ),

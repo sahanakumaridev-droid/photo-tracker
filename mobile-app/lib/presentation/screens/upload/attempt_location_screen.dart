@@ -359,8 +359,10 @@ class AttemptLocationScreen extends ConsumerWidget {
                             children: [
                               TileLayer(
                                 urlTemplate:
-                                    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+                                    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
                                 subdomains: const ['a', 'b', 'c', 'd'],
+                                retinaMode: false,
+                                tileSize: 256,
                                 userAgentPackageName:
                                     'com.example.photo_tracker',
                               ),

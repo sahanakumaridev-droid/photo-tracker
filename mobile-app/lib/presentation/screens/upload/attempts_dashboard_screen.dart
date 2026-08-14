@@ -49,7 +49,7 @@ Attempt? _matchAttempt(List<Attempt> attempts, LogEntryModel log) {
   return null;
 }
 
-/// Upload-tab home: compact summary + Pending / Unsuccessful tabs.
+/// Upload-tab home: summary counts filter the list below.
 /// "New Attempt" lives in the header (no FAB overlapping the bottom nav).
 class AttemptsDashboardScreen extends ConsumerStatefulWidget {
   const AttemptsDashboardScreen({super.key});
@@ -62,7 +62,6 @@ class AttemptsDashboardScreen extends ConsumerStatefulWidget {
   static const Color _accent = Color(0xFF4A90E2);
   static const Color _accentSoft = Color(0x1F4A90E2);
   static const Color _border = Color(0xFF2A3340);
-  static const Color _divider = Color(0xFF2A3340);
 
   static const _emptyFilters = (
     date: null,
@@ -79,32 +78,13 @@ class AttemptsDashboardScreen extends ConsumerStatefulWidget {
 }
 
 class _AttemptsDashboardScreenState
-    extends ConsumerState<AttemptsDashboardScreen>
-    with SingleTickerProviderStateMixin {
-  late final TabController _tabController;
-
-  @override
-  void initState() {
-    super.initState();
-    _tabController = TabController(length: 2, vsync: this);
-    _tabController.addListener(() {
-      if (!_tabController.indexIsChanging) setState(() {});
-    });
-  }
-
-  @override
-  void dispose() {
-    _tabController.dispose();
-    super.dispose();
-  }
+    extends ConsumerState<AttemptsDashboardScreen> {
+  _StatFilter _filter = _StatFilter.total;
 
   @override
   Widget build(BuildContext context) {
     final logAsync =
         ref.watch(logProvider(AttemptsDashboardScreen._emptyFilters));
-    final snapshots = ref.watch(localSnapshotsProvider).valueOrNull ??
-        const <Map<String, dynamic>>[];
-
     return Scaffold(
       backgroundColor: AttemptsDashboardScreen._canvas,
       body: SafeArea(
@@ -115,7 +95,7 @@ class _AttemptsDashboardScreenState
                 color: AttemptsDashboardScreen._accent),
           ),
           error: (err, _) => _buildError(context, ref, err),
-          data: (logs) => _buildBody(context, ref, logs, snapshots),
+          data: (logs) => _buildBody(context, ref, logs),
         ),
       ),
     );
@@ -134,31 +114,41 @@ class _AttemptsDashboardScreenState
     BuildContext context,
     WidgetRef ref,
     List<LogEntryModel> logs,
-    List<Map<String, dynamic>> snapshots,
   ) {
-    final pending = _uniqueByAttempt(
-      logs.where((l) =>
-          normalizeAttemptStatus(l.attemptStatus) == kAttemptStatusPending),
-    )..sort((a, b) => (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
+    final all = _uniqueByAttempt(logs)
+      ..sort((a, b) => (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
+    final pending = all
+        .where((l) =>
+            normalizeAttemptStatus(l.attemptStatus) == kAttemptStatusPending)
+        .toList();
+    final done = all
+        .where((l) =>
+            normalizeAttemptStatus(l.attemptStatus) ==
+            kAttemptStatusSuccessful)
+        .toList();
+    final failed = all
+        .where((l) =>
+            normalizeAttemptStatus(l.attemptStatus) ==
+            kAttemptStatusUnsuccessful)
+        .toList();
 
-    final unsuccessful = _uniqueByAttempt(
-      logs.where((l) =>
-          normalizeAttemptStatus(l.attemptStatus) ==
-          kAttemptStatusUnsuccessful),
-    )..sort((a, b) => (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
-
-    final showingPending = _tabController.index == 0;
-    final activeList = showingPending ? pending : unsuccessful;
+    final activeList = switch (_filter) {
+      _StatFilter.total => all,
+      _StatFilter.pending => pending,
+      _StatFilter.done => done,
+      _StatFilter.failed => failed,
+    };
     // Clearance for the elevated Upload tab in the shell bottom nav.
     final bottomPad = MediaQuery.of(context).padding.bottom + 88.0;
 
     return Column(
       children: [
         _buildHeader(context, ref),
-        _buildStatStrip(logs),
-        _buildTabs(
-          pendingCount: pending.length,
-          unsuccessfulCount: unsuccessful.length,
+        _buildStatStrip(
+          total: all.length,
+          pending: pending.length,
+          done: done.length,
+          failed: failed.length,
         ),
         Expanded(
           child: RefreshIndicator(
@@ -173,50 +163,21 @@ class _AttemptsDashboardScreenState
             child: CustomScrollView(
               physics: const AlwaysScrollableScrollPhysics(),
               slivers: [
-                if (showingPending && snapshots.isNotEmpty) ...[
-                  SliverToBoxAdapter(
-                    child: _buildDraftsBanner(snapshots.length),
-                  ),
-                  SliverList.builder(
-                    itemCount: snapshots.length,
-                    itemBuilder: (context, i) => Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                      child: _QuickSavedCard(snapshot: snapshots[i]),
-                    ),
-                  ),
-                  if (activeList.isNotEmpty)
-                    const SliverToBoxAdapter(
-                      child: Padding(
-                        padding: EdgeInsets.fromLTRB(20, 8, 20, 8),
-                        child: Text(
-                          'On server',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: AttemptsDashboardScreen._inkSubtle,
-                            letterSpacing: 0.2,
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-                if (activeList.isEmpty &&
-                    !(showingPending && snapshots.isNotEmpty))
+                if (activeList.isEmpty)
                   SliverFillRemaining(
                     hasScrollBody: false,
-                    child: _buildEmptyList(isPending: showingPending),
+                    child: _buildEmptyList(_filter),
                   )
-                else if (activeList.isNotEmpty)
+                else
                   SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
                     sliver: SliverList.separated(
                       itemCount: activeList.length,
                       separatorBuilder: (_, __) => const SizedBox(height: 8),
                       itemBuilder: (context, i) => _AttemptListCard(
                         log: activeList[i],
-                        statusValue: showingPending
-                            ? kAttemptStatusPending
-                            : kAttemptStatusUnsuccessful,
+                        statusValue: normalizeAttemptStatus(
+                            activeList[i].attemptStatus),
                       ),
                     ),
                   ),
@@ -292,34 +253,38 @@ class _AttemptsDashboardScreenState
     );
   }
 
-  Widget _buildStatStrip(List<LogEntryModel> logs) {
-    final unique = _uniqueByAttempt(logs);
-    int countOf(String status) => unique
-        .where((l) => normalizeAttemptStatus(l.attemptStatus) == status)
-        .length;
-
+  Widget _buildStatStrip({
+    required int total,
+    required int pending,
+    required int done,
+    required int failed,
+  }) {
     final items = [
       (
+        _StatFilter.total,
         'Total',
-        '${unique.length}',
+        '$total',
         AttemptsDashboardScreen._accent,
         AttemptsDashboardScreen._accentSoft,
       ),
       (
+        _StatFilter.pending,
         'Pending',
-        '${countOf(kAttemptStatusPending)}',
+        '$pending',
         kAttemptStatuses[0].color,
         kAttemptStatuses[0].softColor,
       ),
       (
+        _StatFilter.done,
         'Done',
-        '${countOf(kAttemptStatusSuccessful)}',
+        '$done',
         kAttemptStatuses[1].color,
         kAttemptStatuses[1].softColor,
       ),
       (
+        _StatFilter.failed,
         'Failed',
-        '${countOf(kAttemptStatusUnsuccessful)}',
+        '$failed',
         kAttemptStatuses[2].color,
         kAttemptStatuses[2].softColor,
       ),
@@ -329,7 +294,7 @@ class _AttemptsDashboardScreenState
       color: AttemptsDashboardScreen._surface,
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+        padding: const EdgeInsets.all(4),
         decoration: BoxDecoration(
           color: AttemptsDashboardScreen._canvas,
           borderRadius: BorderRadius.circular(14),
@@ -337,119 +302,60 @@ class _AttemptsDashboardScreenState
         ),
         child: Row(
           children: [
-            for (var i = 0; i < items.length; i++) ...[
-              if (i > 0)
-                Container(
-                  width: 1,
-                  height: 28,
-                  color: AttemptsDashboardScreen._border,
-                ),
+            for (var i = 0; i < items.length; i++)
               Expanded(
-                child: Column(
-                  children: [
-                    Text(
-                      items[i].$2,
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w800,
-                        color: items[i].$3,
-                        letterSpacing: -0.4,
-                        height: 1.1,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      items[i].$1,
-                      style: const TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w500,
-                        color: AttemptsDashboardScreen._inkMuted,
-                      ),
-                    ),
-                  ],
+                child: _StatCell(
+                  label: items[i].$2,
+                  value: items[i].$3,
+                  color: items[i].$4,
+                  soft: items[i].$5,
+                  selected: _filter == items[i].$1,
+                  showDivider: i > 0 &&
+                      _filter != items[i].$1 &&
+                      _filter != items[i - 1].$1,
+                  onTap: () {
+                    HapticFeedback.selectionClick();
+                    setState(() => _filter = items[i].$1);
+                  },
                 ),
               ),
-            ],
           ],
         ),
       ),
     );
   }
 
-  Widget _buildTabs({
-    required int pendingCount,
-    required int unsuccessfulCount,
-  }) {
-    return Container(
-      decoration: const BoxDecoration(
-        color: AttemptsDashboardScreen._surface,
-        border: Border(
-          bottom: BorderSide(color: AttemptsDashboardScreen._border),
+  Widget _buildEmptyList(_StatFilter filter) {
+    final (icon, color, soft, title, subtitle) = switch (filter) {
+      _StatFilter.total => (
+          CupertinoIcons.doc_text,
+          AttemptsDashboardScreen._accent,
+          AttemptsDashboardScreen._accentSoft,
+          'No attempts yet',
+          'Tap New to start logging a service attempt.',
         ),
-      ),
-      child: TabBar(
-        controller: _tabController,
-        indicatorColor: AttemptsDashboardScreen._accent,
-        indicatorWeight: 2.5,
-        labelColor: AttemptsDashboardScreen._ink,
-        unselectedLabelColor: AttemptsDashboardScreen._inkMuted,
-        labelStyle: const TextStyle(
-          fontSize: 14,
-          fontWeight: FontWeight.w700,
+      _StatFilter.pending => (
+          kAttemptStatuses[0].icon,
+          kAttemptStatuses[0].color,
+          kAttemptStatuses[0].softColor,
+          'No pending attempts',
+          'Tap New to start logging a service attempt.',
         ),
-        unselectedLabelStyle: const TextStyle(
-          fontSize: 14,
-          fontWeight: FontWeight.w500,
+      _StatFilter.done => (
+          kAttemptStatuses[1].icon,
+          kAttemptStatuses[1].color,
+          kAttemptStatuses[1].softColor,
+          'No completed attempts',
+          'Successful jobs will show up here.',
         ),
-        tabs: [
-          Tab(
-            child: _TabLabel(
-              title: 'Pending',
-              count: pendingCount,
-              active: _tabController.index == 0,
-            ),
-          ),
-          Tab(
-            child: _TabLabel(
-              title: 'Unsuccessful',
-              count: unsuccessfulCount,
-              active: _tabController.index == 1,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDraftsBanner(int count) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
-      child: Row(
-        children: [
-          Container(
-            width: 6,
-            height: 6,
-            decoration: const BoxDecoration(
-              color: Color(0xFFF59E0B),
-              shape: BoxShape.circle,
-            ),
-          ),
-          const SizedBox(width: 8),
-          Text(
-            'Drafts on this device · $count',
-            style: const TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: Color(0xFFB45309),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildEmptyList({required bool isPending}) {
-    final opt = isPending ? kAttemptStatuses[0] : kAttemptStatuses[2];
+      _StatFilter.failed => (
+          kAttemptStatuses[2].icon,
+          kAttemptStatuses[2].color,
+          kAttemptStatuses[2].softColor,
+          'No failed attempts',
+          'Unsuccessful jobs will show up here.',
+        ),
+    };
     return Center(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 40),
@@ -459,15 +365,12 @@ class _AttemptsDashboardScreenState
             Container(
               width: 56,
               height: 56,
-              decoration: BoxDecoration(
-                color: opt.softColor,
-                shape: BoxShape.circle,
-              ),
-              child: Icon(opt.icon, size: 26, color: opt.color),
+              decoration: BoxDecoration(color: soft, shape: BoxShape.circle),
+              child: Icon(icon, size: 26, color: color),
             ),
             const SizedBox(height: 16),
             Text(
-              isPending ? 'No pending attempts' : 'No unsuccessful attempts',
+              title,
               style: const TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.w700,
@@ -476,9 +379,7 @@ class _AttemptsDashboardScreenState
             ),
             const SizedBox(height: 6),
             Text(
-              isPending
-                  ? 'Tap New to start logging a service attempt.'
-                  : 'Failed attempts will appear in this tab.',
+              subtitle,
               textAlign: TextAlign.center,
               style: const TextStyle(
                 fontSize: 13,
@@ -537,45 +438,86 @@ class _AttemptsDashboardScreenState
       );
 }
 
-class _TabLabel extends StatelessWidget {
-  const _TabLabel({
-    required this.title,
-    required this.count,
-    required this.active,
+enum _StatFilter { total, pending, done, failed }
+
+class _StatCell extends StatefulWidget {
+  const _StatCell({
+    required this.label,
+    required this.value,
+    required this.color,
+    required this.soft,
+    required this.selected,
+    required this.showDivider,
+    required this.onTap,
   });
 
-  final String title;
-  final int count;
-  final bool active;
+  final String label;
+  final String value;
+  final Color color;
+  final Color soft;
+  final bool selected;
+  final bool showDivider;
+  final VoidCallback onTap;
+
+  @override
+  State<_StatCell> createState() => _StatCellState();
+}
+
+class _StatCellState extends State<_StatCell> {
+  bool _down = false;
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(title),
-        const SizedBox(width: 6),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTapDown: (_) => setState(() => _down = true),
+      onTapUp: (_) => setState(() => _down = false),
+      onTapCancel: () => setState(() => _down = false),
+      onTap: widget.onTap,
+      child: AnimatedScale(
+        scale: _down ? 0.97 : 1,
+        duration: const Duration(milliseconds: 120),
+        curve: Curves.easeOut,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: const Cubic(0.23, 1, 0.32, 1),
+          padding: const EdgeInsets.symmetric(vertical: 10),
           decoration: BoxDecoration(
-            color: active
-                ? AttemptsDashboardScreen._accentSoft
-                : AttemptsDashboardScreen._divider,
-            borderRadius: BorderRadius.circular(8),
+            color: widget.selected ? widget.soft : Colors.transparent,
+            borderRadius: BorderRadius.circular(10),
+            border: widget.showDivider
+                ? const Border(
+                    left: BorderSide(color: AttemptsDashboardScreen._border),
+                  )
+                : null,
           ),
-          child: Text(
-            '$count',
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
-              color: active
-                  ? AttemptsDashboardScreen._accent
-                  : AttemptsDashboardScreen._inkMuted,
-            ),
+          child: Column(
+            children: [
+              Text(
+                widget.value,
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  color: widget.color,
+                  letterSpacing: -0.4,
+                  height: 1.1,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                widget.label,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: widget.selected ? FontWeight.w700 : FontWeight.w500,
+                  color: widget.selected
+                      ? AttemptsDashboardScreen._ink
+                      : AttemptsDashboardScreen._inkMuted,
+                ),
+              ),
+            ],
           ),
         ),
-      ],
+      ),
     );
   }
 }
@@ -738,12 +680,6 @@ class _AttemptListCardState extends ConsumerState<_AttemptListCard> {
                     const SizedBox(height: 8),
                     Row(
                       children: [
-                        _MiniChip(
-                          label: status.label,
-                          fg: status.color,
-                          bg: status.softColor,
-                        ),
-                        const SizedBox(width: 6),
                         PriorityChip(
                           category: log.category,
                           radius: 6,
@@ -798,205 +734,6 @@ class _AttemptListCardState extends ConsumerState<_AttemptListCard> {
                       minimumSize: const Size(36, 36),
                       fixedSize: const Size(36, 36),
                     ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _MiniChip extends StatelessWidget {
-  const _MiniChip({
-    required this.label,
-    required this.fg,
-    required this.bg,
-  });
-
-  final String label;
-  final Color fg;
-  final Color bg;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          fontSize: 10,
-          fontWeight: FontWeight.w700,
-          color: fg,
-        ),
-      ),
-    );
-  }
-}
-
-class _QuickSavedCard extends ConsumerStatefulWidget {
-  const _QuickSavedCard({required this.snapshot});
-
-  final Map<String, dynamic> snapshot;
-
-  @override
-  ConsumerState<_QuickSavedCard> createState() => _QuickSavedCardState();
-}
-
-class _QuickSavedCardState extends ConsumerState<_QuickSavedCard> {
-  static const Color _amber = Color(0xFFF59E0B);
-  static const Color _amberSoft = Color(0x26F59E0B);
-  static const Color _amberBorder = Color(0x66F59E0B);
-
-  bool _opening = false;
-
-  String? get _subtitle {
-    final snapshot = widget.snapshot;
-    final fileNumber = (snapshot['fileNumber'] as String?)?.trim();
-    if (fileNumber != null && fileNumber.isNotEmpty) return 'File #$fileNumber';
-    final address = (snapshot['address'] as String?)?.trim();
-    if (address != null && address.isNotEmpty) return address;
-    final style = (snapshot['completionType'] as String?)?.trim();
-    if (style != null && style.isNotEmpty) return style;
-    return null;
-  }
-
-  String _relativeTime(String? ts) {
-    if (ts == null) return '';
-    try {
-      final dt = DateTime.parse(ts).toLocal();
-      final diff = DateTime.now().difference(dt);
-      if (diff.inMinutes < 1) return 'Just now';
-      if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
-      if (diff.inHours < 24) return '${diff.inHours}h ago';
-      if (diff.inDays == 1) return 'Yesterday';
-      if (diff.inDays < 7) return '${diff.inDays}d ago';
-      return DateFormat('MMM d').format(dt);
-    } catch (_) {
-      return '';
-    }
-  }
-
-  Future<void> _resume() async {
-    setState(() => _opening = true);
-    HapticFeedback.selectionClick();
-    try {
-      await Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) =>
-              ResumeAttemptScreen(localSnapshot: widget.snapshot),
-        ),
-      );
-    } finally {
-      if (mounted) setState(() => _opening = false);
-      ref.invalidate(localSnapshotsProvider);
-      ref.invalidate(logProvider(AttemptsDashboardScreen._emptyFilters));
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final snapshot = widget.snapshot;
-    final isExisting = snapshot['existingAttemptId'] != null;
-    final photoCount = (snapshot['photoPaths'] as List?)?.length ?? 0;
-
-    return Material(
-      color: _amberSoft,
-      borderRadius: BorderRadius.circular(14),
-      child: InkWell(
-        onTap: _opening ? null : _resume,
-        borderRadius: BorderRadius.circular(14),
-        child: Container(
-          padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: _amberBorder),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Icon(Icons.sd_storage_outlined,
-                    size: 16, color: _amber),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      isExisting ? 'Unsynced edit' : 'Local draft',
-                      style: const TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                        color: _amber,
-                        letterSpacing: 0.2,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      (snapshot['profileName'] as String?) ??
-                          'Unknown profile',
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        color: AttemptsDashboardScreen._ink,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      [
-                        if (_subtitle != null) _subtitle!,
-                        if (photoCount > 0)
-                          '$photoCount photo${photoCount > 1 ? 's' : ''}',
-                        _relativeTime(snapshot['snapshotAt'] as String?),
-                      ].where((s) => s.isNotEmpty).join(' · '),
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: AttemptsDashboardScreen._inkMuted,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ),
-              ),
-              if (_opening)
-                const SizedBox(
-                  width: 36,
-                  height: 36,
-                  child: Center(
-                    child: SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: _amber,
-                      ),
-                    ),
-                  ),
-                )
-              else
-                IconButton(
-                  onPressed: _resume,
-                  icon: const Icon(CupertinoIcons.play_arrow_solid,
-                      size: 18, color: _amber),
-                  style: IconButton.styleFrom(
-                    backgroundColor: const Color(0xFF1C222E),
-                    minimumSize: const Size(36, 36),
-                    fixedSize: const Size(36, 36),
                   ),
                 ),
             ],

@@ -80,7 +80,10 @@ final routerProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/map',
-            builder: (context, state) => const MapViewScreen(),
+            // Real map lives in [_ShellScaffold] so tab switches don't
+            // dispose it. A fresh FlutterMap after a 0-size layout is what
+            // left tiles in a strip.
+            builder: (context, state) => const SizedBox.shrink(),
           ),
           GoRoute(
             path: '/jobs',
@@ -185,12 +188,29 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold> {
     return -1;
   }
 
+  bool _onMapTab(String loc) => loc.startsWith('/map');
+
   @override
   Widget build(BuildContext context) {
     final location = GoRouterState.of(context).matchedLocation;
     final currentIndex = _indexForLocation(location);
+    final onMap = _onMapTab(location);
+
     return Scaffold(
-      body: widget.child,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          Visibility(
+            visible: onMap,
+            maintainState: true,
+            maintainAnimation: true,
+            maintainSize: true,
+            maintainInteractivity: false,
+            child: const MapViewScreen(),
+          ),
+          if (!onMap) widget.child,
+        ],
+      ),
       bottomNavigationBar: BottomNav(
         currentIndex: currentIndex,
         onTap: (index) => _onTabTap(index, currentIndex),

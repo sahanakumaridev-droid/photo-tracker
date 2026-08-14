@@ -1,23 +1,26 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:flutter_map_marker_cluster/flutter_map_marker_cluster.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../../../core/storage/upload_queue.dart';
+import '../../../core/utils/attempt_status.dart';
 import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../data/models/company.dart';
 import '../../../data/models/photo_model.dart';
+import '../../../data/models/profile_model.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
+import '../upload/attempt_draft_controller.dart';
+import '../upload/attempt_limits.dart';
 import 'map_upload_sheet.dart';
 
 // ── Design tokens (dark field UI) ─────────────────────────────────────────────
@@ -27,6 +30,7 @@ const _kInkMuted = Color(0xFF94A3B8);
 const _kSubtle   = Color(0xFF6B7A8D);
 const _kSep      = Color(0xFF2A3340);
 const _kAccent   = Color(0xFF4A90E2);
+const _kPending  = Color(0xFFF5C400);
 const _kAlert    = Color(0xFFC2185B);
 const _kFab      = Color(0xCC1C222E);
 
@@ -53,6 +57,96 @@ Map<String, List<PhotoModel>> _groupByLocation(List<PhotoModel> photos) {
   return map;
 }
 
+/// One pin on the home map = one job (same grouping as the Jobs tab).
+class _MapJob {
+  _MapJob({required this.profile, required this.photos});
+
+  final ProfileModel? profile;
+  final List<PhotoModel> photos;
+
+  PhotoModel? get latest => photos.isEmpty ? null : photos.first;
+
+  bool get isPending {
+    if (photos.isEmpty) return true;
+    return normalizeAttemptStatus(latest!.attemptStatus) ==
+        kAttemptStatusPending;
+  }
+
+  Color get pinColor => isPending ? _kPending : _kAccent;
+
+  String get jobId {
+    final fn = latest?.fileNumber?.trim();
+    if (fn != null && fn.isNotEmpty) return fn;
+    if (profile != null) return '${profile!.id}';
+    return latest != null ? '${latest!.id}' : '—';
+  }
+
+  String get recipient {
+    final name = profile?.name.trim();
+    if (name != null && name.isNotEmpty) return name;
+    final fromPhoto = latest?.profileName?.trim();
+    if (fromPhoto != null && fromPhoto.isNotEmpty) return fromPhoto;
+    return 'Unknown';
+  }
+
+  String get address {
+    final fromPhoto = latest?.address?.trim();
+    if (fromPhoto != null && fromPhoto.isNotEmpty) return fromPhoto;
+    final parts = [
+      profile?.address,
+      profile?.city,
+      profile?.state,
+      profile?.postalCode,
+    ].where((s) => s != null && s.trim().isNotEmpty).map((s) => s!.trim());
+    if (parts.isNotEmpty) return parts.join(', ');
+    final zip = latest?.zipCode?.trim();
+    if (zip != null && zip.isNotEmpty) return 'ZIP $zip';
+    return '${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}';
+  }
+
+  String? get client {
+    final named = profile?.companyName?.trim();
+    if (named != null && named.isNotEmpty) return named;
+    if (profile != null) return companyOrDefault(profile!.company).name;
+    return null;
+  }
+
+  double? get _rawLat {
+    if (_usable(profile?.latitude, profile?.longitude)) {
+      return profile!.latitude;
+    }
+    return latest?.latitude;
+  }
+
+  double? get _rawLng {
+    if (_usable(profile?.latitude, profile?.longitude)) {
+      return profile!.longitude;
+    }
+    return latest?.longitude;
+  }
+
+  static bool _usable(double? lat, double? lng) =>
+      lat != null &&
+      lng != null &&
+      lat.abs() <= 90 &&
+      lng.abs() <= 180 &&
+      (lat.abs() > 0.0001 || lng.abs() > 0.0001);
+
+  bool get hasPoint =>
+      _rawLat != null &&
+      _rawLng != null &&
+      (_rawLat!.abs() > 0.0001 || _rawLng!.abs() > 0.0001);
+
+  double get lat => _rawLat!;
+  double get lng => _rawLng!;
+  LatLng get point => LatLng(lat, lng);
+
+  int get attemptCount => jobAttemptCount(
+        photos: photos,
+        profileAttemptsCount: profile?.attemptsCount,
+      );
+}
+
 // Breakdown by per-photo priority category (serviceType is legacy and now
 // always 'standard').
 Map<String, int> _countByService(List<PhotoModel> photos) {
@@ -62,18 +156,6 @@ Map<String, int> _countByService(List<PhotoModel> photos) {
     counts[s] = (counts[s] ?? 0) + 1;
   }
   return counts;
-}
-
-// Highest-priority category among a group of photos (asap > next_day >
-// special > standard), used to colour a multi-photo pin.
-const List<String> _kCategoryPriority = [
-  'asap', 'next_day', 'special', 'standard',
-];
-String _topCategory(List<PhotoModel> photos) {
-  for (final c in _kCategoryPriority) {
-    if (photos.any((p) => categoryOf(p.category).value == c)) return c;
-  }
-  return 'standard';
 }
 
 // ── Screen ────────────────────────────────────────────────────────────────────
@@ -138,21 +220,31 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
     super.dispose();
   }
 
+  bool get _mapHasSize {
+    try {
+      final size = _mapController.camera.size;
+      return size.x >= 8 && size.y >= 8;
+    } catch (_) {
+      return false;
+    }
+  }
+
   void _refresh() {
     ref.invalidate(photosProvider);
     ref.invalidate(profilesProvider);
     _fetchUserLocation();
   }
 
-  void _fitAll(List<PhotoModel> photos) {
-    if (photos.isEmpty) return;
+  void _fitAll(List<LatLng> points) {
+    if (points.isEmpty) return;
+    if (!_mapHasSize) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _fitAll(points);
+      });
+      return;
+    }
 
-    // Fit to the main cluster, not the raw extent of every pin — a single
-    // wildly-distant outlier (bad GPS fix, a test upload made from another
-    // continent, etc.) would otherwise force the whole view out to a
-    // world-scale zoom. Outlier pins still render as markers; they just
-    // don't drive the camera fit.
-    final core = _mainCluster(photos);
+    final core = _mainClusterPoints(points);
 
     var minLat = core.first.latitude;
     var maxLat = core.first.latitude;
@@ -165,50 +257,26 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
       if (p.longitude > maxLng) maxLng = p.longitude;
     }
 
-    // Guard against _mainCluster's fallback still producing a world-scale
-    // box (e.g. every pin gets excluded as an outlier of every other pin,
-    // or several bad GPS fixes skew the median). Centre on the most recent
-    // pin instead of zooming out to show everything — this is the actual
-    // "shows the entire Milky Way" failure mode.
     final spanMi = LocationService.calculateDistance(
             minLat, minLng, maxLat, maxLng) *
         0.621371;
     if (spanMi > 500) {
-      final mostRecent = photos.reduce((a, b) =>
-          (a.timestamp ?? '').compareTo(b.timestamp ?? '') >= 0 ? a : b);
-      _mapController.move(
-          LatLng(mostRecent.latitude, mostRecent.longitude), 12);
+      _mapController.move(core.first, 12);
       return;
     }
 
-    // All pins at (nearly) the same spot → bounds have ~zero area and
-    // fitCamera would slam to maxZoom. Just centre on it at a sane zoom.
     if ((maxLat - minLat).abs() < 1e-4 && (maxLng - minLng).abs() < 1e-4) {
-      _mapController.move(LatLng(minLat, minLng), 14);
+      _mapController.move(LatLng(minLat, minLng), 13);
       return;
     }
-    // Frame every valid pin (plus awaiting-attempt profile locations) inside
-    // the visible map — search bar on top, jobs sheet + FABs on the bottom
-    // and right. Padding matches the current overlay, not the old filter-pill
-    // layout, so pins are not hidden under chrome.
-    final topInset = MediaQuery.of(context).padding.top;
-    final extras = <LatLng>[];
-    final profiles = ref.read(profilesProvider).valueOrNull ?? [];
-    for (final p in profiles) {
-      if (p.hasLocation) extras.add(LatLng(p.latitude!, p.longitude!));
-    }
-    for (final pt in extras) {
-      if (pt.latitude < minLat) minLat = pt.latitude;
-      if (pt.latitude > maxLat) maxLat = pt.latitude;
-      if (pt.longitude < minLng) minLng = pt.longitude;
-      if (pt.longitude > maxLng) maxLng = pt.longitude;
-    }
 
+    final topInset = MediaQuery.of(context).padding.top;
     _mapController.fitCamera(
       CameraFit.bounds(
         bounds: LatLngBounds(LatLng(minLat, minLng), LatLng(maxLat, maxLng)),
-        padding: EdgeInsets.fromLTRB(36, topInset + 72, 62, 118),
-        maxZoom: 14,
+        padding: EdgeInsets.fromLTRB(48, topInset + 88, 56, 140),
+        maxZoom: 13,
+        forceIntegerZoomLevel: true,
       ),
     );
   }
@@ -222,15 +290,13 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
   // (0,0) "null island" or out-of-range values from a bad GPS fix — dropped
   // before computing the median/bounds so a handful of them can't skew the
   // median enough to defeat the outlier filter below.
-  bool _isValidCoord(PhotoModel p) =>
-      p.latitude.abs() > 0.0001 &&
-      p.longitude.abs() > 0.0001 &&
-      p.latitude.abs() <= 90 &&
-      p.longitude.abs() <= 180;
-
-  List<PhotoModel> _mainCluster(List<PhotoModel> photos) {
-    final valid = photos.where(_isValidCoord).toList();
-    final base = valid.isEmpty ? photos : valid;
+  List<LatLng> _mainClusterPoints(List<LatLng> points) {
+    final valid = points.where((p) =>
+        p.latitude.abs() > 0.0001 &&
+        p.longitude.abs() > 0.0001 &&
+        p.latitude.abs() <= 90 &&
+        p.longitude.abs() <= 180).toList();
+    final base = valid.isEmpty ? points : valid;
     if (base.length <= 2) return base;
 
     final lats = base.map((p) => p.latitude).toList()..sort();
@@ -296,7 +362,7 @@ class _MapBody extends ConsumerStatefulWidget {
   final TextEditingController          searchCtrl;
   final MapController                  mapController;
   final VoidCallback                   onMapReady;
-  final ValueChanged<List<PhotoModel>> onFitAll;
+  final ValueChanged<List<LatLng>> onFitAll;
   final VoidCallback                   onRefresh;
   final VoidCallback                   onMyLocation;
   final Position?                      userPosition;
@@ -312,7 +378,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
   // Quick-filter pill: only today's pins. Independent of _levels so "All" +
   // "Today" can combine (e.g. every priority, today only).
   bool _todayOnly = false;
-  bool _didInitialFit = false;
+  int _fittedCount = -1;
   // Distance filter — a radius from the user (0–100 mi) OR a ZIP match. Only
   // the most recently touched control applies (_distanceMode).
   double _distanceMi = 100;
@@ -322,7 +388,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
   // Debounces the camera fit while the distance slider is being dragged, so
   // it flies once the user settles instead of on every intermediate tick.
   Timer? _filterFitDebounce;
-  List<PhotoModel>? _selectedPhotos;
+  _MapJob? _selectedJob;
 
   @override
   void initState() {
@@ -364,7 +430,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
       );
       return;
     }
-    widget.onFitAll(_visiblePhotos());
+    widget.onFitAll(_mapJobs().map((j) => j.point).toList());
   }
 
   void _scheduleFilterFit() {
@@ -389,7 +455,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
       _distanceMode = null;
       _zip = '';
       _distanceMi = 100;
-      _selectedPhotos = null;
+      _selectedJob = null;
     });
     widget.searchCtrl.clear();
     _scheduleFilterFit();
@@ -484,7 +550,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
 
           final hasLoc = widget.userPosition != null;
           final anyActive = _levels.isNotEmpty || _distanceMode != null;
-          final resultCount = _visiblePhotos().length;
+          final resultCount = _mapJobs().length;
 
           Widget modeChip(String text, bool on) => Container(
                 padding:
@@ -854,24 +920,60 @@ class _MapBodyState extends ConsumerState<_MapBody> {
     );
   }
 
-  bool _isSelectedPin(double lat, double lng) {
-    final selected = _selectedPhotos;
-    if (selected == null || selected.isEmpty) return false;
-    return (selected.first.latitude - lat).abs() < 1e-5 &&
-        (selected.first.longitude - lng).abs() < 1e-5;
+  Marker _jobMarker(_MapJob job, List<_MapJob> all) {
+    final selected = _isSelectedJob(job);
+    return Marker(
+      point: _spreadPoint(job, all),
+      width: selected ? 128 : 36,
+      height: selected ? 80 : 44,
+      alignment: Alignment.topCenter,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          HapticFeedback.mediumImpact();
+          setState(() => _selectedJob = job);
+        },
+        child: _PinMarker(
+          color: job.pinColor,
+          selected: selected,
+          label: selected ? job.jobId : null,
+        ),
+      ),
+    );
   }
 
-  String _jobId(PhotoModel p) {
-    final fn = p.fileNumber?.trim();
-    if (fn != null && fn.isNotEmpty) return fn;
-    return '${p.id}';
+  /// Fan coincident pins into a ring so 10 jobs at one GPS still all show.
+  LatLng _spreadPoint(_MapJob job, List<_MapJob> all) {
+    final twins = all
+        .where((j) =>
+            (j.lat - job.lat).abs() < 1e-4 && (j.lng - job.lng).abs() < 1e-4)
+        .toList();
+    if (twins.length <= 1) return job.point;
+    final i = twins.indexOf(job);
+    final n = twins.length;
+    final angle = (2 * math.pi * (i < 0 ? 0 : i)) / n;
+    // ~250m base, grows with count so a 10-job stack is a clear ring.
+    final d = 0.0022 + n * 0.00045;
+    return LatLng(
+      job.lat + d * math.cos(angle),
+      job.lng + d * math.sin(angle),
+    );
   }
 
-  String? _distanceLabel(PhotoModel p) {
+  bool _isSelectedJob(_MapJob job) {
+    final s = _selectedJob;
+    if (s == null) return false;
+    if (s.profile != null && job.profile != null) {
+      return s.profile!.id == job.profile!.id;
+    }
+    return s.jobId == job.jobId;
+  }
+
+  String? _distanceLabelFor(double lat, double lng) {
     final pos = widget.userPosition;
     if (pos == null) return null;
     final m = Geolocator.distanceBetween(
-        pos.latitude, pos.longitude, p.latitude, p.longitude);
+        pos.latitude, pos.longitude, lat, lng);
     final mi = m / 1609.34;
     if (mi < 0.1) return 'Nearby';
     return '${mi.toStringAsFixed(1)} mi';
@@ -959,57 +1061,140 @@ class _MapBodyState extends ConsumerState<_MapBody> {
         .toList();
   }
 
+  /// Same job grouping as the Jobs tab: one pin per profile, plus leftover
+  /// geotagged photos that have no profile. Pending / awaiting jobs stay on
+  /// the map as yellow pins.
+  List<_MapJob> _mapJobs() {
+    final photos = _visiblePhotos();
+    final profiles = ref.read(profilesProvider).valueOrNull ?? [];
+    final used = <int>{};
+    final jobs = <_MapJob>[];
+
+    for (final profile in profiles) {
+      final pPhotos = photos
+          .where((ph) =>
+              ph.profileId == profile.id ||
+              (ph.profiles?.any((p) => p.id == profile.id) ?? false))
+          .toList()
+        ..sort((a, b) => (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
+      for (final p in pPhotos) {
+        used.add(p.id);
+      }
+      if (pPhotos.isEmpty) {
+        if (_todayOnly) continue;
+        if (_levels.isNotEmpty &&
+            !_levels.contains((profile.serviceType).toLowerCase())) {
+          continue;
+        }
+        if (!profile.hasLocation) continue;
+        if (!_profilePassesDistanceAndSearch(profile)) continue;
+      }
+      final job = _MapJob(profile: profile, photos: pPhotos);
+      if (job.hasPoint) jobs.add(job);
+    }
+
+    final leftover = photos.where((p) => !used.contains(p.id)).toList();
+    for (final g in _groupByLocation(leftover).values) {
+      g.sort((a, b) => (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
+      final job = _MapJob(profile: null, photos: g);
+      if (job.hasPoint) jobs.add(job);
+    }
+    return jobs;
+  }
+
+  bool _profilePassesDistanceAndSearch(ProfileModel profile) {
+    if (_distanceMode == 'distance' && widget.userPosition != null &&
+        profile.hasLocation) {
+      final km = LocationService.calculateDistance(
+        widget.userPosition!.latitude,
+        widget.userPosition!.longitude,
+        profile.latitude!,
+        profile.longitude!,
+      );
+      if (km * 0.621371 > _distanceMi) return false;
+    } else if (_distanceMode == 'zip' && _zip.trim().isNotEmpty) {
+      final z = _zip.trim();
+      final pz = (profile.postalCode ?? '').trim();
+      if (pz.isNotEmpty ? pz != z : !(profile.address ?? '').contains(z)) {
+        return false;
+      }
+    }
+    final q = widget.searchCtrl.text.trim().toLowerCase();
+    if (q.isEmpty) return true;
+    final hay = [
+      '${profile.id}',
+      profile.name,
+      profile.address ?? '',
+      profile.city ?? '',
+      profile.postalCode ?? '',
+      profile.companyName ?? '',
+    ].join(' ').toLowerCase();
+    return hay.contains(q);
+  }
+
   @override
   Widget build(BuildContext context) {
     final topPad = MediaQuery.of(context).padding.top;
+    ref.watch(profilesProvider);
 
-    final geotagged = _visiblePhotos();
-    final groups    = _groupByLocation(geotagged);
-    final hasData   = geotagged.isNotEmpty;
+    final jobs = _mapJobs();
+    final hasData = jobs.isNotEmpty;
 
-    // Frame every pin once data is on the map. GPS still draws the user
-    // marker; it no longer steals the camera away from jobs.
-    if (!_didInitialFit && hasData) {
-      _didInitialFit = true;
+    if (hasData && jobs.length != _fittedCount) {
+      _fittedCount = jobs.length;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) widget.onFitAll(geotagged);
+        if (!mounted) return;
+        widget.onFitAll(jobs.map((j) => _spreadPoint(j, jobs)).toList());
       });
     }
 
     const mapCenter = LatLng(32.7157, -117.1611);
 
     return Stack(
+      fit: StackFit.expand,
       children: [
-        // ── Full-screen map ────────────────────────────────────────────
-        FlutterMap(
-          mapController: widget.mapController,
-          options: MapOptions(
-            initialCenter: mapCenter,
-            initialZoom: 13,
-            minZoom: 2,
-            maxZoom: 18,
-            onMapReady: widget.onMapReady,
-            onTap: (_, latLng) {
-              HapticFeedback.lightImpact();
-              if (_selectedPhotos != null) {
-                setState(() => _selectedPhotos = null);
-                return;
+        // Tight constraints so flutter_map's camera size matches the screen.
+        // A loose Stack child lets tiles paint in a small strip while markers
+        // still use the full camera, which is what the gray "map hole" was.
+        Positioned.fill(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              if (constraints.maxWidth < 8 || constraints.maxHeight < 8) {
+                return const ColoredBox(color: Color(0xFF0F1219));
               }
-              showMapUploadSheet(
-                context,
-                lat: latLng.latitude,
-                lng: latLng.longitude,
-                onUploaded: widget.onRefresh,
-              );
-            },
-          ),
-          children: [
-            TileLayer(
-              urlTemplate:
-                  'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-              subdomains: const ['a', 'b', 'c', 'd'],
-              userAgentPackageName: 'com.example.photo_tracker',
+              return FlutterMap(
+            mapController: widget.mapController,
+            options: MapOptions(
+              initialCenter: mapCenter,
+              initialZoom: 13,
+              minZoom: 2,
+              maxZoom: 18,
+              keepAlive: true,
+              backgroundColor: const Color(0xFF0F1219),
+              onMapReady: widget.onMapReady,
+              onTap: (_, latLng) {
+                HapticFeedback.lightImpact();
+                if (_selectedJob != null) {
+                  setState(() => _selectedJob = null);
+                  return;
+                }
+                showMapUploadSheet(
+                  context,
+                  lat: latLng.latitude,
+                  lng: latLng.longitude,
+                  onUploaded: widget.onRefresh,
+                );
+              },
             ),
+            children: [
+              TileLayer(
+                urlTemplate:
+                    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+                subdomains: const ['a', 'b', 'c', 'd'],
+                retinaMode: false,
+                tileSize: 256,
+                userAgentPackageName: 'com.example.photo_tracker',
+              ),
             // Visualize the active radius filter
             if (_distanceMode == 'distance' && widget.userPosition != null)
               CircleLayer(
@@ -1027,75 +1212,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                   ),
                 ],
               ),
-            // Photo pin markers — clustered by screen proximity so nearby-
-            // but-distinct pins don't overlap into an unreadable blob when
-            // zoomed out to fit a wide spread (see Fit All). Pins already
-            // sharing a location (see _groupByLocation) still bundle into a
-            // single numbered marker via _PinMarker as before; this layer
-            // additionally clusters separate markers that are simply close
-            // together on screen at the current zoom.
-            MarkerClusterLayerWidget(
-              options: MarkerClusterLayerOptions(
-                maxClusterRadius: 36,
-                disableClusteringAtZoom: 12,
-                size: const Size(44, 44),
-                markers: groups.entries.map((entry) {
-                  final sorted = [...entry.value]
-                    ..sort((a, b) =>
-                        (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
-                  final latest  = sorted.first;
-                  final color   = categoryOf(_topCategory(sorted)).color;
-                  final count   = sorted.length;
-                  final selected = _isSelectedPin(latest.latitude, latest.longitude);
-
-                  return Marker(
-                    point: LatLng(latest.latitude, latest.longitude),
-                    width: selected ? 120 : (count > 1 ? 62 : 56),
-                    height: selected ? 96 : 74,
-                    child: GestureDetector(
-                      onTap: () {
-                        HapticFeedback.mediumImpact();
-                        setState(() => _selectedPhotos = sorted);
-                        widget.mapController.move(
-                          LatLng(latest.latitude, latest.longitude),
-                          math.max(widget.mapController.camera.zoom, 13),
-                        );
-                      },
-                      child: _PinMarker(
-                        imageUrl: latest.imageUrl,
-                        color: color,
-                        count: count,
-                        label: selected ? _jobId(latest) : null,
-                      ),
-                    ),
-                  );
-                }).toList(),
-                builder: (context, markers) =>
-                    _ClusterMarker(count: markers.length),
-              ),
-            ),
-            // ── Awaiting Attempt profile pins — placeholders for a job at
-            // its Profile Location, independent of any Attempt/Photo. Only
-            // profiles with zero attempts show here; the moment a photo
-            // exists for one it's covered by the photo pins above instead. ──
-            MarkerLayer(
-              markers: (ref.watch(profilesProvider).valueOrNull ?? [])
-                  .where((p) => p.isAwaitingAttempt && p.hasLocation)
-                  .map((p) => Marker(
-                        point: LatLng(p.latitude!, p.longitude!),
-                        width: 44,
-                        height: 44,
-                        child: GestureDetector(
-                          onTap: () {
-                            HapticFeedback.lightImpact();
-                            context.push('/profile/${p.id}');
-                          },
-                          child: const _AwaitingAttemptMarker(),
-                        ),
-                      ))
-                  .toList(),
-            ),
-            // Live user-location marker
+            // User location under job pins so stacked jobs stay visible.
             if (widget.userPosition != null)
               MarkerLayer(
                 markers: [
@@ -1112,7 +1229,16 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                   ),
                 ],
               ),
+            // One teardrop pin per job. Pending / awaiting = yellow; others blue.
+            MarkerLayer(
+              markers: [
+                for (final job in jobs) _jobMarker(job, jobs),
+              ],
+            ),
           ],
+              );
+            },
+          ),
         ),
 
         // ── Top: search + filter + retry ────────────────────────────────
@@ -1136,7 +1262,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
         ),
 
         // ── Selected job card + jobs sheet ─────────────────────────────
-        if (hasData || _selectedPhotos != null)
+        if (hasData || _selectedJob != null)
           Positioned(
             bottom: 0,
             left: 0,
@@ -1144,18 +1270,30 @@ class _MapBodyState extends ConsumerState<_MapBody> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (_selectedPhotos != null && _selectedPhotos!.isNotEmpty)
+                if (_selectedJob != null)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
                     child: _JobPreviewCard(
-                      photo: _selectedPhotos!.first,
-                      attempts: _selectedPhotos!.length,
-                      jobId: _jobId(_selectedPhotos!.first),
-                      distance: _distanceLabel(_selectedPhotos!.first),
-                      address: _addressOf(_selectedPhotos!.first),
-                      client: _clientName(_selectedPhotos!.first),
-                      onNewAttempt: () {
-                        final pid = _selectedPhotos!.first.profileId;
+                      recipient: _selectedJob!.recipient,
+                      attempts: _selectedJob!.attemptCount,
+                      atCap: _selectedJob!.attemptCount >=
+                          AttemptDraftController.kMaxAttemptsPerJob,
+                      jobId: _selectedJob!.jobId,
+                      distance: _distanceLabelFor(
+                          _selectedJob!.lat, _selectedJob!.lng),
+                      address: _selectedJob!.address,
+                      client: _selectedJob!.client,
+                      pending: _selectedJob!.isPending,
+                      onNewAttempt: () async {
+                        final job = _selectedJob!;
+                        final pid = job.profile?.id;
+                        final ok = await ensureCanStartNewAttempt(
+                          context,
+                          ref,
+                          profileId: pid,
+                          knownCount: job.attemptCount,
+                        );
+                        if (!ok || !context.mounted) return;
                         if (pid != null && pid != 0) {
                           context.push('/upload?profileId=$pid');
                         } else {
@@ -1163,17 +1301,18 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                         }
                       },
                       onViewJob: () {
-                        final p = _selectedPhotos!.first;
-                        if (p.profileId != null && p.profileId != 0) {
-                          context.push('/profile/${p.profileId}');
-                        } else {
-                          context.push('/photo/${p.id}');
+                        final job = _selectedJob!;
+                        final pid = job.profile?.id;
+                        if (pid != null && pid != 0) {
+                          context.push('/profile/$pid');
+                        } else if (job.latest != null) {
+                          context.push('/photo/${job.latest!.id}');
                         }
                       },
                     ),
                   ),
                 _BottomCard(
-                  count: geotagged.length,
+                  count: jobs.length,
                   onViewList: () => context.go('/jobs'),
                 ),
               ],
@@ -1193,7 +1332,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
         // ── Map FABs: fit / refresh / locate ───────────────────────────
         Positioned(
           right: 14,
-          bottom: _selectedPhotos != null
+          bottom: _selectedJob != null
               ? 290
               : (hasData || _anyFilterActive)
                   ? 118
@@ -1201,7 +1340,8 @@ class _MapBodyState extends ConsumerState<_MapBody> {
           child: Material(
             color: Colors.transparent,
             child: _ZoomControls(
-              onFitTap: () => widget.onFitAll(geotagged),
+              onFitTap: () =>
+                  widget.onFitAll(jobs.map((j) => j.point).toList()),
               onRefreshTap: widget.onRefresh,
               userPosition: widget.userPosition,
               loading: widget.fetchingLocation,
@@ -1611,7 +1751,7 @@ class _EmptyFilterCard extends StatelessWidget {
 // ── Selected-pin job card (New Attempt / View Job) ────────────────────────────
 class _JobPreviewCard extends StatelessWidget {
   const _JobPreviewCard({
-    required this.photo,
+    required this.recipient,
     required this.attempts,
     required this.jobId,
     required this.address,
@@ -1619,10 +1759,14 @@ class _JobPreviewCard extends StatelessWidget {
     required this.onViewJob,
     this.distance,
     this.client,
+    this.atCap = false,
+    this.pending = false,
   });
 
-  final PhotoModel photo;
+  final String recipient;
   final int attempts;
+  final bool atCap;
+  final bool pending;
   final String jobId;
   final String? distance;
   final String address;
@@ -1667,8 +1811,26 @@ class _JobPreviewCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 8),
+          if (pending) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: _kPending.withValues(alpha: 0.18),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: const Text(
+                'Pending',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: _kPending,
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
           Text(
-            photo.profileName ?? 'Unknown',
+            recipient,
             style: const TextStyle(
               fontSize: 16,
               fontWeight: FontWeight.w800,
@@ -1705,11 +1867,13 @@ class _JobPreviewCard extends StatelessWidget {
               borderRadius: BorderRadius.circular(20),
             ),
             child: Text(
-              '$attempts Attempt${attempts == 1 ? '' : 's'}',
-              style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: _kInkMuted),
+              '$attempts of ${AttemptDraftController.kMaxAttemptsPerJob} '
+              'attempt${attempts == 1 ? '' : 's'}',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: atCap ? const Color(0xFFFBBF24) : _kInkMuted,
+              ),
             ),
           ),
           const SizedBox(height: 14),
@@ -1717,10 +1881,10 @@ class _JobPreviewCard extends StatelessWidget {
             children: [
               Expanded(
                 child: _CardBtn(
-                  icon: Icons.add_rounded,
-                  label: 'New Attempt',
+                  icon: atCap ? Icons.block_rounded : Icons.add_rounded,
+                  label: atCap ? 'Max attempts' : 'New Attempt',
                   onTap: onNewAttempt,
-                  filled: true,
+                  filled: !atCap,
                 ),
               ),
               const SizedBox(width: 10),
@@ -1843,188 +2007,113 @@ class _CardBtn extends StatelessWidget {
   );
 }
 
-// ── Pin marker ────────────────────────────────────────────────────────────────
+// ── Job pin — filled teardrop, blue or yellow (pending). ─────────────────────
 class _PinMarker extends StatelessWidget {
   const _PinMarker({
-    required this.imageUrl,
     required this.color,
-    required this.count,
+    required this.selected,
     this.label,
   });
-  final String imageUrl;
-  final Color  color;
-  final int    count;
+
+  final Color color;
+  final bool selected;
   final String? label;
 
   @override
-  Widget build(BuildContext context) => Column(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      if (label != null) ...[
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            color: _kAccent,
-            borderRadius: BorderRadius.circular(8),
-            boxShadow: [
-              BoxShadow(
-                color: _kAccent.withValues(alpha: 0.4),
-                blurRadius: 8,
-              ),
-            ],
-          ),
-          child: Text(
-            label!,
-            style: const TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
-              color: Colors.white,
-            ),
-          ),
-        ),
-        Container(
-          width: 0,
-          height: 0,
-          decoration: const BoxDecoration(
-            border: Border(
-              left: BorderSide(width: 5, color: Colors.transparent),
-              right: BorderSide(width: 5, color: Colors.transparent),
-              top: BorderSide(width: 6, color: _kAccent),
-            ),
-          ),
-        ),
-        const SizedBox(height: 4),
-      ],
-      Stack(
-        clipBehavior: Clip.none,
-        alignment: Alignment.center,
-        children: [
-          // Ambient glow ring
+  Widget build(BuildContext context) {
+    final head = selected ? 24.0 : 20.0;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (label != null) ...[
           Container(
-            width: 54,
-            height: 54,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: color.withValues(alpha: 0.14),
-            ),
-          ),
-          // Photo circle
-          Container(
-            width: 46,
-            height: 46,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(color: color, width: 2.5),
+              color: color,
+              borderRadius: BorderRadius.circular(8),
               boxShadow: [
                 BoxShadow(
-                  color: color.withValues(alpha: 0.35),
-                  blurRadius: 10,
-                  spreadRadius: 1,
-                ),
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.18),
-                  blurRadius: 6,
-                  offset: const Offset(0, 3),
+                  color: color.withValues(alpha: 0.45),
+                  blurRadius: 8,
                 ),
               ],
             ),
-            child: ClipOval(
-              child: CachedNetworkImage(
-                imageUrl: imageUrl,
-                fit: BoxFit.cover,
-                placeholder: (_, __) => Container(
-                  color: color.withValues(alpha: 0.15),
-                  child: const Center(
-                    child: SizedBox(
-                      width: 14,
-                      height: 14,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                  ),
-                ),
-                errorWidget: (_, __, ___) => Container(
-                  color: color.withValues(alpha: 0.15),
-                  child: Icon(Icons.person_rounded, color: color, size: 22),
-                ),
+            child: Text(
+              label!,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: Colors.white,
               ),
             ),
           ),
-          // Count badge
-          if (count > 1)
-            Positioned(
-              top: 0,
-              right: 0,
-              child: Container(
-                width: 20,
-                height: 20,
+          const SizedBox(height: 4),
+        ],
+        SizedBox(
+          width: head,
+          height: head + 10,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: head,
+                height: head,
                 decoration: BoxDecoration(
-                  color: color,
                   shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white, width: 1.5),
+                  color: color,
+                  border: Border.all(color: Colors.white, width: 2),
                   boxShadow: [
                     BoxShadow(
-                      color: color.withValues(alpha: 0.4),
-                      blurRadius: 4,
+                      color: color.withValues(alpha: selected ? 0.55 : 0.35),
+                      blurRadius: selected ? 10 : 6,
+                      spreadRadius: 0.5,
                     ),
                   ],
                 ),
                 child: Center(
-                  child: Text(
-                    count > 9 ? '9+' : '$count',
-                    style: const TextStyle(
-                      fontSize: 9,
-                      fontWeight: FontWeight.w800,
+                  child: Container(
+                    width: 5,
+                    height: 5,
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
                       color: Colors.white,
                     ),
                   ),
                 ),
               ),
-            ),
-        ],
-      ),
-      // Pin stem + dot
-      Container(width: 2, height: 7, color: color),
-      Container(
-        width: 6,
-        height: 6,
-        decoration: BoxDecoration(
-          color: color,
-          shape: BoxShape.circle,
-          boxShadow: [
-            BoxShadow(color: color.withValues(alpha: 0.5), blurRadius: 4),
-          ],
+              CustomPaint(
+                size: Size(head * 0.55, 8),
+                painter: _PinTipPainter(color),
+              ),
+            ],
+          ),
         ),
-      ),
-    ],
-  );
+      ],
+    );
+  }
 }
 
-/// Placeholder pin for a Profile marked Awaiting Attempt with a Profile
-/// Location but zero photos yet — deliberately grey/outline so it never
-/// reads as a real logged Attempt.
-class _AwaitingAttemptMarker extends StatelessWidget {
-  const _AwaitingAttemptMarker();
+class _PinTipPainter extends CustomPainter {
+  _PinTipPainter(this.color);
 
-  static const Color _grey = Color(0xFF9CA3AF);
+  final Color color;
 
   @override
-  Widget build(BuildContext context) => Container(
-        width: 34,
-        height: 34,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-        color: const Color(0xFF1C222E),
-        border: Border.all(color: _kAccent, width: 2),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.12),
-              blurRadius: 6,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: const Icon(Icons.schedule_rounded, color: _grey, size: 18),
-      );
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = color;
+    final tip = ui.Path()
+      ..moveTo(0, 0)
+      ..lineTo(size.width, 0)
+      ..lineTo(size.width / 2, size.height)
+      ..close();
+    canvas.drawPath(tip, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _PinTipPainter oldDelegate) =>
+      oldDelegate.color != color;
 }
 
 // ── Quick-filter pill row (All / Standard / ASAP / Today) — a faster-access
@@ -2239,47 +2328,6 @@ class _ZoomControls extends StatelessWidget {
           ),
         ),
       );
-}
-
-// ── Cluster bubble — groups screen-close pins so they don't visually
-// overlap when the map is zoomed out (e.g. after Fit All spans a wide
-// area). Tapping it zooms in, per flutter_map_marker_cluster's default. ──
-class _ClusterMarker extends StatelessWidget {
-  const _ClusterMarker({required this.count});
-  final int count;
-
-  @override
-  Widget build(BuildContext context) => Container(
-    width: 44,
-    height: 44,
-    decoration: BoxDecoration(
-      shape: BoxShape.circle,
-      color: _kAccent,
-      border: Border.all(color: Colors.white, width: 3),
-      boxShadow: [
-        BoxShadow(
-          color: _kAccent.withValues(alpha: 0.45),
-          blurRadius: 10,
-          spreadRadius: 1,
-        ),
-        BoxShadow(
-          color: Colors.black.withValues(alpha: 0.18),
-          blurRadius: 6,
-          offset: const Offset(0, 3),
-        ),
-      ],
-    ),
-    child: Center(
-      child: Text(
-        count > 99 ? '99+' : '$count',
-        style: const TextStyle(
-          fontSize: 15,
-          fontWeight: FontWeight.w800,
-          color: Colors.white,
-        ),
-      ),
-    ),
-  );
 }
 
 // ── User-location marker (pulsing) ────────────────────────────────────────────
