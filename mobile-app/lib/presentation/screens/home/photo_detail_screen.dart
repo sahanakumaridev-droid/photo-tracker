@@ -22,6 +22,8 @@ import '../../../core/utils/maps_launcher.dart';
 import '../../../data/models/photo_model.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/photo_provider.dart';
+import '../../widgets/ai/note_suggestion_chips.dart';
+import '../../widgets/ai/voice_mic_button.dart';
 
 class PhotoDetailScreen extends ConsumerStatefulWidget {
   const PhotoDetailScreen({required this.photoId, super.key});
@@ -34,12 +36,12 @@ class PhotoDetailScreen extends ConsumerStatefulWidget {
 
 class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
   // ── Design tokens (matches HomeScreenV2) ─────────────────────────────────
-  static const Color _canvas = Color(0xFF0F1219);
-  static const Color _surface = Color(0xFF1C222E);
-  static const Color _ink = Color(0xFFFFFFFF);
-  static const Color _inkMuted = Color(0xFF94A3B8);
-  static const Color _inkSubtle = Color(0xFF6B7A8D);
-  static const Color _separator = Color(0xFF2A3340);
+  static const Color _canvas = Color(0xFFF2F4F7);
+  static const Color _surface = Color(0xFFFFFFFF);
+  static const Color _ink = Color(0xFF1A2130);
+  static const Color _inkMuted = Color(0xFF5C6778);
+  static const Color _inkSubtle = Color(0xFF8B95A5);
+  static const Color _separator = Color(0xFFE3E7EE);
   static const Color _accent = Color(0xFF4A90E2);
   static const Color _accentSoft = Color(0x1F4A90E2);
   static const Color _rushRed = Color(0xFFDC2626);
@@ -1249,7 +1251,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
       decoration: BoxDecoration(
         color: _surface,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF2A3340)),
+        border: Border.all(color: const Color(0xFFE3E7EE)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1474,14 +1476,14 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                   ? stepColor
                   : isCompleted
                       ? stepColor.withValues(alpha: 0.12)
-                      : const Color(0xFF242B38),
+                      : const Color(0xFFEEF1F5),
               shape: BoxShape.circle,
               border: Border.all(
                 color: isActive
                     ? stepColor
                     : isCompleted
                         ? stepColor.withValues(alpha: 0.5)
-                        : const Color(0xFF2A3340),
+                        : const Color(0xFFE3E7EE),
                 width: isActive ? 0 : 1.5,
               ),
               boxShadow: isActive
@@ -2234,12 +2236,12 @@ class _EditPhotoSheet extends ConsumerStatefulWidget {
 
 class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
   // ── Design tokens ─────────────────────────────────────────────────────────
-  static const Color _canvas = Color(0xFF0F1219);
-  static const Color _surface = Color(0xFF1C222E);
-  static const Color _ink = Color(0xFFFFFFFF);
-  static const Color _inkMuted = Color(0xFF94A3B8);
-  static const Color _inkSubtle = Color(0xFF6B7A8D);
-  static const Color _separator = Color(0xFF2A3340);
+  static const Color _canvas = Color(0xFFF2F4F7);
+  static const Color _surface = Color(0xFFFFFFFF);
+  static const Color _ink = Color(0xFF1A2130);
+  static const Color _inkMuted = Color(0xFF5C6778);
+  static const Color _inkSubtle = Color(0xFF8B95A5);
+  static const Color _separator = Color(0xFFE3E7EE);
   static const Color _accent = Color(0xFF4A90E2);
   static const Color _accentSoft = Color(0x1F4A90E2);
   static const Color _successGreen = Color(0xFF10B981);
@@ -2643,10 +2645,17 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
                     inputFormatters: const [SentenceCaseInputFormatter()],
                     style: const TextStyle(fontSize: 14, color: _ink),
                     decoration: InputDecoration(
-                      hintText: 'Add a note…',
+                      hintText: 'Tap the mic and talk the note…',
                       hintStyle: const TextStyle(color: _inkSubtle),
                       filled: true,
                       fillColor: _canvas,
+                      suffixIcon: Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: VoiceMicButton(
+                          controller: _noteController,
+                          mode: VoiceFillMode.append,
+                        ),
+                      ),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
                         borderSide: BorderSide.none,
@@ -2659,6 +2668,8 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
                       contentPadding: const EdgeInsets.all(14),
                     ),
                   ),
+                  const SizedBox(height: 10),
+                  NoteSuggestionChips(controller: _noteController),
                   const SizedBox(height: 10),
                   _saveBtn(
                     label: 'Save Note',

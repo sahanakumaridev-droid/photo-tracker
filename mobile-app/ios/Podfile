@@ -52,6 +52,8 @@ post_install do |installer|
         'PERMISSION_PHOTOS_ADD_ONLY=1',
         'PERMISSION_LOCATION_WHENINUSE=1',
         'PERMISSION_LOCATION_ALWAYS=1',
+        'PERMISSION_MICROPHONE=1',
+        'PERMISSION_SPEECH_RECOGNIZER=1',
       ]
     end
   end

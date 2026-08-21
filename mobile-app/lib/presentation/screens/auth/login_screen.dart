@@ -113,7 +113,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             style: TextStyle(
                               fontSize: 32,
                               fontWeight: FontWeight.w400,
-                              color: Color(0xFFFFFFFF),
+                              color: Color(0xFF1A2130),
                               letterSpacing: -1,
                             ),
                           ),

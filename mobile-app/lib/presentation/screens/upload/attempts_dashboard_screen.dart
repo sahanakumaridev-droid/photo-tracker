@@ -2,17 +2,24 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
 import '../../../core/storage/attempt_snapshot_store.dart';
 import '../../../core/utils/attempt_status.dart';
+import '../../../core/utils/category.dart';
 import '../../../data/models/attempt.dart';
 import '../../../data/models/company.dart';
 import '../../../data/models/log_entry_model.dart';
+import '../../../data/models/photo_model.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/log_provider.dart';
+import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
+import '../settings/ai_assistant_sheet.dart';
 import '../../widgets/common/pill_chip.dart';
+import 'attempt_draft_controller.dart';
+import 'attempt_limits.dart';
 import 'resume_attempt_screen.dart';
 
 /// Locally-cached attempts (Quick Save / Save & Exit / poor-network
@@ -49,19 +56,19 @@ Attempt? _matchAttempt(List<Attempt> attempts, LogEntryModel log) {
   return null;
 }
 
-/// Upload-tab home: summary counts filter the list below.
-/// "New Attempt" lives in the header (no FAB overlapping the bottom nav).
+/// Upload-tab home: profiles grouped by priority. Attempts are added
+/// from a profile after it exists.
 class AttemptsDashboardScreen extends ConsumerStatefulWidget {
   const AttemptsDashboardScreen({super.key});
 
-  static const Color _canvas = Color(0xFF0F1219);
-  static const Color _surface = Color(0xFF1C222E);
-  static const Color _ink = Color(0xFFFFFFFF);
-  static const Color _inkMuted = Color(0xFF94A3B8);
-  static const Color _inkSubtle = Color(0xFF6B7A8D);
+  static const Color _canvas = Color(0xFFF2F4F7);
+  static const Color _surface = Color(0xFFFFFFFF);
+  static const Color _ink = Color(0xFF1A2130);
+  static const Color _inkMuted = Color(0xFF5C6778);
+  static const Color _inkSubtle = Color(0xFF8B95A5);
   static const Color _accent = Color(0xFF4A90E2);
   static const Color _accentSoft = Color(0x1F4A90E2);
-  static const Color _border = Color(0xFF2A3340);
+  static const Color _border = Color(0xFFE3E7EE);
 
   static const _emptyFilters = (
     date: null,
@@ -83,69 +90,73 @@ class _AttemptsDashboardScreenState
 
   @override
   Widget build(BuildContext context) {
-    final logAsync =
-        ref.watch(logProvider(AttemptsDashboardScreen._emptyFilters));
+    final profilesAsync = ref.watch(profilesProvider);
     return Scaffold(
       backgroundColor: AttemptsDashboardScreen._canvas,
       body: SafeArea(
         bottom: false,
-        child: logAsync.when(
+        child: profilesAsync.when(
           loading: () => const Center(
             child: CircularProgressIndicator(
                 color: AttemptsDashboardScreen._accent),
           ),
           error: (err, _) => _buildError(context, ref, err),
-          data: (logs) => _buildBody(context, ref, logs),
+          data: (profiles) => _buildBody(context, ref, profiles),
         ),
       ),
     );
   }
 
-  Future<void> _startNewAttempt(BuildContext context, WidgetRef ref) async {
-    HapticFeedback.mediumImpact();
-    await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const ResumeAttemptScreen()),
-    );
-    ref.invalidate(localSnapshotsProvider);
-    ref.invalidate(logProvider(AttemptsDashboardScreen._emptyFilters));
-  }
-
   Widget _buildBody(
     BuildContext context,
     WidgetRef ref,
-    List<LogEntryModel> logs,
+    List<ProfileModel> profiles,
   ) {
-    final all = _uniqueByAttempt(logs)
-      ..sort((a, b) => (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
-    final pending = all
-        .where((l) =>
-            normalizeAttemptStatus(l.attemptStatus) == kAttemptStatusPending)
-        .toList();
-    final done = all
-        .where((l) =>
-            normalizeAttemptStatus(l.attemptStatus) ==
-            kAttemptStatusSuccessful)
-        .toList();
-    final failed = all
-        .where((l) =>
-            normalizeAttemptStatus(l.attemptStatus) ==
-            kAttemptStatusUnsuccessful)
-        .toList();
+    final photos = ref.watch(photosProvider).valueOrNull ?? const <PhotoModel>[];
+    final rows = [
+      for (final p in profiles)
+        _ProfileDashRow(
+          profile: p,
+          photos: photos
+              .where((ph) =>
+                  ph.profileId == p.id ||
+                  (ph.profiles?.any((x) => x.id == p.id) ?? false))
+              .toList()
+            ..sort((a, b) => (b.timestamp ?? '').compareTo(a.timestamp ?? '')),
+        ),
+    ];
 
-    final activeList = switch (_filter) {
-      _StatFilter.total => all,
+    final pending = rows.where((r) => r.bucket == _StatFilter.pending).toList();
+    final done = rows.where((r) => r.bucket == _StatFilter.done).toList();
+    final failed = rows.where((r) => r.bucket == _StatFilter.failed).toList();
+
+    final filtered = switch (_filter) {
+      _StatFilter.total => rows,
       _StatFilter.pending => pending,
       _StatFilter.done => done,
       _StatFilter.failed => failed,
     };
-    // Clearance for the elevated Upload tab in the shell bottom nav.
+
+    final grouped = <String, List<_ProfileDashRow>>{};
+    for (final r in filtered) {
+      grouped.putIfAbsent(r.category.label, () => []).add(r);
+    }
+    final sections = [
+      for (final c in kPhotoCategories)
+        if (grouped[c.label]?.isNotEmpty == true) (c, grouped[c.label]!),
+    ];
+    for (final e in grouped.entries) {
+      if (sections.any((s) => s.$1.label == e.key)) continue;
+      sections.add((categoryOf(e.key.toLowerCase()), e.value));
+    }
+
     final bottomPad = MediaQuery.of(context).padding.bottom + 88.0;
 
     return Column(
       children: [
-        _buildHeader(context, ref),
+        _buildHeader(context),
         _buildStatStrip(
-          total: all.length,
+          total: rows.length,
           pending: pending.length,
           done: done.length,
           failed: failed.length,
@@ -154,33 +165,67 @@ class _AttemptsDashboardScreenState
           child: RefreshIndicator(
             color: AttemptsDashboardScreen._accent,
             onRefresh: () async {
-              ref.invalidate(localSnapshotsProvider);
-              ref.invalidate(
-                  logProvider(AttemptsDashboardScreen._emptyFilters));
-              await ref.read(
-                  logProvider(AttemptsDashboardScreen._emptyFilters).future);
+              ref.invalidate(profilesProvider);
+              ref.invalidate(photosProvider);
+              await Future.wait([
+                ref.read(profilesProvider.future),
+                ref.read(photosProvider.future),
+              ]);
             },
             child: CustomScrollView(
               physics: const AlwaysScrollableScrollPhysics(),
               slivers: [
-                if (activeList.isEmpty)
+                if (filtered.isEmpty)
                   SliverFillRemaining(
                     hasScrollBody: false,
                     child: _buildEmptyList(_filter),
                   )
                 else
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                    sliver: SliverList.separated(
-                      itemCount: activeList.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 8),
-                      itemBuilder: (context, i) => _AttemptListCard(
-                        log: activeList[i],
-                        statusValue: normalizeAttemptStatus(
-                            activeList[i].attemptStatus),
+                  for (final section in sections) ...[
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+                        child: Row(
+                          children: [
+                            Icon(section.$1.icon,
+                                size: 16, color: section.$1.color),
+                            const SizedBox(width: 8),
+                            Text(
+                              section.$1.label,
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w800,
+                                color: section.$1.color,
+                                letterSpacing: 0.2,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              '${section.$2.length}',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: AttemptsDashboardScreen._inkSubtle,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
-                  ),
+                    SliverPadding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+                      sliver: SliverList.separated(
+                        itemCount: section.$2.length,
+                        separatorBuilder: (_, __) =>
+                            const SizedBox(height: 8),
+                        itemBuilder: (context, i) => _ProfileDashCard(
+                          row: section.$2[i],
+                          onOpen: () =>
+                              context.push('/profile/${section.$2[i].profile.id}'),
+                        ),
+                      ),
+                    ),
+                  ],
                 SliverToBoxAdapter(child: SizedBox(height: bottomPad)),
               ],
             ),
@@ -190,7 +235,7 @@ class _AttemptsDashboardScreenState
     );
   }
 
-  Widget _buildHeader(BuildContext context, WidgetRef ref) {
+  Widget _buildHeader(BuildContext context) {
     return Container(
       color: AttemptsDashboardScreen._surface,
       padding: const EdgeInsets.fromLTRB(20, 14, 16, 12),
@@ -201,7 +246,7 @@ class _AttemptsDashboardScreenState
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Attempts',
+                  'Profiles',
                   style: TextStyle(
                     fontSize: 26,
                     fontWeight: FontWeight.w800,
@@ -212,7 +257,7 @@ class _AttemptsDashboardScreenState
                 ),
                 SizedBox(height: 2),
                 Text(
-                  'Track, resume, or start a new job',
+                  'Create a profile, then add up to 5 attempts',
                   style: TextStyle(
                     fontSize: 13,
                     color: AttemptsDashboardScreen._inkSubtle,
@@ -226,24 +271,17 @@ class _AttemptsDashboardScreenState
             color: AttemptsDashboardScreen._accent,
             borderRadius: BorderRadius.circular(12),
             child: InkWell(
-              onTap: () => _startNewAttempt(context, ref),
+              onTap: () => context.push('/profiles-management'),
               borderRadius: BorderRadius.circular(12),
               child: const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.add_rounded, size: 18, color: Colors.white),
-                    SizedBox(width: 4),
-                    Text(
-                      'New',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ],
+                child: Text(
+                  'New Profile',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                  ),
                 ),
               ),
             ),
@@ -276,7 +314,7 @@ class _AttemptsDashboardScreenState
       ),
       (
         _StatFilter.done,
-        'Done',
+        'Completed',
         '$done',
         kAttemptStatuses[1].color,
         kAttemptStatuses[1].softColor,
@@ -328,32 +366,32 @@ class _AttemptsDashboardScreenState
   Widget _buildEmptyList(_StatFilter filter) {
     final (icon, color, soft, title, subtitle) = switch (filter) {
       _StatFilter.total => (
-          CupertinoIcons.doc_text,
+          CupertinoIcons.person_2,
           AttemptsDashboardScreen._accent,
           AttemptsDashboardScreen._accentSoft,
-          'No attempts yet',
-          'Tap New to start logging a service attempt.',
+          'No profiles yet',
+          'Tap New Profile to create one. Attempts are added after.',
         ),
       _StatFilter.pending => (
           kAttemptStatuses[0].icon,
           kAttemptStatuses[0].color,
           kAttemptStatuses[0].softColor,
-          'No pending attempts',
-          'Tap New to start logging a service attempt.',
+          'No pending profiles',
+          'Profiles waiting on an attempt show up here.',
         ),
       _StatFilter.done => (
           kAttemptStatuses[1].icon,
           kAttemptStatuses[1].color,
           kAttemptStatuses[1].softColor,
-          'No completed attempts',
-          'Successful jobs will show up here.',
+          'No completed profiles',
+          'Profiles with a successful attempt show up here.',
         ),
       _StatFilter.failed => (
           kAttemptStatuses[2].icon,
           kAttemptStatuses[2].color,
           kAttemptStatuses[2].softColor,
-          'No failed attempts',
-          'Unsuccessful jobs will show up here.',
+          'No failed profiles',
+          'Profiles whose latest attempt failed show up here.',
         ),
     };
     return Center(
@@ -422,8 +460,7 @@ class _AttemptsDashboardScreenState
               ),
               const SizedBox(height: 20),
               ElevatedButton(
-                onPressed: () => ref.invalidate(
-                    logProvider(AttemptsDashboardScreen._emptyFilters)),
+                onPressed: () => ref.invalidate(profilesProvider),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AttemptsDashboardScreen._accent,
                   foregroundColor: Colors.white,
@@ -439,6 +476,124 @@ class _AttemptsDashboardScreenState
 }
 
 enum _StatFilter { total, pending, done, failed }
+
+class _ProfileDashRow {
+  _ProfileDashRow({required this.profile, required this.photos});
+
+  final ProfileModel profile;
+  final List<PhotoModel> photos;
+
+  int get attemptCount => jobAttemptCount(
+        photos: photos,
+        profileAttemptsCount: profile.attemptsCount,
+      );
+
+  PhotoModel? get latest => photos.isEmpty ? null : photos.first;
+
+  PhotoCategory get category => categoryOf(profile.serviceType);
+
+  _StatFilter get bucket {
+    if (attemptCount == 0) return _StatFilter.pending;
+    final st = normalizeAttemptStatus(latest?.attemptStatus);
+    if (st == kAttemptStatusSuccessful) return _StatFilter.done;
+    if (st == kAttemptStatusUnsuccessful) return _StatFilter.failed;
+    return _StatFilter.pending;
+  }
+}
+
+class _ProfileDashCard extends StatelessWidget {
+  const _ProfileDashCard({
+    required this.row,
+    required this.onOpen,
+  });
+
+  final _ProfileDashRow row;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = row.profile;
+    final cat = row.category;
+    final n = row.attemptCount;
+    final company = (p.companyName?.trim().isNotEmpty == true)
+        ? p.companyName!
+        : companyOrDefault(p.company).name;
+
+    return Material(
+      color: AttemptsDashboardScreen._surface,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: onOpen,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AttemptsDashboardScreen._border),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 4,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: cat.color,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          p.name,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                            color: AttemptsDashboardScreen._ink,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          company,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: AttemptsDashboardScreen._inkMuted,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  PillChip(
+                    label: cat.label,
+                    icon: cat.icon,
+                    color: cat.color,
+                    background: cat.softColor,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Text(
+                n == 0
+                    ? 'No attempts yet · 0 of ${AttemptDraftController.kMaxAttemptsPerJob}'
+                    : '$n of ${AttemptDraftController.kMaxAttemptsPerJob} attempts',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: AttemptsDashboardScreen._inkSubtle,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class _StatCell extends StatefulWidget {
   const _StatCell({

@@ -89,11 +89,11 @@ class _PinPopupSheet extends ConsumerStatefulWidget {
 
 class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
   // Design tokens
-  static const _bg = Color(0xFF0F1219);
-  static const _surface = Color(0xFF1C222E);
-  static const _divider = Color(0xFF2A3340);
-  static const _textPrimary = Color(0xFFFFFFFF);
-  static const _textMuted = Color(0xFF94A3B8);
+  static const _bg = Color(0xFFF2F4F7);
+  static const _surface = Color(0xFFFFFFFF);
+  static const _divider = Color(0xFFE3E7EE);
+  static const _textPrimary = Color(0xFF1A2130);
+  static const _textMuted = Color(0xFF5C6778);
   static const _accent = Color(0xFF4A90E2);
   // Radius used to surface nearby profiles first in the profile dropdown —
   // matches the main Upload tab's profile picker.

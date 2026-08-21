@@ -17,6 +17,7 @@ import '../../../core/utils/maps_launcher.dart';
 import '../../../data/models/log_entry_model.dart';
 import '../../providers/location_provider.dart';
 import '../../providers/log_provider.dart';
+import '../../widgets/ai/voice_mic_button.dart';
 import '../../widgets/common/pill_chip.dart';
 
 class LogScreenV2 extends ConsumerStatefulWidget {
@@ -33,18 +34,18 @@ class LogScreenV2 extends ConsumerStatefulWidget {
 class _LogScreenV2State extends ConsumerState<LogScreenV2>
     with TickerProviderStateMixin {
   // ── Design tokens ─────────────────────────────────────────────────────────
-  static const Color _canvas = Color(0xFF0F1219);
-  static const Color _surface = Color(0xFF1C222E);
-  static const Color _surfaceElevated = Color(0xFF242B38);
-  static const Color _ink = Color(0xFFFFFFFF);
-  static const Color _inkMuted = Color(0xFF94A3B8);
-  static const Color _inkSubtle = Color(0xFF6B7A8D);
-  static const Color _separator = Color(0xFF2A3340);
+  static const Color _canvas = Color(0xFFF2F4F7);
+  static const Color _surface = Color(0xFFFFFFFF);
+  static const Color _surfaceElevated = Color(0xFFEEF1F5);
+  static const Color _ink = Color(0xFF1A2130);
+  static const Color _inkMuted = Color(0xFF5C6778);
+  static const Color _inkSubtle = Color(0xFF8B95A5);
+  static const Color _separator = Color(0xFFE3E7EE);
   static const Color _accent = Color(0xFF4A90E2);
   static const Color _accentSoft = Color(0x1F4A90E2);
   static const Color _rushRed = Color(0xFFDC2626);
   static const Color _rushRedSoft = Color(0x26DC2626);
-  static const Color _filterBar = Color(0xFF1C222E);
+  static const Color _filterBar = Color(0xFFFFFFFF);
 
   // ── State ─────────────────────────────────────────────────────────────────
   DateTime? _selectedDate;
@@ -937,7 +938,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
             fontWeight: FontWeight.w400,
           ),
           decoration: InputDecoration(
-            hintText: 'Search profiles, notes, locations…',
+            hintText: 'Say a profile, note, or location…',
             hintStyle: const TextStyle(
               color: _inkSubtle,
               fontSize: 15,
@@ -958,6 +959,10 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
             suffixIcon: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  VoiceMicButton(
+                    controller: _searchController,
+                    onChanged: (v) => setState(() => _searchQuery = v),
+                  ),
                   // Clear button — only when typing
                   if (_searchQuery.isNotEmpty)
                     GestureDetector(
@@ -1035,6 +1040,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                   ),
                 ],
               ),
+            suffixIconConstraints: const BoxConstraints(minWidth: 0, minHeight: 0),
             border: InputBorder.none,
             contentPadding: const EdgeInsets.symmetric(
               horizontal: 0,
@@ -1329,6 +1335,10 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
               HapticFeedback.selectionClick();
               context.push('/photo/${log.id}');
             },
+      onLongPress: () {
+        HapticFeedback.mediumImpact();
+        _exportExcel([log]);
+      },
       child: Container(
         margin: const EdgeInsets.only(bottom: 10),
         decoration: BoxDecoration(

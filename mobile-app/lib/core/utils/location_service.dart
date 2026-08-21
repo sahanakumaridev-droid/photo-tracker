@@ -196,8 +196,15 @@ class LocationService {
         }
 
         final address = _buildAddress(addr);
-        _logGeocodeResult(latitude, longitude, address, elapsedMs, 'ok');
-        return address;
+        final county = nominatimCounty(addr);
+        String? labeled = address;
+        if (county != null &&
+            (labeled == null ||
+                !labeled.toLowerCase().contains(county.toLowerCase()))) {
+          labeled = labeled == null ? county : '$labeled, $county';
+        }
+        _logGeocodeResult(latitude, longitude, labeled, elapsedMs, 'ok');
+        return labeled;
       }
 
       _logGeocodeResult(
@@ -303,6 +310,13 @@ class LocationService {
     final zip = addr['postcode'] as String?;
 
     return (street: street, city: city, state: state, zip: zip);
+  }
+
+  /// Nominatim county / district — used for search, not the display address.
+  static String? nominatimCounty(Map<String, dynamic> addr) {
+    final raw = (addr['county'] ?? addr['state_district']) as String?;
+    if (raw == null || raw.trim().isEmpty) return null;
+    return raw.trim();
   }
 
   // ── Debug logging ────────────────────────────────────────────────────────

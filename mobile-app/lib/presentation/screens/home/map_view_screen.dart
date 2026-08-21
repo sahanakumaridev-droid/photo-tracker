@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -10,41 +11,38 @@ import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
 
-import '../../../core/storage/upload_queue.dart';
 import '../../../core/utils/attempt_status.dart';
 import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
+import '../../../core/utils/place_search.dart';
 import '../../../data/models/company.dart';
 import '../../../data/models/photo_model.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
+import '../../providers/ai_prefs_provider.dart';
+import '../../widgets/ai/ai_spark_button.dart';
+import '../../widgets/ai/voice_mic_button.dart';
+import '../../widgets/common/photo_preview_gallery.dart';
 import '../upload/attempt_draft_controller.dart';
 import '../upload/attempt_limits.dart';
 import 'map_upload_sheet.dart';
 
-// ── Design tokens (dark field UI) ─────────────────────────────────────────────
-const _kSurface  = Color(0xFF1C222E);
-const _kInk      = Color(0xFFFFFFFF);
-const _kInkMuted = Color(0xFF94A3B8);
-const _kSubtle   = Color(0xFF6B7A8D);
-const _kSep      = Color(0xFF2A3340);
+// ── Design tokens (light field UI) ────────────────────────────────────────────
+const _kSurface  = Color(0xFFFFFFFF);
+const _kInk      = Color(0xFF1A2130);
+const _kInkMuted = Color(0xFF5C6778);
+const _kSubtle   = Color(0xFF8B95A5);
+const _kSep      = Color(0xFFE3E7EE);
 const _kAccent   = Color(0xFF4A90E2);
 const _kPending  = Color(0xFFF5C400);
-const _kAlert    = Color(0xFFC2185B);
-const _kFab      = Color(0xCC1C222E);
+const _kFab      = Color(0xF2FFFFFF);
+
+
 
 // Used for the "enable GPS" hint in the filter sheet. (Category colours now
 // come from categoryOf() in category.dart.)
 const _kAsap     = Color(0xFFEF4444);
-
-// ── Static category definitions ───────────────────────────────────────────────
-const List<List<String>> _kCats = [
-  ['asap',     'ASAP'],
-  ['next_day', 'Next Day'],
-  ['standard', 'Standard'],
-  ['special',  'Special'],
-];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 Map<String, List<PhotoModel>> _groupByLocation(List<PhotoModel> photos) {
@@ -91,16 +89,16 @@ class _MapJob {
 
   String get address {
     final fromPhoto = latest?.address?.trim();
-    if (fromPhoto != null && fromPhoto.isNotEmpty) return fromPhoto;
+    if (fromPhoto != null && fromPhoto.isNotEmpty) {
+      return PlaceSearch.withoutZip(fromPhoto);
+    }
     final parts = [
       profile?.address,
       profile?.city,
       profile?.state,
       profile?.postalCode,
     ].where((s) => s != null && s.trim().isNotEmpty).map((s) => s!.trim());
-    if (parts.isNotEmpty) return parts.join(', ');
-    final zip = latest?.zipCode?.trim();
-    if (zip != null && zip.isNotEmpty) return 'ZIP $zip';
+    if (parts.isNotEmpty) return PlaceSearch.withoutZip(parts.join(', '));
     return '${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}';
   }
 
@@ -326,7 +324,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
     return Scaffold(
       // Full-screen map — no AppBar, body extends to top
       extendBodyBehindAppBar: true,
-      backgroundColor: const Color(0xFF0F1219),
+      backgroundColor: const Color(0xFFF2F4F7),
       body: _MapBody(
         photos: photos,
         searchCtrl: _searchCtrl,
@@ -379,12 +377,9 @@ class _MapBodyState extends ConsumerState<_MapBody> {
   // "Today" can combine (e.g. every priority, today only).
   bool _todayOnly = false;
   int _fittedCount = -1;
-  // Distance filter — a radius from the user (0–100 mi) OR a ZIP match. Only
-  // the most recently touched control applies (_distanceMode).
+  // Distance filter — a radius from the user (0–100 mi).
   double _distanceMi = 100;
-  String _zip = '';
-  String? _distanceMode; // 'distance' | 'zip' | null
-  bool _zipBusy = false;
+  String? _distanceMode; // 'distance' | null
   // Debounces the camera fit while the distance slider is being dragged, so
   // it flies once the user settles instead of on every intermediate tick.
   Timer? _filterFitDebounce;
@@ -407,9 +402,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
     super.dispose();
   }
 
-  // Frames the map around whatever the distance/ZIP filter implies:
-  //  - distance mode: the full radius circle around the user's location
-  //  - zip mode (or cleared): the bounding box of the currently visible pins
+  // Frames the map around the active distance filter, or the visible pins.
   void _fitToActiveFilter() {
     if (!mounted) return;
     if (_distanceMode == 'distance' && widget.userPosition != null) {
@@ -445,7 +438,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
       _distanceMode != null ||
       widget.searchCtrl.text.trim().isNotEmpty;
 
-  // Resets every active filter (priority level, today, distance/ZIP) from
+  // Resets every active filter (priority level, today, distance) from
   // outside the filter sheet — used by the "no pins match" empty state so a
   // narrow filter never strands the user without a way back.
   void _clearAllFilters() {
@@ -453,7 +446,6 @@ class _MapBodyState extends ConsumerState<_MapBody> {
       _levels.clear();
       _todayOnly = false;
       _distanceMode = null;
-      _zip = '';
       _distanceMi = 100;
       _selectedJob = null;
     });
@@ -461,42 +453,127 @@ class _MapBodyState extends ConsumerState<_MapBody> {
     _scheduleFilterFit();
   }
 
-  // A tappable "or"-filter bubble. [color] present → a service-level chip
-  // (soft tint + colour dot); null → a neutral action chip (select all/clear).
-  Widget _bubble(String label, bool active, Color? color, VoidCallback onTap) {
-    final c = color ?? _kAccent;
-    return GestureDetector(
-      onTap: () {
-        HapticFeedback.selectionClick();
-        onTap();
-      },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 9),
-        decoration: BoxDecoration(
-          color: active ? c : c.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(99),
-          border: Border.all(
-              color: active ? c : c.withValues(alpha: 0.30), width: 1.2),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (color != null)
-              Container(
-                width: 8,
-                height: 8,
-                margin: const EdgeInsets.only(right: 7),
-                decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: active ? Colors.white : c),
+  String _categoryDetail(String value) => switch (value) {
+        'asap' => 'Rush jobs that need to go out as soon as possible.',
+        'special' => 'Jobs that need extra care or special instructions.',
+        'standard' => 'Regular service attempts at the usual pace.',
+        'next_day' => 'Jobs scheduled for the next business day.',
+        _ => 'Show matching pins on the map.',
+      };
+
+  int _geotaggedCountFor(String? category, {bool todayOnly = false}) {
+    final now = DateTime.now();
+    return widget.photos.where((p) {
+      if (p.latitude == 0 && p.longitude == 0) return false;
+      if (category != null && (p.category ?? 'standard') != category) {
+        return false;
+      }
+      if (todayOnly) {
+        final ts = p.takenAt ?? p.timestamp;
+        if (ts == null) return false;
+        final dt = DateTime.tryParse(ts)?.toLocal();
+        if (dt == null) return false;
+        return dt.year == now.year &&
+            dt.month == now.month &&
+            dt.day == now.day;
+      }
+      return true;
+    }).length;
+  }
+
+  Widget _filterDetailRow({
+    required String title,
+    required String detail,
+    required Color color,
+    required IconData icon,
+    required bool selected,
+    required VoidCallback onTap,
+    int? count,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () {
+            HapticFeedback.selectionClick();
+            onTap();
+          },
+          borderRadius: BorderRadius.circular(14),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            curve: const Cubic(0.23, 1, 0.32, 1),
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+            decoration: BoxDecoration(
+              color: selected ? color.withValues(alpha: 0.12) : _kSurface,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: selected ? color : _kSep,
+                width: selected ? 1.4 : 1,
               ),
-            Text(label,
-                style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
-                    color: active ? Colors.white : c)),
-          ],
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: selected ? color : color.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(
+                    icon,
+                    size: 18,
+                    color: selected ? Colors.white : color,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: selected ? color : _kInk,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        detail,
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          height: 1.3,
+                          color: _kInkMuted,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (count != null) ...[
+                  const SizedBox(width: 8),
+                  Text(
+                    '$count',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: selected ? color : _kSubtle,
+                    ),
+                  ),
+                ],
+                const SizedBox(width: 6),
+                Icon(
+                  selected
+                      ? Icons.check_circle_rounded
+                      : Icons.circle_outlined,
+                  size: 20,
+                  color: selected ? color : _kSep,
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -509,7 +586,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
         margin: const EdgeInsets.only(bottom: 14),
         padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
         decoration: BoxDecoration(
-          color: const Color(0xFF0F1219),
+          color: const Color(0xFFF2F4F7),
           borderRadius: BorderRadius.circular(16),
         ),
         child: Column(
@@ -527,9 +604,8 @@ class _MapBodyState extends ConsumerState<_MapBody> {
         ),
       );
 
-  // Filter popup: Distance (slider 0–100 mi OR ZIP / "my zip", most-recent
-  // wins) + Priority-level bubbles with Select all / Clear selection. Changes
-  // apply live to the map behind the sheet.
+  // Filter sheet: same dock categories (with details) plus distance.
+  // Opens from the tune button or a swipe-up on the filter dock.
   void _showFilterSheet() {
     HapticFeedback.lightImpact();
     showModalBottomSheet<void>(
@@ -549,22 +625,9 @@ class _MapBodyState extends ConsumerState<_MapBody> {
           }
 
           final hasLoc = widget.userPosition != null;
-          final anyActive = _levels.isNotEmpty || _distanceMode != null;
+          final anyActive =
+              _levels.isNotEmpty || _todayOnly || _distanceMode != null;
           final resultCount = _mapJobs().length;
-
-          Widget modeChip(String text, bool on) => Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
-                decoration: BoxDecoration(
-                  color: on ? _kAccent : Colors.transparent,
-                  borderRadius: BorderRadius.circular(99),
-                ),
-                child: Text(text,
-                    style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w800,
-                        color: on ? Colors.white : _kInkMuted)),
-              );
 
           return Container(
             constraints: BoxConstraints(
@@ -603,8 +666,8 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                           onPressed: () {
                             refresh(() {
                               _levels.clear();
+                              _todayOnly = false;
                               _distanceMode = null;
-                              _zip = '';
                               _distanceMi = 100;
                             });
                             _scheduleFilterFit();
@@ -620,6 +683,50 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        // Same categories as the dock pills, with details.
+                        _sheetCard(
+                          title: 'Categories',
+                          children: [
+                            _filterDetailRow(
+                              title: 'All',
+                              detail: 'Every pin, regardless of priority.',
+                              color: _kAccent,
+                              icon: Icons.apps_rounded,
+                              selected: _levels.isEmpty,
+                              count: _geotaggedCountFor(null),
+                              onTap: () => refresh(_levels.clear),
+                            ),
+                            for (final value in const [
+                              'standard',
+                              'asap',
+                              'special',
+                              'next_day',
+                            ])
+                              _filterDetailRow(
+                                title: categoryOf(value).label,
+                                detail: _categoryDetail(value),
+                                color: categoryOf(value).color,
+                                icon: categoryOf(value).icon,
+                                selected: _levels.length == 1 &&
+                                    _levels.contains(value),
+                                count: _geotaggedCountFor(value),
+                                onTap: () => refresh(
+                                    () => _levels
+                                      ..clear()
+                                      ..add(value)),
+                              ),
+                            _filterDetailRow(
+                              title: 'Today',
+                              detail: 'Only pins captured today.',
+                              color: _kAccent,
+                              icon: Icons.calendar_today_rounded,
+                              selected: _todayOnly,
+                              count: _geotaggedCountFor(null, todayOnly: true),
+                              onTap: () =>
+                                  refresh(() => _todayOnly = !_todayOnly),
+                            ),
+                          ],
+                        ),
                         // ── Distance ──
                         _sheetCard(
                           title: 'Distance',
@@ -701,123 +808,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                                     'Enable GPS to filter by distance.',
                                     style: TextStyle(
                                         fontSize: 12, color: _kAsap)),
-                              ),
-                            const SizedBox(height: 14),
-                            Row(
-                              children: [
-                                Expanded(
-                                    child: Container(
-                                        height: 1, color: _kSep)),
-                                const Padding(
-                                  padding:
-                                      EdgeInsets.symmetric(horizontal: 10),
-                                  child: Text('OR',
-                                      style: TextStyle(
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w800,
-                                          color: _kInkMuted)),
                                 ),
-                                Expanded(
-                                    child: Container(
-                                        height: 1, color: _kSep)),
-                              ],
-                            ),
-                            const SizedBox(height: 14),
-                            Row(
-                              children: [
-                                const Text('ZIP code',
-                                    style: TextStyle(
-                                        fontSize: 13.5,
-                                        fontWeight: FontWeight.w600,
-                                        color: _kInk)),
-                                const SizedBox(width: 8),
-                                modeChip('Active', _distanceMode == 'zip'),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: TextFormField(
-                                    initialValue: _zip,
-                                    keyboardType: TextInputType.number,
-                                    style: const TextStyle(
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.w600),
-                                    decoration: InputDecoration(
-                                      hintText: 'e.g. 92101',
-                                      isDense: true,
-                                      filled: true,
-                                      fillColor: _kSurface,
-                                      contentPadding:
-                                          const EdgeInsets.symmetric(
-                                              horizontal: 14, vertical: 12),
-                                      enabledBorder: OutlineInputBorder(
-                                          borderRadius:
-                                              BorderRadius.circular(12),
-                                          borderSide: const BorderSide(
-                                              color: _kSep)),
-                                      focusedBorder: OutlineInputBorder(
-                                          borderRadius:
-                                              BorderRadius.circular(12),
-                                          borderSide: const BorderSide(
-                                              color: _kAccent, width: 1.5)),
-                                    ),
-                                    onChanged: (v) {
-                                      refresh(() {
-                                        _zip = v;
-                                        _distanceMode = 'zip';
-                                      });
-                                      _scheduleFilterFit();
-                                    },
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                SizedBox(
-                                  height: 46,
-                                  child: FilledButton.tonalIcon(
-                                    style: FilledButton.styleFrom(
-                                      backgroundColor:
-                                          _kAccent.withValues(alpha: 0.10),
-                                      foregroundColor: _kAccent,
-                                      shape: RoundedRectangleBorder(
-                                          borderRadius:
-                                              BorderRadius.circular(12)),
-                                    ),
-                                    onPressed: (hasLoc && !_zipBusy)
-                                        ? () async {
-                                            ssheet(() => _zipBusy = true);
-                                            final addr = await LocationService
-                                                .reverseGeocode(
-                                                    widget.userPosition!
-                                                        .latitude,
-                                                    widget.userPosition!
-                                                        .longitude);
-                                            final m = RegExp(r'\b\d{5}\b')
-                                                .firstMatch(addr ?? '');
-                                            refresh(() {
-                                              _zipBusy = false;
-                                              if (m != null) {
-                                                _zip = m.group(0)!;
-                                                _distanceMode = 'zip';
-                                              }
-                                            });
-                                            if (m != null) _scheduleFilterFit();
-                                          }
-                                        : null,
-                                    icon: _zipBusy
-                                        ? const SizedBox(
-                                            width: 14,
-                                            height: 14,
-                                            child: CircularProgressIndicator(
-                                                strokeWidth: 2))
-                                        : const Icon(Icons.my_location,
-                                            size: 16),
-                                    label: const Text('My zip'),
-                                  ),
-                                ),
-                              ],
-                            ),
                             if (_distanceMode != null)
                               Align(
                                 alignment: Alignment.centerLeft,
@@ -831,7 +822,6 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                                   onPressed: () {
                                     refresh(() {
                                       _distanceMode = null;
-                                      _zip = '';
                                     });
                                     _scheduleFilterFit();
                                   },
@@ -840,45 +830,6 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                                   label: const Text('Clear distance filter'),
                                 ),
                               ),
-                          ],
-                        ),
-                        // ── Priority level ──
-                        _sheetCard(
-                          title: 'Priority Level',
-                          children: [
-                            Wrap(
-                              spacing: 9,
-                              runSpacing: 9,
-                              children: [
-                                for (final c in _kCats)
-                                  _bubble(c[1], _levels.contains(c[0]),
-                                      categoryOf(c[0]).color, () {
-                                    refresh(() {
-                                      _levels.contains(c[0])
-                                          ? _levels.remove(c[0])
-                                          : _levels.add(c[0]);
-                                    });
-                                  }),
-                              ],
-                            ),
-                            const SizedBox(height: 12),
-                            Row(
-                              children: [
-                                _bubble(
-                                    'Select all',
-                                    _levels.length == _kCats.length,
-                                    null,
-                                    () => refresh(() {
-                                          _levels
-                                            ..clear()
-                                            ..addAll(
-                                                _kCats.map((c) => c[0]));
-                                        })),
-                                const SizedBox(width: 9),
-                                _bubble('Clear', _levels.isEmpty, null,
-                                    () => refresh(_levels.clear)),
-                              ],
-                            ),
                           ],
                         ),
                       ],
@@ -936,7 +887,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
         child: _PinMarker(
           color: job.pinColor,
           selected: selected,
-          label: selected ? job.jobId : null,
+          label: null,
         ),
       ),
     );
@@ -979,18 +930,6 @@ class _MapBodyState extends ConsumerState<_MapBody> {
     return '${mi.toStringAsFixed(1)} mi';
   }
 
-  String _clientName(PhotoModel p) {
-    final profiles = ref.read(profilesProvider).valueOrNull ?? [];
-    for (final pr in profiles) {
-      if (pr.id == p.profileId) {
-        final named = pr.companyName?.trim();
-        if (named != null && named.isNotEmpty) return named;
-        return companyOrDefault(pr.company).name;
-      }
-    }
-    return '';
-  }
-
   String _addressOf(PhotoModel p) {
     final addr = p.address?.trim();
     if (addr != null && addr.isNotEmpty) return addr;
@@ -1000,7 +939,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
   }
 
   // The photos visible on the map after all active filters (service level,
-  // distance/zip) + a valid geotag. Shared by build() and the filter sheet's
+  // distance) + a valid geotag. Shared by build() and the filter sheet's
   // live result count.
   List<PhotoModel> _visiblePhotos() {
     var filtered = widget.photos;
@@ -1024,7 +963,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
       }).toList();
     }
 
-    // Distance / ZIP filter (mutually exclusive; most-recent control wins).
+    // Distance filter.
     if (_distanceMode == 'distance' && widget.userPosition != null) {
       final ulat = widget.userPosition!.latitude;
       final ulng = widget.userPosition!.longitude;
@@ -1033,26 +972,15 @@ class _MapBodyState extends ConsumerState<_MapBody> {
             ulat, ulng, p.latitude, p.longitude);
         return km * 0.621371 <= _distanceMi; // km → miles
       }).toList();
-    } else if (_distanceMode == 'zip' && _zip.trim().isNotEmpty) {
-      final z = _zip.trim();
-      filtered = filtered.where((p) {
-        final pz = (p.zipCode ?? '').trim();
-        return pz.isNotEmpty ? pz == z : (p.address ?? '').contains(z);
-      }).toList();
     }
 
-    final q = widget.searchCtrl.text.trim().toLowerCase();
-    if (q.isNotEmpty) {
+    if (widget.searchCtrl.text.trim().isNotEmpty) {
       filtered = filtered.where((p) {
-        final hay = [
-          p.fileNumber ?? '',
-          p.profileName ?? '',
-          p.zipCode ?? '',
-          p.address ?? '',
-          _clientName(p),
-          '${p.id}',
-        ].join(' ').toLowerCase();
-        return hay.contains(q);
+        return _matchesProfileOrZip(
+          name: p.profileName,
+          zip: p.zipCode,
+          address: p.address,
+        );
       }).toList();
     }
 
@@ -1112,24 +1040,100 @@ class _MapBodyState extends ConsumerState<_MapBody> {
         profile.longitude!,
       );
       if (km * 0.621371 > _distanceMi) return false;
-    } else if (_distanceMode == 'zip' && _zip.trim().isNotEmpty) {
-      final z = _zip.trim();
-      final pz = (profile.postalCode ?? '').trim();
-      if (pz.isNotEmpty ? pz != z : !(profile.address ?? '').contains(z)) {
-        return false;
-      }
     }
+    return _matchesProfileOrZip(
+      name: profile.name,
+      zip: profile.postalCode,
+      address: profile.address,
+    );
+  }
+
+  bool _matchesProfileOrZip({
+    String? name,
+    String? zip,
+    String? address,
+  }) {
     final q = widget.searchCtrl.text.trim().toLowerCase();
     if (q.isEmpty) return true;
-    final hay = [
-      '${profile.id}',
-      profile.name,
-      profile.address ?? '',
-      profile.city ?? '',
-      profile.postalCode ?? '',
-      profile.companyName ?? '',
-    ].join(' ').toLowerCase();
-    return hay.contains(q);
+    if ((name ?? '').toLowerCase().contains(q)) return true;
+    if ((zip ?? '').toLowerCase().contains(q)) return true;
+    if (RegExp(r'^\d{5}').hasMatch(q) && (address ?? '').contains(q)) {
+      return true;
+    }
+    return false;
+  }
+
+  Widget _nextUpChip(List<_MapJob> jobs) {
+    if (jobs.isEmpty) return const SizedBox.shrink();
+    final pos = widget.userPosition;
+    _MapJob next = jobs.first;
+    double? miles;
+    if (pos != null) {
+      var bestMi = double.infinity;
+      for (final j in jobs) {
+        if (!j.hasPoint) continue;
+        final mi = Geolocator.distanceBetween(
+              pos.latitude, pos.longitude, j.lat, j.lng) /
+            1609.34;
+        if (mi < bestMi) {
+          bestMi = mi;
+          next = j;
+          miles = mi;
+        }
+      }
+    }
+    final dist = miles == null
+        ? null
+        : miles < 0.1
+            ? 'Nearby'
+            : miles < 10
+                ? '${miles.toStringAsFixed(1)} mi'
+                : '${miles.round()} mi';
+    final pay = next.profile?.payRate;
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: GestureDetector(
+        onTap: () {
+          HapticFeedback.selectionClick();
+          final pid = next.profile?.id;
+          if (pid != null) {
+            context.push('/upload?profileId=$pid');
+          }
+        },
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+          decoration: BoxDecoration(
+            color: const Color(0xF5FFFFFF),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: _kSep),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.auto_awesome_rounded, size: 16, color: _kAccent),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  [
+                    'Next up · ${next.recipient}',
+                    if (dist != null) dist,
+                    if (pay != null) '\$$pay',
+                  ].join(' · '),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: _kInk,
+                  ),
+                ),
+              ),
+              const Icon(Icons.chevron_right_rounded, size: 18, color: _kSubtle),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -1160,7 +1164,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
           child: LayoutBuilder(
             builder: (context, constraints) {
               if (constraints.maxWidth < 8 || constraints.maxHeight < 8) {
-                return const ColoredBox(color: Color(0xFF0F1219));
+                return const ColoredBox(color: Color(0xFFF2F4F7));
               }
               return FlutterMap(
             mapController: widget.mapController,
@@ -1170,7 +1174,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
               minZoom: 2,
               maxZoom: 18,
               keepAlive: true,
-              backgroundColor: const Color(0xFF0F1219),
+              backgroundColor: const Color(0xFFF2F4F7),
               onMapReady: widget.onMapReady,
               onTap: (_, latLng) {
                 HapticFeedback.lightImpact();
@@ -1189,7 +1193,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
             children: [
               TileLayer(
                 urlTemplate:
-                    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+                    'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
                 subdomains: const ['a', 'b', 'c', 'd'],
                 retinaMode: false,
                 tileSize: 256,
@@ -1241,108 +1245,64 @@ class _MapBodyState extends ConsumerState<_MapBody> {
           ),
         ),
 
-        // ── Top: search + filter + retry ────────────────────────────────
+        // ── Top: search + filter ───────────────────────────────────────
         Positioned(
           top: topPad + 10,
           left: 14,
           right: 14,
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _SearchBar(
-                controller: widget.searchCtrl,
-                activeCount: _levels.length +
-                    (_todayOnly ? 1 : 0) +
-                    (_distanceMode != null ? 1 : 0),
-                onFilterTap: _showFilterSheet,
+              Row(
+                children: [
+                  Expanded(
+                    child: _SearchBar(controller: widget.searchCtrl),
+                  ),
+                  const SizedBox(width: 8),
+                  const AiSparkButton(),
+                ],
               ),
-              const _PendingUploadsPill(),
+              if (ref.watch(aiSmartSuggestionsProvider))
+                _nextUpChip(jobs),
             ],
           ),
         ),
 
-        // ── Selected job card + jobs sheet ─────────────────────────────
-        if (hasData || _selectedJob != null)
+        // ── Filter dock ────────────────────────────────────────────────
           Positioned(
-            bottom: 0,
             left: 0,
             right: 0,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_selectedJob != null)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
-                    child: _JobPreviewCard(
-                      recipient: _selectedJob!.recipient,
-                      attempts: _selectedJob!.attemptCount,
-                      atCap: _selectedJob!.attemptCount >=
-                          AttemptDraftController.kMaxAttemptsPerJob,
-                      jobId: _selectedJob!.jobId,
-                      distance: _distanceLabelFor(
-                          _selectedJob!.lat, _selectedJob!.lng),
-                      address: _selectedJob!.address,
-                      client: _selectedJob!.client,
-                      pending: _selectedJob!.isPending,
-                      onNewAttempt: () async {
-                        final job = _selectedJob!;
-                        final pid = job.profile?.id;
-                        final ok = await ensureCanStartNewAttempt(
-                          context,
-                          ref,
-                          profileId: pid,
-                          knownCount: job.attemptCount,
-                        );
-                        if (!ok || !context.mounted) return;
-                        if (pid != null && pid != 0) {
-                          context.push('/upload?profileId=$pid');
-                        } else {
-                          context.push('/upload');
-                        }
-                      },
-                      onViewJob: () {
-                        final job = _selectedJob!;
-                        final pid = job.profile?.id;
-                        if (pid != null && pid != 0) {
-                          context.push('/profile/$pid');
-                        } else if (job.latest != null) {
-                          context.push('/photo/${job.latest!.id}');
-                        }
-                      },
-                    ),
-                  ),
-                _BottomCard(
-                  count: jobs.length,
-                  onViewList: () => context.go('/jobs'),
-                ),
-              ],
-            ),
-          )
-        else if (_anyFilterActive)
-          Positioned(
             bottom: 0,
-            left: 0,
-            right: 0,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
-              child: _EmptyFilterCard(onClearFilters: _clearAllFilters),
+            child: _MapFilterDock(
+              levels: _levels,
+              todayOnly: _todayOnly,
+              moreFiltersActive: _distanceMode != null,
+              onLevelsChanged: (next) {
+                setState(() {
+                  _levels
+                    ..clear()
+                    ..addAll(next);
+                });
+                _scheduleFilterFit();
+              },
+              onTodayChanged: (v) {
+                setState(() => _todayOnly = v);
+                _scheduleFilterFit();
+              },
+              onMoreFilters: _showFilterSheet,
             ),
           ),
 
-        // ── Map FABs: fit / refresh / locate ───────────────────────────
+        // ── Map FABs: fit / locate ─────────────────────────────────────
         Positioned(
           right: 14,
           bottom: _selectedJob != null
-              ? 290
-              : (hasData || _anyFilterActive)
-                  ? 118
-                  : 28,
+              ? 380
+              : 118,
           child: Material(
             color: Colors.transparent,
             child: _ZoomControls(
               onFitTap: () =>
                   widget.onFitAll(jobs.map((j) => j.point).toList()),
-              onRefreshTap: widget.onRefresh,
               userPosition: widget.userPosition,
               loading: widget.fetchingLocation,
               onLocateTap: () {
@@ -1361,6 +1321,55 @@ class _MapBodyState extends ConsumerState<_MapBody> {
             ),
           ),
         ),
+
+        // Pin card last so map, dock, and FABs cannot steal button taps.
+        if (_selectedJob != null)
+          Positioned(
+            left: 14,
+            right: 14,
+            bottom: 118,
+            child: Material(
+              color: Colors.transparent,
+              child: _JobPreviewCard(
+                  key: ValueKey(_selectedJob!.jobId),
+                  attempts: _selectedJob!.attemptCount,
+                  photos: _selectedJob!.photos,
+                  atCap: _selectedJob!.attemptCount >=
+                      AttemptDraftController.kMaxAttemptsPerJob,
+                  distance: _distanceLabelFor(
+                      _selectedJob!.lat, _selectedJob!.lng),
+                  address: _selectedJob!.address,
+                  client: _selectedJob!.client,
+                  pending: _selectedJob!.isPending,
+                  onNewAttempt: () async {
+                    final job = _selectedJob;
+                    if (job == null) return;
+                    final pid = job.profile?.id;
+                    final ok = await ensureCanStartNewAttempt(
+                      context,
+                      ref,
+                      profileId: pid,
+                      knownCount: job.attemptCount,
+                    );
+                    if (!ok || !context.mounted) return;
+                    if (pid != null && pid != 0) {
+                      context.push('/upload?profileId=$pid');
+                    } else {
+                      context.push('/upload');
+                    }
+                  },
+                  onPreviewPhoto: (index) {
+                    final photos = _selectedJob?.photos ?? const <PhotoModel>[];
+                    if (photos.isEmpty || !context.mounted) return;
+                    PhotoPreviewGallery.open(
+                      context,
+                      photos: photos,
+                      initialIndex: index,
+                    );
+                  },
+                ),
+            ),
+          ),
       ],
     );
   }
@@ -1469,20 +1478,15 @@ class _FloatingHeader extends StatelessWidget {
 class _SearchBar extends StatelessWidget {
   const _SearchBar({
     required this.controller,
-    required this.activeCount,
-    required this.onFilterTap,
   });
   final TextEditingController controller;
-  final int                  activeCount;
-  final VoidCallback         onFilterTap;
 
   @override
   Widget build(BuildContext context) {
-    final filtered = activeCount > 0;
     return Container(
       height: 48,
       decoration: BoxDecoration(
-        color: const Color(0xE61C222E),
+        color: const Color(0xF5FFFFFF),
         borderRadius: BorderRadius.circular(24),
         border: Border.all(color: _kSep),
       ),
@@ -1497,7 +1501,7 @@ class _SearchBar extends StatelessWidget {
               controller: controller,
               style: const TextStyle(fontSize: 14, color: _kInk),
               decoration: const InputDecoration(
-                hintText: 'Job number, recipient, zip',
+                hintText: 'Say a profile or ZIP',
                 hintStyle: TextStyle(color: _kSubtle, fontSize: 14),
                 border: InputBorder.none,
                 contentPadding: EdgeInsets.symmetric(horizontal: 10),
@@ -1505,47 +1509,20 @@ class _SearchBar extends StatelessWidget {
               ),
             ),
           ),
-          GestureDetector(
-            onTap: () {
-              HapticFeedback.lightImpact();
-              onFilterTap();
-            },
-            child: Container(
-              width: 36,
-              height: 36,
-              margin: const EdgeInsets.only(right: 6),
-              decoration: BoxDecoration(
-                color: _kAccent,
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: _kAccent.withValues(alpha: 0.35),
-                    blurRadius: 8,
-                  ),
-                ],
-              ),
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  const Icon(Icons.tune_rounded, size: 18, color: Colors.white),
-                  if (filtered)
-                    Positioned(
-                      top: 4,
-                      right: 4,
-                      child: Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          shape: BoxShape.circle,
-                          border: Border.all(color: _kAccent, width: 1.5),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
+          VoiceMicButton(
+            controller: controller,
+            tooltip: 'Search by voice',
           ),
+          if (controller.text.isNotEmpty)
+            GestureDetector(
+              onTap: controller.clear,
+              child: const Padding(
+                padding: EdgeInsets.only(right: 8),
+                child: Icon(Icons.close_rounded, size: 18, color: _kSubtle),
+              ),
+            )
+          else
+            const SizedBox(width: 8),
         ],
       ),
     );
@@ -1589,62 +1566,6 @@ class _HintPill extends StatelessWidget {
       ),
     ),
   );
-}
-
-// ── Pending offline uploads pill ────────────────────────────────────────────
-/// Surfaces the offline upload queue. Hidden when empty; tapping forces a
-/// retry. The queue also retries itself automatically on a timer + when
-/// connectivity returns.
-class _PendingUploadsPill extends StatelessWidget {
-  const _PendingUploadsPill();
-
-  @override
-  Widget build(BuildContext context) => ValueListenableBuilder<int>(
-        valueListenable: UploadQueueService.instance.pendingCount,
-        builder: (_, count, __) {
-          if (count == 0) return const SizedBox.shrink();
-          return Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: GestureDetector(
-                onTap: UploadQueueService.instance.process,
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: _kAlert,
-                    borderRadius: BorderRadius.circular(20),
-                    boxShadow: [
-                      BoxShadow(
-                        color: _kAlert.withValues(alpha: 0.35),
-                        blurRadius: 10,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.warning_rounded,
-                          size: 14, color: Colors.white),
-                      SizedBox(width: 6),
-                      Text(
-                        'Retry Uploads',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: Colors.white,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          );
-        },
-      );
 }
 
 // ── My-location FAB ───────────────────────────────────────────────────────────
@@ -1748,44 +1669,71 @@ class _EmptyFilterCard extends StatelessWidget {
   );
 }
 
-// ── Selected-pin job card (New Attempt / View Job) ────────────────────────────
-class _JobPreviewCard extends StatelessWidget {
+// ── Selected-pin job card ────────────────────────────────────────────────────
+class _JobPreviewCard extends StatefulWidget {
   const _JobPreviewCard({
-    required this.recipient,
+    super.key,
     required this.attempts,
-    required this.jobId,
     required this.address,
     required this.onNewAttempt,
-    required this.onViewJob,
+    required this.onPreviewPhoto,
+    this.photos = const [],
     this.distance,
     this.client,
     this.atCap = false,
     this.pending = false,
   });
 
-  final String recipient;
   final int attempts;
   final bool atCap;
   final bool pending;
-  final String jobId;
   final String? distance;
   final String address;
   final String? client;
+  final List<PhotoModel> photos;
   final VoidCallback onNewAttempt;
-  final VoidCallback onViewJob;
+  final ValueChanged<int> onPreviewPhoto;
+
+  @override
+  State<_JobPreviewCard> createState() => _JobPreviewCardState();
+}
+
+class _JobPreviewCardState extends State<_JobPreviewCard> {
+  final _page = PageController();
+  int _index = 0;
+
+  @override
+  void didUpdateWidget(_JobPreviewCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.photos, widget.photos)) {
+      _index = 0;
+      if (_page.hasClients) _page.jumpToPage(0);
+    }
+  }
+
+  @override
+  void dispose() {
+    _page.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final title = (widget.client != null && widget.client!.isNotEmpty)
+        ? widget.client!
+        : 'Location';
+    final preview =
+        widget.photos.where((p) => p.imageUrl.trim().isNotEmpty).toList();
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 14),
       decoration: BoxDecoration(
-        color: const Color(0xF21C222E),
+        color: const Color(0xF7FFFFFF),
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: _kSep),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.35),
+            color: Colors.black.withValues(alpha: 0.12),
             blurRadius: 24,
             offset: const Offset(0, 8),
           ),
@@ -1794,24 +1742,114 @@ class _JobPreviewCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Text(jobId,
+          if (preview.isNotEmpty) ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: SizedBox(
+                height: 132,
+                width: double.infinity,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    PageView.builder(
+                      controller: _page,
+                      itemCount: preview.length,
+                      onPageChanged: (i) => setState(() => _index = i),
+                      itemBuilder: (_, i) => GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => widget.onPreviewPhoto(i),
+                        child: CachedNetworkImage(
+                          imageUrl: preview[i].imageUrl,
+                          fit: BoxFit.cover,
+                          placeholder: (_, __) => const ColoredBox(
+                            color: Color(0xFFE8EDF3),
+                            child: Center(
+                              child: SizedBox(
+                                width: 22,
+                                height: 22,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2),
+                              ),
+                            ),
+                          ),
+                          errorWidget: (_, __, ___) => const ColoredBox(
+                            color: Color(0xFFE8EDF3),
+                            child: Icon(
+                              Icons.photo_outlined,
+                              color: _kSubtle,
+                              size: 32,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    if (preview.length > 1) ...[
+                      Positioned(
+                        right: 8,
+                        top: 8,
+                        child: IgnorePointer(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.55),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Text(
+                              '${_index + 1}/${preview.length}',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: 8,
+                        child: IgnorePointer(
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              for (var i = 0; i < preview.length; i++)
+                                AnimatedContainer(
+                                  duration: const Duration(milliseconds: 180),
+                                  curve: const Cubic(0.23, 1, 0.32, 1),
+                                  margin:
+                                      const EdgeInsets.symmetric(horizontal: 3),
+                                  width: i == _index ? 16 : 6,
+                                  height: 6,
+                                  decoration: BoxDecoration(
+                                    color: i == _index
+                                        ? Colors.white
+                                        : Colors.white.withValues(alpha: 0.45),
+                                    borderRadius: BorderRadius.circular(3),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (widget.distance != null)
+            Align(
+              alignment: Alignment.centerRight,
+              child: Text(widget.distance!,
                   style: const TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
                       color: _kInkMuted)),
-              const Spacer(),
-              if (distance != null)
-                Text(distance!,
-                    style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: _kInkMuted)),
-            ],
-          ),
-          const SizedBox(height: 8),
-          if (pending) ...[
+            ),
+          if (widget.pending) ...[
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
@@ -1830,7 +1868,7 @@ class _JobPreviewCard extends StatelessWidget {
             const SizedBox(height: 8),
           ],
           Text(
-            recipient,
+            title,
             style: const TextStyle(
               fontSize: 16,
               fontWeight: FontWeight.w800,
@@ -1840,7 +1878,7 @@ class _JobPreviewCard extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(
-            address,
+            widget.address,
             style: const TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.w600,
@@ -1848,55 +1886,34 @@ class _JobPreviewCard extends StatelessWidget {
               height: 1.3,
             ),
           ),
-          if (client != null && client!.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            const Text('Client',
-                style: TextStyle(fontSize: 12, color: _kInkMuted)),
-            const SizedBox(height: 2),
-            Text(client!,
-                style: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: _kInk)),
-          ],
           const SizedBox(height: 10),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
             decoration: BoxDecoration(
-              color: const Color(0xFF2A3340),
+              color: const Color(0xFFE3E7EE),
               borderRadius: BorderRadius.circular(20),
             ),
             child: Text(
-              '$attempts of ${AttemptDraftController.kMaxAttemptsPerJob} '
-              'attempt${attempts == 1 ? '' : 's'}',
+              '${widget.attempts} of ${AttemptDraftController.kMaxAttemptsPerJob} '
+              'attempt${widget.attempts == 1 ? '' : 's'}',
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: atCap ? const Color(0xFFFBBF24) : _kInkMuted,
+                color: widget.atCap ? const Color(0xFFFBBF24) : _kInkMuted,
               ),
             ),
           ),
           const SizedBox(height: 14),
-          Row(
-            children: [
-              Expanded(
-                child: _CardBtn(
-                  icon: atCap ? Icons.block_rounded : Icons.add_rounded,
-                  label: atCap ? 'Max attempts' : 'New Attempt',
-                  onTap: onNewAttempt,
-                  filled: !atCap,
-                ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: IntrinsicWidth(
+              child: _CardBtn(
+                icon: widget.atCap ? Icons.block_rounded : Icons.add_rounded,
+                label: widget.atCap ? 'Max attempts' : 'Add Attempt',
+                onTap: widget.onNewAttempt,
+                filled: !widget.atCap,
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _CardBtn(
-                  icon: Icons.visibility_outlined,
-                  label: 'View Job',
-                  onTap: onViewJob,
-                  filled: false,
-                ),
-              ),
-            ],
+            ),
           ),
         ],
       ),
@@ -1904,49 +1921,107 @@ class _JobPreviewCard extends StatelessWidget {
   }
 }
 
-// ── Bottom jobs sheet ─────────────────────────────────────────────────────────
-class _BottomCard extends StatelessWidget {
-  const _BottomCard({
-    required this.count,
-    required this.onViewList,
+// ── Bottom filter dock — pills only, no profile list. ────────────────────────
+class _MapFilterDock extends StatelessWidget {
+  const _MapFilterDock({
+    required this.levels,
+    required this.todayOnly,
+    required this.moreFiltersActive,
+    required this.onLevelsChanged,
+    required this.onTodayChanged,
+    required this.onMoreFilters,
   });
-  final int count;
-  final VoidCallback onViewList;
+
+  final Set<String> levels;
+  final bool todayOnly;
+  final bool moreFiltersActive;
+  final ValueChanged<Set<String>> onLevelsChanged;
+  final ValueChanged<bool> onTodayChanged;
+  final VoidCallback onMoreFilters;
+
+  void _openFromSwipe(DragEndDetails details) {
+    final v = details.primaryVelocity ?? 0;
+    if (v < -240) onMoreFilters();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onViewList,
+    return Material(
+      color: Colors.transparent,
       child: Container(
         decoration: const BoxDecoration(
-          color: Color(0xF20F1219),
+          color: Color(0xFFF7F8FA),
           borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+          boxShadow: [
+            BoxShadow(
+              color: Color(0x1A000000),
+              blurRadius: 16,
+              offset: Offset(0, -4),
+            ),
+          ],
         ),
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        padding: const EdgeInsets.fromLTRB(16, 4, 12, 14),
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onVerticalDragEnd: _openFromSwipe,
+          child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Center(
-              child: Container(
-                width: 36,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: _kSubtle.withValues(alpha: 0.55),
-                  borderRadius: BorderRadius.circular(2),
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: onMoreFilters,
+              onVerticalDragEnd: _openFromSwipe,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(24, 8, 24, 10),
+                child: Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.black26,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
                 ),
               ),
             ),
-            const SizedBox(height: 8),
-            Text(
-              '$count Jobs',
-              style: const TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.w800,
-                color: _kInk,
-                letterSpacing: -0.4,
-              ),
+            Row(
+              children: [
+                Expanded(
+                  child: _FilterPillRow(
+                    levels: levels,
+                    todayOnly: todayOnly,
+                    onLevelsChanged: onLevelsChanged,
+                    onTodayChanged: onTodayChanged,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                GestureDetector(
+                  onTap: () {
+                    HapticFeedback.selectionClick();
+                    onMoreFilters();
+                  },
+                  child: Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: moreFiltersActive ? _kAccent : Colors.white,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: moreFiltersActive ? _kAccent : _kSep,
+                      ),
+                    ),
+                    child: Icon(
+                      Icons.tune_rounded,
+                      size: 18,
+                      color: moreFiltersActive ? Colors.white : _kInkMuted,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ],
+        ),
         ),
       ),
     );
@@ -1967,41 +2042,45 @@ class _CardBtn extends StatelessWidget {
   final bool         filled;
 
   @override
-  Widget build(BuildContext context) => GestureDetector(
-    onTap: () {
-      HapticFeedback.lightImpact();
-      onTap();
-    },
-    child: Container(
-      padding: const EdgeInsets.symmetric(vertical: 13),
-      decoration: BoxDecoration(
-        color: filled ? _kAccent : const Color(0xFF2A3340),
-        borderRadius: BorderRadius.circular(24),
-        border: filled ? null : Border.all(color: _kSep),
-        boxShadow: filled
-            ? [
-                BoxShadow(
-                  color: _kAccent.withValues(alpha: 0.28),
-                  blurRadius: 8,
-                  offset: const Offset(0, 3),
-                ),
-              ]
-            : null,
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, size: 15, color: Colors.white),
-          const SizedBox(width: 6),
-          Text(
-            label,
-            style: const TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
-              color: Colors.white,
+  Widget build(BuildContext context) => Material(
+    color: Colors.transparent,
+    child: InkWell(
+      onTap: () {
+        HapticFeedback.lightImpact();
+        onTap();
+      },
+      borderRadius: BorderRadius.circular(24),
+      child: Ink(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
+        decoration: BoxDecoration(
+          color: filled ? _kAccent : const Color(0xFFE3E7EE),
+          borderRadius: BorderRadius.circular(24),
+          border: filled ? null : Border.all(color: _kSep),
+          boxShadow: filled
+              ? [
+                  BoxShadow(
+                    color: _kAccent.withValues(alpha: 0.28),
+                    blurRadius: 8,
+                    offset: const Offset(0, 3),
+                  ),
+                ]
+              : null,
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 15, color: filled ? Colors.white : _kInk),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: filled ? Colors.white : _kInk,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     ),
   );
@@ -2159,6 +2238,20 @@ class _FilterPillRow extends StatelessWidget {
         ),
         const SizedBox(width: 8),
         _pill(
+          label: 'Special',
+          selected: levels.length == 1 && levels.contains('special'),
+          color: categoryOf('special').color,
+          onTap: () => onLevelsChanged({'special'}),
+        ),
+        const SizedBox(width: 8),
+        _pill(
+          label: 'Next Day',
+          selected: levels.length == 1 && levels.contains('next_day'),
+          color: categoryOf('next_day').color,
+          onTap: () => onLevelsChanged({'next_day'}),
+        ),
+        const SizedBox(width: 8),
+        _pill(
           label: 'Today',
           selected: todayOnly,
           color: _kAccent,
@@ -2184,7 +2277,7 @@ class _FilterPillRow extends StatelessWidget {
       duration: const Duration(milliseconds: 150),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
       decoration: BoxDecoration(
-        color: selected ? color : const Color(0xCC1C222E),
+        color: selected ? color : const Color(0xF2FFFFFF),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
           color: selected ? color : _kSep,
@@ -2223,7 +2316,7 @@ class _MapListToggle extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.all(3),
     decoration: BoxDecoration(
-      color: const Color(0xCC1C222E),
+      color: const Color(0xF2FFFFFF),
       borderRadius: BorderRadius.circular(12),
       border: Border.all(color: _kSep),
     ),
@@ -2281,13 +2374,11 @@ class _MapListToggle extends StatelessWidget {
 class _ZoomControls extends StatelessWidget {
   const _ZoomControls({
     required this.onFitTap,
-    required this.onRefreshTap,
     required this.userPosition,
     required this.loading,
     required this.onLocateTap,
   });
   final VoidCallback onFitTap;
-  final VoidCallback onRefreshTap;
   final Position? userPosition;
   final bool loading;
   final VoidCallback onLocateTap;
@@ -2297,8 +2388,6 @@ class _ZoomControls extends StatelessWidget {
     mainAxisSize: MainAxisSize.min,
     children: [
       _fabBtn(icon: Icons.crop_free_rounded, onTap: onFitTap),
-      const SizedBox(height: 8),
-      _fabBtn(icon: Icons.refresh_rounded, onTap: onRefreshTap),
       const SizedBox(height: 8),
       _LocationFab(
         userPosition: userPosition,

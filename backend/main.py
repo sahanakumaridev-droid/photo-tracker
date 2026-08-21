@@ -106,6 +106,10 @@ class Profile(Base):
     # levels, diligence attempts, payout schedule, and pay-rate copy.
     company      = Column(String, nullable=True)
 
+    # Standing delivery style (Personal / Sub on 1st / …). Copied onto
+    # attempts as completion_type so Add Attempt can lock and prefill it.
+    delivery_style = Column(String, nullable=True)
+
     # ── Profile Location: independent of any Attempt/Photo. Settable before
     # any photo is ever uploaded against this profile — see /upload (Photo)
     # for the separate, GPS-captured Attempt location. ──
@@ -352,7 +356,8 @@ def _ensure_columns():
             "longitude":    "FLOAT" if not is_pg else "DOUBLE PRECISION",
             "created_at":   DT,
             "updated_at":   DT,
-            "company":      "VARCHAR",
+            "company":         "VARCHAR",
+            "delivery_style":  "VARCHAR",
         }
         for col, ddl in profile_new_cols.items():
             if col not in existing_profiles:
@@ -541,6 +546,7 @@ def _profile_dict(p):
         "note": p.note,
         "pay_rate": p.pay_rate,
         "company": company_id,
+        "delivery_style": getattr(p, "delivery_style", None),
         "company_name": company["name"] if company else None,
         "status": p.status,
         "address": p.address,
@@ -627,12 +633,15 @@ async def create_profile(data: dict = Body(...)):
         except (TypeError, ValueError):
             raise HTTPException(status_code=422, detail="pay_rate must be a whole dollar number")
 
+    delivery_style = (data.get("delivery_style") or "").strip() or None
+
     db = SessionLocal()
     profile = Profile(
         name=name,
         service_type=service_type,
         pay_rate=pay_rate,
         company=company_id,
+        delivery_style=delivery_style,
     )
     # Profile Location + status are entirely optional here — creating a
     # profile never requires an attempt, photo, upload, or GPS capture.
@@ -681,6 +690,9 @@ async def update_profile(profile_id: int, data: dict = Body(...)):
                 db.close()
                 raise HTTPException(status_code=422, detail="pay_rate must be a whole dollar number")
         profile.pay_rate = pay_rate
+    if "delivery_style" in data:
+        style = data["delivery_style"]
+        profile.delivery_style = style.strip() if isinstance(style, str) and style.strip() else None
 
     # Profile Location can be changed independently of everything else — this
     # never touches Photo/Attempt rows, so historical Attempt GPS is untouched.
@@ -1939,12 +1951,9 @@ def earnings_summary(period: str = "today", user_id: Optional[int] = None,
     highest = _job_summary(max(jobs, key=lambda j: (j.pay_rate or 0), default=None))
     lowest  = _job_summary(min(jobs, key=lambda j: (j.pay_rate or 0), default=None))
 
-    # "Available" earnings: standing pay rates on every profile that is not
-    # fully closed out. Brand-new profiles (no attempts yet) DO count — their
-    # pay rate is money still up for grabs. Only exclude profiles whose every
-    # attempt/photo is already completed or archived (those dollars already
-    # roll into Total Earnings via completed jobs).
-    available_earnings = 0
+    # Pay still assigned to unfinished profiles — not a cash-out / "available
+    # to withdraw" balance, and not scoped to the selected period.
+    open_jobs = []
     for p in db.query(Profile).all():
         if not p.pay_rate:
             continue
@@ -1958,15 +1967,19 @@ def earnings_summary(period: str = "today", user_id: Optional[int] = None,
                 (ph.status or "") in ("completed", "archived") for ph in photos
             ):
                 continue
-            # No attempts and no photos → new profile → include
-        available_earnings += p.pay_rate
+        open_jobs.append({
+            "id": p.id,
+            "name": p.name,
+            "pay_rate": p.pay_rate,
+        })
 
     db.close()
     return {
         "period":             period,
         "jobs_completed":     count,
         "total_earnings":     total,
-        "available_earnings": available_earnings,
+        "available_earnings": sum(j["pay_rate"] for j in open_jobs),
+        "open_jobs":          open_jobs,
         "average_per_job":    round(total / count, 2) if count else 0,
         "highest_paying_job": highest,
         "lowest_paying_job":  lowest,

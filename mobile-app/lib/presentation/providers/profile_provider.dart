@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/models/attempt.dart';
 import '../../data/models/photo_model.dart';
 import '../../data/models/profile_model.dart';
+import 'photo_provider.dart';
 import 'repository_providers.dart';
 
 /// Get all profiles
@@ -25,6 +26,18 @@ final profileAttemptsProvider =
   return repository.getProfileAttempts(profileId);
 });
 
+/// Drop cached profile/attempt lists so Service Attempts updates after
+/// an upload completes.
+void refreshProfileWork(dynamic ref, {int? profileId}) {
+  ref.invalidate(photosProvider);
+  ref.invalidate(profilesProvider);
+  if (profileId != null) {
+    ref.invalidate(profileAttemptsProvider(profileId));
+  } else {
+    ref.invalidate(profileAttemptsProvider);
+  }
+}
+
 /// Args for [createProfileProvider]. Profile Location + status are
 /// optional — a profile can be created with only a name. [company] is the
 /// process-serving company slug.
@@ -33,6 +46,7 @@ typedef CreateProfileArgs = ({
   String serviceType,
   String? company,
   int? payRate,
+  String? deliveryStyle,
   String? status,
   String? address,
   String? city,
@@ -52,6 +66,7 @@ final createProfileProvider =
       serviceType: args.serviceType,
       company: args.company,
       payRate: args.payRate,
+      deliveryStyle: args.deliveryStyle,
       status: args.status,
       address: args.address,
       city: args.city,
@@ -71,6 +86,7 @@ typedef UpdateProfileArgs = ({
   String? company,
   String? note,
   int? payRate,
+  String? deliveryStyle,
   String? status,
   String? address,
   String? city,
@@ -92,6 +108,7 @@ final updateProfileProvider =
       company: args.company,
       note: args.note,
       payRate: args.payRate,
+      deliveryStyle: args.deliveryStyle,
       status: args.status,
       address: args.address,
       city: args.city,

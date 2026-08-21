@@ -54,14 +54,14 @@ Future<void> showMaxAttemptsDialog(BuildContext context) {
   return showDialog<void>(
     context: context,
     builder: (ctx) => AlertDialog(
-      backgroundColor: const Color(0xFF1C222E),
+      backgroundColor: const Color(0xFFFFFFFF),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       title: const Text(
         'Maximum attempts reached',
         style: TextStyle(
           fontSize: 17,
           fontWeight: FontWeight.w700,
-          color: Color(0xFFFFFFFF),
+          color: Color(0xFF1A2130),
         ),
       ),
       content: Text(
@@ -69,7 +69,7 @@ Future<void> showMaxAttemptsDialog(BuildContext context) {
         'attempts — the maximum allowed. Open the job to edit an existing attempt.',
         style: const TextStyle(
           fontSize: 14,
-          color: Color(0xFF94A3B8),
+          color: Color(0xFF5C6778),
           height: 1.4,
         ),
       ),

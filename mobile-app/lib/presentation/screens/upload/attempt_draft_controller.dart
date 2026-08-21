@@ -22,6 +22,7 @@ import '../../../core/utils/location_service.dart';
 import '../../../core/utils/photo_stamp.dart';
 import '../../../data/models/attempt.dart';
 import '../../../data/models/company.dart';
+import '../../../data/models/delivery_style.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
@@ -70,16 +71,6 @@ class AttemptDraftController extends ChangeNotifier {
     'Same as profile',
     'John Doe',
     'Jane Doe',
-  ];
-
-  // Delivery Style — a fixed set of choices (replaces the free-text "Type").
-  // Stored/sent as `completionType` to keep the backend field unchanged.
-  static const List<String> kDeliveryStyles = [
-    'Personal',
-    'Sub on 1st',
-    'Sub on 3rd',
-    'Posting',
-    'Stake Out',
   ];
 
   /// "Add to Existing Profile" — pre-selects that profile and locks
@@ -708,7 +699,9 @@ class AttemptDraftController extends ChangeNotifier {
         if (p.id == id) {
           selectedProfile = p;
           companyId = companyOrDefault(p.company).id;
-          if (!companyOrDefault(companyId).allowsPriority(selectedCategory)) {
+          if (companyOrDefault(companyId).allowsPriority(p.serviceType)) {
+            selectedCategory = p.serviceType;
+          } else {
             selectedCategory = defaultPriorityForCompany(companyId);
           }
           notifyListeners();
@@ -720,8 +713,22 @@ class AttemptDraftController extends ChangeNotifier {
     } catch (_) {/* keep going without a pre-selected profile */}
   }
 
-  void _prefillProfileStandingFields(ProfileModel p) {
-    if (payRateController.text.trim().isEmpty && p.payRate != null) {
+  void _prefillProfileStandingFields(ProfileModel p, {bool force = false}) {
+    final company = companyOrDefault(p.company);
+    if (force ||
+        !company.allowsPriority(selectedCategory)) {
+      if (company.allowsPriority(p.serviceType)) {
+        selectedCategory = p.serviceType;
+      } else {
+        selectedCategory = defaultPriorityForCompany(p.company);
+      }
+    }
+    final style = (p.deliveryStyle ?? '').trim();
+    if (style.isNotEmpty && kDeliveryStyles.contains(style)) {
+      if (force || deliveryStyle == null) deliveryStyle = style;
+    }
+    if (p.payRate != null &&
+        (force || payRateController.text.trim().isEmpty)) {
       payRateController.text = '${p.payRate}';
     }
     if (addressController.text.trim().isEmpty) {
@@ -1171,7 +1178,9 @@ class AttemptDraftController extends ChangeNotifier {
   Future<void> _prefillLockedProfile(ProfileModel p, WidgetRef ref) async {
     await _prefillFromLatestAttempt(p.id, ref);
     if (_disposed || selectedProfile?.id != p.id) return;
-    _prefillProfileStandingFields(p);
+    _prefillProfileStandingFields(p, force: isExistingProfileAttempt);
+    notifyListeners();
+    saveDraft();
   }
 
   Future<void> _prefillFromLatestAttempt(int profileId, WidgetRef ref) async {
@@ -1183,12 +1192,15 @@ class AttemptDraftController extends ChangeNotifier {
       if (selectedProfile?.id != profileId) return;
       final latest = attempts.first;
       var changed = false;
-      if (deliveryStyle == null &&
+      if (!isExistingProfileAttempt &&
+          deliveryStyle == null &&
           kDeliveryStyles.contains(latest.completionType)) {
         deliveryStyle = latest.completionType;
         changed = true;
       }
-      if (payRateController.text.trim().isEmpty && latest.payRate != null) {
+      if (!isExistingProfileAttempt &&
+          payRateController.text.trim().isEmpty &&
+          latest.payRate != null) {
         payRateController.text = latest.payRate.toString();
         changed = true;
       }
@@ -1217,12 +1229,14 @@ class AttemptDraftController extends ChangeNotifier {
   }
 
   void setSelectedCategory(String value) {
+    if (isExistingProfileAttempt) return;
     selectedCategory = value;
     notifyListeners();
     saveDraft();
   }
 
   void setDeliveryStyle(String? value) {
+    if (isExistingProfileAttempt) return;
     deliveryStyle = value;
     notifyListeners();
     saveDraft();
@@ -1441,6 +1455,7 @@ class AttemptDraftController extends ChangeNotifier {
       lastUploadedPhotoId = lastId;
       locationFrozenFromCache = false;
       notifyListeners();
+      refreshProfileWork(ref, profileId: selectedProfile?.id);
       if (attemptId != null) {
         unawaited(offerDuplicateAttempt(context, ref, attemptId));
       }
@@ -1458,6 +1473,7 @@ class AttemptDraftController extends ChangeNotifier {
       uploadState = AttemptUploadState.success;
       locationFrozenFromCache = false;
       notifyListeners();
+      refreshProfileWork(ref, profileId: selectedProfile?.id);
       if (context.mounted) {
         showSnack(
           context,
@@ -1570,7 +1586,7 @@ class AttemptDraftController extends ChangeNotifier {
             profileIds: selected.toList(),
           );
       if (_disposed || !context.mounted) return;
-      ref.invalidate(profilesProvider);
+      refreshProfileWork(ref);
       showSnack(
           context, 'Duplicated attempt to $n nearby profile${n == 1 ? '' : 's'}');
     } catch (e) {

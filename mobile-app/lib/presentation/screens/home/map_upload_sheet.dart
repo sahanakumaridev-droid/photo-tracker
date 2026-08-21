@@ -14,6 +14,7 @@ import '../../../data/models/company.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
+import '../../widgets/ai/voice_mic_button.dart';
 import '../../widgets/common/create_profile_dialog.dart';
 
 /// Bottom sheet shown when user taps empty map space.
@@ -48,12 +49,12 @@ class _MapUploadSheet extends ConsumerStatefulWidget {
 
 class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
   // Design tokens
-  static const _canvas = Color(0xFF0F1219);
-  static const _surface = Color(0xFF1C222E);
-  static const _ink = Color(0xFFFFFFFF);
-  static const _inkMuted = Color(0xFF94A3B8);
-  static const _inkSubtle = Color(0xFF6B7A8D);
-  static const _separator = Color(0xFF2A3340);
+  static const _canvas = Color(0xFFF2F4F7);
+  static const _surface = Color(0xFFFFFFFF);
+  static const _ink = Color(0xFF1A2130);
+  static const _inkMuted = Color(0xFF5C6778);
+  static const _inkSubtle = Color(0xFF8B95A5);
+  static const _separator = Color(0xFFE3E7EE);
   static const _accent = Color(0xFF4A90E2);
   static const _accentSoft = Color(0x1F4A90E2);
   static const _errorRed = Color(0xFFDC2626);
@@ -657,7 +658,7 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
                     inputFormatters: const [SentenceCaseInputFormatter()],
                     style: const TextStyle(fontSize: 14, color: _ink),
                     decoration: InputDecoration(
-                      hintText: 'Add a note… (optional)',
+                      hintText: 'Tap the mic or type a note…',
                       hintStyle: const TextStyle(
                         color: _inkSubtle,
                         fontSize: 14,
@@ -673,6 +674,10 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
                       prefixIconConstraints: const BoxConstraints(
                         minWidth: 40,
                         minHeight: 40,
+                      ),
+                      suffixIcon: VoiceMicButton(
+                        controller: _noteCtrl,
+                        mode: VoiceFillMode.append,
                       ),
                       filled: true,
                       fillColor: _canvas,

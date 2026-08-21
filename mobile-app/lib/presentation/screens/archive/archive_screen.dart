@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../../../config/app_config.dart';
 import '../../../config/theme.dart';
 import '../../../core/network/api_client.dart';
+import '../../widgets/ai/voice_mic_button.dart';
 
 /// F10 — Job Archive (search / review / filter archived jobs).
 /// Uses a virtualized ListView so it scales to large datasets.
@@ -45,11 +46,19 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
   String _status = 'active';
   List<Map<String, dynamic>> _rows = [];
   bool _loading = true;
+  final _searchCtrl = TextEditingController();
 
   @override
   void initState() {
     super.initState();
+    _searchCtrl.text = _search;
     _load();
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -131,7 +140,7 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
                   gradient: const LinearGradient(
-                    colors: [Color(0xFF0F172A), Color(0xFF334155)],
+                    colors: [Color(0xFFF2F4F7), Color(0xFFE3E7EE)],
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                   ),
@@ -157,9 +166,17 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
             child: TextField(
+              controller: _searchCtrl,
               decoration: InputDecoration(
-                hintText: 'Search ${_statusLabel.toLowerCase()} jobs…',
+                hintText: 'Say a ${_statusLabel.toLowerCase()} job…',
                 prefixIcon: const Icon(CupertinoIcons.search, size: 20),
+                suffixIcon: VoiceMicButton(
+                  controller: _searchCtrl,
+                  onChanged: (v) {
+                    _search = v;
+                    _load();
+                  },
+                ),
                 isDense: true,
                 filled: true,
                 fillColor: AppTheme.darkElevated,
@@ -390,6 +407,6 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
         width: 52,
         height: 52,
         color: AppTheme.darkElevated,
-        child: const Icon(CupertinoIcons.photo_fill_on_rectangle_fill, color: Color(0xFF94A3B8)),
+        child: const Icon(CupertinoIcons.photo_fill_on_rectangle_fill, color: Color(0xFF5C6778)),
       );
 }

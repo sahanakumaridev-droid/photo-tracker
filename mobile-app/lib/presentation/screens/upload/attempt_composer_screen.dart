@@ -11,9 +11,13 @@ import '../../../core/utils/attempt_status.dart';
 import '../../../core/utils/photo_stamp.dart';
 import '../../../core/utils/text_formatters.dart';
 import '../../../data/models/company.dart';
+import '../../../data/models/delivery_style.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/profile_provider.dart';
+import '../../widgets/ai/note_suggestion_chips.dart';
+import '../../widgets/ai/voice_mic_button.dart';
 import '../../widgets/common/pill_chip.dart';
+import '../../widgets/common/profile_facts_card.dart';
 import 'attempt_draft_controller.dart';
 import 'attempt_limits.dart';
 import 'attempts_dashboard_screen.dart';
@@ -37,13 +41,13 @@ class AttemptComposerScreen extends ConsumerStatefulWidget {
 }
 
 class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
-  static const Color _canvas = Color(0xFF0F1219);
-  static const Color _surface = Color(0xFF1C222E);
-  static const Color _elevated = Color(0xFF242B38);
-  static const Color _ink = Color(0xFFFFFFFF);
-  static const Color _inkMuted = Color(0xFF94A3B8);
-  static const Color _inkSubtle = Color(0xFF6B7A8D);
-  static const Color _separator = Color(0xFF2A3340);
+  static const Color _canvas = Color(0xFFF2F4F7);
+  static const Color _surface = Color(0xFFFFFFFF);
+  static const Color _elevated = Color(0xFFEEF1F5);
+  static const Color _ink = Color(0xFF1A2130);
+  static const Color _inkMuted = Color(0xFF5C6778);
+  static const Color _inkSubtle = Color(0xFF8B95A5);
+  static const Color _separator = Color(0xFFE3E7EE);
   static const Color _accent = Color(0xFF4A90E2);
   static const Color _accentSoft = Color(0x1F4A90E2);
   static const Color _accentMid = Color(0xFF64B5F6);
@@ -92,17 +96,28 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
                         ],
                         _buildPhotoHero(),
                         const SizedBox(height: 12),
-                        _buildGeotagChip(),
-                        const SizedBox(height: 18),
-                        _buildJobCard(profilesAsync),
+                        _buildNotesCard(),
                         const SizedBox(height: 12),
                         _buildFileAndPriority(),
                         const SizedBox(height: 12),
                         _buildOutcomeCard(context),
                         const SizedBox(height: 12),
-                        _buildDeliveryCard(),
+                        _buildGeotagChip(),
+                        const SizedBox(height: 18),
+                        if (controller.isExistingProfileAttempt &&
+                            controller.selectedProfile != null)
+                          ProfileFactsCard(
+                            profile: controller.selectedProfile!,
+                            locked: true,
+                          )
+                        else
+                          _buildJobCard(profilesAsync),
+                        if (!controller.isExistingProfileAttempt) ...[
+                          const SizedBox(height: 12),
+                          _buildDeliveryCard(),
+                        ],
                         const SizedBox(height: 12),
-                        _buildPayAndNotes(),
+                        _buildPayAndAddress(),
                         const SizedBox(height: 8),
                       ],
                     ),
@@ -683,27 +698,29 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
               ),
             ],
           ),
-          const SizedBox(height: 16),
-          _sectionLabel('Priority', Icons.label_rounded),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children:
-                priorityCategoriesForCompany(controller.companyId).map((c) {
-              final selected = controller.selectedCategory == c.value;
-              return _chip(
-                label: c.label,
-                icon: c.icon,
-                selected: selected,
-                color: c.color,
-                onTap: () {
-                  HapticFeedback.selectionClick();
-                  controller.setSelectedCategory(c.value);
-                },
-              );
-            }).toList(),
-          ),
+          if (!controller.isExistingProfileAttempt) ...[
+            const SizedBox(height: 16),
+            _sectionLabel('Priority', Icons.label_rounded),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children:
+                  priorityCategoriesForCompany(controller.companyId).map((c) {
+                final selected = controller.selectedCategory == c.value;
+                return _chip(
+                  label: c.label,
+                  icon: c.icon,
+                  selected: selected,
+                  color: c.color,
+                  onTap: () {
+                    HapticFeedback.selectionClick();
+                    controller.setSelectedCategory(c.value);
+                  },
+                );
+              }).toList(),
+            ),
+          ],
         ],
       ),
     );
@@ -775,7 +792,7 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
           Wrap(
             spacing: 8,
             runSpacing: 8,
-            children: AttemptDraftController.kDeliveryStyles.map((s) {
+            children: kDeliveryStyles.map((s) {
               final selected = controller.deliveryStyle == s;
               return _chip(
                 label: s,
@@ -793,40 +810,57 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
     );
   }
 
-  Widget _buildPayAndNotes() {
+  Widget _buildNotesCard() {
     return _card(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _sectionLabel('Pay rate', Icons.attach_money_rounded),
-          const SizedBox(height: 8),
-          _inputField(
-            controller: controller.payRateController,
-            hint: 'e.g. 30',
-            icon: Icons.attach_money,
-            keyboardType: TextInputType.number,
-            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          ),
-          const SizedBox(height: 16),
           _sectionLabel('Notes', Icons.edit_outlined),
           const SizedBox(height: 8),
           _inputField(
             controller: controller.noteController,
-            hint: 'Anything to remember about this attempt',
+            hint: 'Tap the mic and talk the note',
             icon: Icons.description_outlined,
             maxLines: 3,
             textCapitalization: TextCapitalization.sentences,
             inputFormatters: const [SentenceCaseInputFormatter()],
+            voice: true,
+            voiceMode: VoiceFillMode.append,
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 10),
+          NoteSuggestionChips(controller: controller.noteController),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPayAndAddress() {
+    final lockedPay = controller.isExistingProfileAttempt;
+    return _card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (!lockedPay) ...[
+            _sectionLabel('Pay rate', Icons.attach_money_rounded),
+            const SizedBox(height: 8),
+            _inputField(
+              controller: controller.payRateController,
+              hint: 'e.g. 30',
+              icon: Icons.attach_money,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            ),
+            const SizedBox(height: 16),
+          ],
           _sectionLabel('Address', Icons.home_outlined),
           const SizedBox(height: 8),
           _inputField(
             controller: controller.addressController,
-            hint: 'Filled from geotag — edit if needed',
+            hint: 'Filled from geotag — or talk the address',
             icon: Icons.place_outlined,
             maxLines: 2,
             textCapitalization: TextCapitalization.words,
+            voice: true,
           ),
         ],
       ),
@@ -983,12 +1017,16 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
   }
 
   void _leave() {
+    refreshProfileWork(
+      ref,
+      profileId: controller.selectedProfile?.id ?? controller.initialProfileId,
+    );
     if (Navigator.of(context).canPop()) {
       Navigator.of(context).pop();
     } else if (controller.isExistingProfileAttempt) {
       context.go('/profile/${controller.initialProfileId}');
     } else {
-      context.go('/jobs');
+      context.go('/upload');
     }
   }
 
@@ -1773,6 +1811,8 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
     TextInputType? keyboardType,
     List<TextInputFormatter>? inputFormatters,
     TextCapitalization textCapitalization = TextCapitalization.none,
+    bool voice = false,
+    VoiceFillMode voiceMode = VoiceFillMode.replace,
   }) {
     return TextField(
       controller: controller,
@@ -1786,6 +1826,9 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
         hintText: hint,
         hintStyle: const TextStyle(color: _inkSubtle, fontSize: 14),
         prefixIcon: Icon(icon, size: 18, color: _inkSubtle),
+        suffixIcon: voice
+            ? VoiceMicButton(controller: controller, mode: voiceMode)
+            : null,
         filled: true,
         fillColor: _canvas,
         contentPadding:

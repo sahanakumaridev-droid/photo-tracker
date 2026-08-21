@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-/// Field-app dark UI — navy surfaces, blue actions, magenta alerts.
-/// Tokens match the mobile reference screens (map, job, attempt).
+/// Field-app light UI — white surfaces, dark ink, blue actions.
+/// The product theme is light; `dark*` names are kept as aliases.
 class AppTheme {
   // ── Brand / accent ──
   static const Color primary = Color(0xFF4A90E2);
@@ -10,10 +10,10 @@ class AppTheme {
   static const Color primaryDark = Color(0xFF1E88E5);
   static const Color primarySoft = Color(0x1F4A90E2);
 
-  static const Color black = Color(0xFF0A0C10);
+  static const Color black = Color(0xFF1A2130);
   static const Color white = Color(0xFFFFFFFF);
-  static const Color nearBlack = Color(0xFF0F1219);
-  static const Color offWhite = Color(0xFFF8FAFC);
+  static const Color nearBlack = Color(0xFF1A2130);
+  static const Color offWhite = Color(0xFFF2F4F7);
 
   static const Color success = Color(0xFF10b981);
   static const Color warning = Color(0xFFF59E0B);
@@ -37,90 +37,94 @@ class AppTheme {
   static const double radiusMd = 12;
   static const double radiusLg = 16;
 
-  // ── Dark field palette (primary product theme) ──
-  static const Color darkBg = Color(0xFF0F1219);
-  static const Color darkSurface = Color(0xFF1C222E);
-  static const Color darkElevated = Color(0xFF242B38);
-  static const Color darkNav = Color(0xFF0A0C10);
-  static const Color darkBorder = Color(0xFF2A3340);
-  static const Color darkText = Color(0xFFFFFFFF);
-  static const Color darkTextSecondary = Color(0xFF94A3B8);
-  static const Color darkTextTertiary = Color(0xFF6B7A8D);
+  // ── Light field palette ──
+  static const Color lightBg = Color(0xFFF2F4F7);
+  static const Color lightSurface = Color(0xFFFFFFFF);
+  static const Color lightElevated = Color(0xFFEEF1F5);
+  static const Color lightNav = Color(0xFFFFFFFF);
+  static const Color lightBorder = Color(0xFFE3E7EE);
+  static const Color lightText = Color(0xFF1A2130);
+  static const Color lightTextSecondary = Color(0xFF5C6778);
+  static const Color lightTextTertiary = Color(0xFF8B95A5);
 
-  // Aliases used by screens that still name tokens "light*"
-  static const Color lightBg = darkBg;
-  static const Color lightSurface = darkSurface;
-  static const Color lightBorder = darkBorder;
-  static const Color lightText = darkText;
-  static const Color lightTextSecondary = darkTextSecondary;
-  static const Color lightTextTertiary = darkTextTertiary;
+  // Aliases — screens historically named these `dark*`
+  static const Color darkBg = lightBg;
+  static const Color darkSurface = lightSurface;
+  static const Color darkElevated = lightElevated;
+  static const Color darkNav = lightNav;
+  static const Color darkBorder = lightBorder;
+  static const Color darkText = lightText;
+  static const Color darkTextSecondary = lightTextSecondary;
+  static const Color darkTextTertiary = lightTextTertiary;
 
   static const SystemUiOverlayStyle overlayDark = SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
-    statusBarIconBrightness: Brightness.light,
-    statusBarBrightness: Brightness.dark,
-    systemNavigationBarColor: darkNav,
-    systemNavigationBarIconBrightness: Brightness.light,
+    statusBarIconBrightness: Brightness.dark,
+    statusBarBrightness: Brightness.light,
+    systemNavigationBarColor: lightNav,
+    systemNavigationBarIconBrightness: Brightness.dark,
   );
 
-  static ThemeData lightTheme(Color accentColor) => darkTheme(accentColor);
+  static ThemeData lightTheme(Color accentColor) => _theme(accentColor);
 
-  static ThemeData darkTheme(Color accentColor) => ThemeData(
+  static ThemeData darkTheme(Color accentColor) => _theme(accentColor);
+
+  static ThemeData _theme(Color accentColor) => ThemeData(
         useMaterial3: true,
-        brightness: Brightness.dark,
+        brightness: Brightness.light,
         fontFamily: null,
-        colorScheme: ColorScheme.dark(
+        colorScheme: ColorScheme.light(
           primary: accentColor,
           onPrimary: white,
-          secondary: darkElevated,
-          onSecondary: darkText,
-          surface: darkSurface,
-          onSurface: darkText,
+          secondary: lightElevated,
+          onSecondary: lightText,
+          surface: lightSurface,
+          onSurface: lightText,
           error: error,
           onError: white,
-          outline: darkBorder,
+          outline: lightBorder,
         ),
-        scaffoldBackgroundColor: darkBg,
-        canvasColor: darkBg,
-        dividerColor: darkBorder,
+        scaffoldBackgroundColor: lightBg,
+        canvasColor: lightBg,
+        dividerColor: lightBorder,
         splashFactory: InkRipple.splashFactory,
         appBarTheme: AppBarTheme(
-          backgroundColor: darkBg,
-          foregroundColor: darkText,
+          backgroundColor: lightBg,
+          foregroundColor: lightText,
           elevation: 0,
           scrolledUnderElevation: 0,
           centerTitle: false,
           systemOverlayStyle: overlayDark,
           titleTextStyle: const TextStyle(
-            color: darkText,
+            color: lightText,
             fontSize: 18,
             fontWeight: FontWeight.w700,
           ),
-          iconTheme: const IconThemeData(color: darkText),
+          iconTheme: const IconThemeData(color: lightText),
         ),
         cardTheme: CardThemeData(
-          color: darkSurface,
+          color: lightSurface,
           elevation: 0,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
-            side: const BorderSide(color: darkBorder, width: 1),
+            side: const BorderSide(color: lightBorder, width: 1),
           ),
         ),
         bottomSheetTheme: const BottomSheetThemeData(
-          backgroundColor: darkSurface,
-          modalBackgroundColor: darkSurface,
+          backgroundColor: lightSurface,
+          modalBackgroundColor: lightSurface,
           surfaceTintColor: Colors.transparent,
         ),
         dialogTheme: DialogThemeData(
-          backgroundColor: darkSurface,
+          backgroundColor: lightSurface,
           surfaceTintColor: Colors.transparent,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
           ),
         ),
         snackBarTheme: SnackBarThemeData(
-          backgroundColor: darkElevated,
-          contentTextStyle: const TextStyle(color: darkText),
+          backgroundColor: lightText,
+          contentTextStyle: const TextStyle(color: white),
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
@@ -128,17 +132,17 @@ class AppTheme {
         ),
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
-          fillColor: darkElevated,
-          prefixIconColor: darkTextSecondary,
-          suffixIconColor: darkTextSecondary,
-          hintStyle: const TextStyle(color: darkTextTertiary),
+          fillColor: lightElevated,
+          prefixIconColor: lightTextSecondary,
+          suffixIconColor: lightTextSecondary,
+          hintStyle: const TextStyle(color: lightTextTertiary),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: darkBorder),
+            borderSide: const BorderSide(color: lightBorder),
           ),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: darkBorder),
+            borderSide: const BorderSide(color: lightBorder),
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
@@ -161,7 +165,7 @@ class AppTheme {
           ).copyWith(
             overlayColor: WidgetStateProperty.resolveWith((states) {
               if (states.contains(WidgetState.pressed)) {
-                return Colors.white.withValues(alpha: 0.12);
+                return Colors.black.withValues(alpha: 0.08);
               }
               return null;
             }),
@@ -188,7 +192,7 @@ class AppTheme {
           elevation: 0,
         ),
         dividerTheme: const DividerThemeData(
-          color: darkBorder,
+          color: lightBorder,
           thickness: 1,
           space: 1,
         ),
@@ -196,39 +200,39 @@ class AppTheme {
           displayLarge: TextStyle(
             fontSize: 32,
             fontWeight: FontWeight.w800,
-            color: darkText,
+            color: lightText,
             letterSpacing: -0.5,
           ),
           displayMedium: TextStyle(
             fontSize: 28,
             fontWeight: FontWeight.w800,
-            color: darkText,
+            color: lightText,
             letterSpacing: -0.5,
           ),
           headlineSmall: TextStyle(
             fontSize: 20,
             fontWeight: FontWeight.w700,
-            color: darkText,
+            color: lightText,
           ),
           titleLarge: TextStyle(
             fontSize: 18,
             fontWeight: FontWeight.w700,
-            color: darkText,
+            color: lightText,
           ),
           bodyLarge: TextStyle(
             fontSize: 16,
             fontWeight: FontWeight.w500,
-            color: darkText,
+            color: lightText,
           ),
           bodyMedium: TextStyle(
             fontSize: 14,
             fontWeight: FontWeight.w400,
-            color: darkText,
+            color: lightText,
           ),
           bodySmall: TextStyle(
             fontSize: 12,
             fontWeight: FontWeight.w400,
-            color: darkTextSecondary,
+            color: lightTextSecondary,
           ),
         ),
       );

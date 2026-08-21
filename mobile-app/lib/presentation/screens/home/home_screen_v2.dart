@@ -29,12 +29,12 @@ class HomeScreenV2 extends ConsumerStatefulWidget {
 
 class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
   // ── Palette ──────────────────────────────────────────────────────────────
-  static const Color _ink        = Color(0xFFFFFFFF);
-  static const Color _muted      = Color(0xFF94A3B8);
+  static const Color _ink        = Color(0xFF1A2130);
+  static const Color _muted      = Color(0xFF5C6778);
   static const Color _purple     = Color(0xFF4A90E2);
   static const Color _purpleSoft = Color(0x1F4A90E2);
-  static const Color _bg         = Color(0xFF0F1219);
-  static const Color _card       = Color(0xFF1C222E);
+  static const Color _bg         = Color(0xFFF2F4F7);
+  static const Color _card       = Color(0xFFFFFFFF);
 
 
   final Set<int> _optimisticFlips = {};
@@ -185,7 +185,7 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
     return Container(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
-          colors: [Color(0xFF0F1219), Color(0xFF1C222E)],
+          colors: [Color(0xFFF2F4F7), Color(0xFFFFFFFF)],
           begin: Alignment.centerLeft,
           end: Alignment.centerRight,
         ),
@@ -218,7 +218,7 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
                       ),
                       TextSpan(
                         text: 'Tag',
-                        style: TextStyle(color: Color(0xFFFFFFFF)),
+                        style: TextStyle(color: Color(0xFF1A2130)),
                       ),
                     ],
                   ),

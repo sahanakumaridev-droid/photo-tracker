@@ -84,6 +84,10 @@
 	<string>GeoTagging needs your location to tag photos with GPS coordinates.</string>
 	<key>NSLocationAlwaysUsageDescription</key>
 	<string>GeoTagging needs your location to tag photos with GPS coordinates.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>GeoTag uses the microphone so you can talk instead of typing names, notes, and search.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>GeoTag converts what you say into text for search, notes, and profile details.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

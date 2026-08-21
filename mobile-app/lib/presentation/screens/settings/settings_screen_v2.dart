@@ -5,17 +5,11 @@ import 'package:go_router/go_router.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../../../config/app_config.dart';
+import '../../providers/ai_prefs_provider.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/locale_provider.dart';
 import '../../providers/theme_provider.dart';
 import 'ai_assistant_sheet.dart';
-
-// ── AI & automation preferences ──────────────────────────────────────────────
-// Lightweight in-session toggles. Riverpod keeps these alive across navigation;
-// swap the StateProviders for a persisted notifier once the AI endpoints ship.
-final aiSmartSuggestionsProvider = StateProvider<bool>((ref) => true);
-final aiAutoTagProvider = StateProvider<bool>((ref) => true);
-final aiDataUsageProvider = StateProvider<bool>((ref) => false);
 
 /// Settings — 2026 consumer redesign. AI-first: a featured GeoTag AI card and
 /// an Automation group sit above the classic preference cards, with a dedicated
@@ -24,14 +18,14 @@ final aiDataUsageProvider = StateProvider<bool>((ref) => false);
 class SettingsScreenV2 extends ConsumerWidget {
   const SettingsScreenV2({super.key});
 
-  static const Color _ink = Color(0xFFFFFFFF);
-  static const Color _muted = Color(0xFF94A3B8);
+  static const Color _ink = Color(0xFF1A2130);
+  static const Color _muted = Color(0xFF5C6778);
   static const Color _purple = Color(0xFF4A90E2);
   static const Color _green = Color(0xFF10B981);
   static const Color _red = Color(0xFFEF4444);
-  static const Color _bg = Color(0xFF0F1219);
-  static const Color _card = Color(0xFF1C222E);
-  static const Color _hair = Color(0xFF2A3340);
+  static const Color _bg = Color(0xFFF2F4F7);
+  static const Color _card = Color(0xFFFFFFFF);
+  static const Color _hair = Color(0xFFE3E7EE);
 
   static const List<BoxShadow> _softShadow = [
     BoxShadow(color: Color(0x0A0F172A), blurRadius: 12, offset: Offset(0, 4)),
@@ -104,7 +98,7 @@ class SettingsScreenV2 extends ConsumerWidget {
           _section('AI & Automation', [
             _aiToggleRow(
               Icons.auto_awesome_rounded, 'Smart Suggestions', _purple,
-              subtitle: 'Surface the next best job & route as you work',
+              subtitle: 'Next-up job chip on the map, plus talk-to-fill',
               value: smartSuggestions,
               onChanged: (v) =>
                   ref.read(aiSmartSuggestionsProvider.notifier).state = v,
@@ -134,7 +128,7 @@ class SettingsScreenV2 extends ConsumerWidget {
           const SizedBox(height: 22),
 
           // Enhancement features (F4/F8/F9/F10)
-          _section('Jobs & Earnings', [
+          _section('Attempts & Earnings', [
             _row(Icons.payments_rounded, 'Earnings', _green,
                 subtitle: 'Today, week, bi-weekly & monthly payouts',
                 onTap: () => context.push('/earnings')),

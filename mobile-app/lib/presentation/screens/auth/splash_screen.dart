@@ -66,13 +66,13 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
   Widget build(BuildContext context) => Scaffold(
       // Center color (#5445E6) matches the logo's own background square so
       // it blends in instead of showing as a mismatched box.
-      backgroundColor: const Color(0xFF0F1219),
+      backgroundColor: const Color(0xFFF2F4F7),
       body: Container(
         decoration: const BoxDecoration(
           gradient: RadialGradient(
             center: Alignment(0, -0.25),
             radius: 1.4,
-            colors: [Color(0xFF1C222E), Color(0xFF0F1219)],
+            colors: [Color(0xFFFFFFFF), Color(0xFFF2F4F7)],
           ),
         ),
         child: Center(
@@ -83,11 +83,8 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // ── Brand logo — white tint so the purple mark reads on
-                  //    the purple splash gradient. ──
-                  const AppLogo(size: 112, tint: Colors.white),
+                  const AppLogo(size: 112, tint: Color(0xFF4A90E2)),
                   const SizedBox(height: 28),
-                  // ── App name — same "GeoTag" style as home bar ──
                   RichText(
                     text: const TextSpan(
                       children: [
@@ -96,7 +93,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
                           style: TextStyle(
                             fontSize: 36,
                             fontWeight: FontWeight.w800,
-                            color: Colors.white,
+                            color: Color(0xFF4A90E2),
                             letterSpacing: -1,
                           ),
                         ),
@@ -105,7 +102,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
                           style: TextStyle(
                             fontSize: 36,
                             fontWeight: FontWeight.w400,
-                            color: Color(0xFFA5B4FC),
+                            color: Color(0xFF1A2130),
                             letterSpacing: -1,
                           ),
                         ),
@@ -113,24 +110,21 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
                     ),
                   ),
                   const SizedBox(height: 8),
-                  Text(
+                  const Text(
                     'Location-Based Photo Tracking',
                     style: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w400,
-                      color: Colors.white.withValues(alpha: 0.65),
+                      color: Color(0xFF5C6778),
                       letterSpacing: 0.2,
                     ),
                   ),
                   const SizedBox(height: 64),
-                  // Loading indicator
-                  SizedBox(
+                  const SizedBox(
                     width: 28,
                     height: 28,
                     child: CircularProgressIndicator(
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        Colors.white.withValues(alpha: 0.6),
-                      ),
+                      color: Color(0xFF4A90E2),
                       strokeWidth: 2,
                     ),
                   ),

@@ -6,6 +6,7 @@ import 'package:shimmer/shimmer.dart';
 
 import 'attempt_draft_controller.dart';
 import 'location_picker_map.dart';
+import '../../widgets/ai/voice_mic_button.dart';
 
 /// Dedicated Location screen, pushed from the Resume Attempt hub. Body is
 /// the old form's location section — Refresh/Pick-on-Map/error/shimmer
@@ -17,11 +18,11 @@ class AttemptLocationScreen extends ConsumerWidget {
   final AttemptDraftController controller;
 
   // ── Design tokens ─────────────────────────────────────────────────────────
-  static const Color _canvas = Color(0xFF0F1219);
-  static const Color _surface = Color(0xFF1C222E);
-  static const Color _ink = Color(0xFFFFFFFF);
-  static const Color _inkMuted = Color(0xFF94A3B8);
-  static const Color _inkSubtle = Color(0xFF6B7A8D);
+  static const Color _canvas = Color(0xFFF2F4F7);
+  static const Color _surface = Color(0xFFFFFFFF);
+  static const Color _ink = Color(0xFF1A2130);
+  static const Color _inkMuted = Color(0xFF5C6778);
+  static const Color _inkSubtle = Color(0xFF8B95A5);
   static const Color _accent = Color(0xFF4A90E2);
   static const Color _accentSoft = Color(0x1F4A90E2);
   static const Color _errorRed = Color(0xFFEF4444);
@@ -282,6 +283,9 @@ class AttemptLocationScreen extends ConsumerWidget {
                         minWidth: 40,
                         minHeight: 40,
                       ),
+                      suffixIcon: VoiceMicButton(
+                        controller: controller.addressController,
+                      ),
                       filled: true,
                       fillColor: _canvas,
                       contentPadding: const EdgeInsets.fromLTRB(
@@ -359,7 +363,7 @@ class AttemptLocationScreen extends ConsumerWidget {
                             children: [
                               TileLayer(
                                 urlTemplate:
-                                    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+                                    'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
                                 subdomains: const ['a', 'b', 'c', 'd'],
                                 retinaMode: false,
                                 tileSize: 256,

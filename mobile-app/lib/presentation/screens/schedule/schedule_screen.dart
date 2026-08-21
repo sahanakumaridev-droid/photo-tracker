@@ -106,7 +106,7 @@ class _ScheduleScreenState extends ConsumerState<ScheduleScreen>
         padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
           gradient: const LinearGradient(
-            colors: [Color(0xFF0F1219), Color(0xFF1C222E)],
+            colors: [Color(0xFFF2F4F7), Color(0xFFFFFFFF)],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           ),
@@ -122,7 +122,7 @@ class _ScheduleScreenState extends ConsumerState<ScheduleScreen>
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text('Active jobs',
-                style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13, fontWeight: FontWeight.w600)),
+                style: TextStyle(color: Color(0xFF5C6778), fontSize: 13, fontWeight: FontWeight.w600)),
             const SizedBox(height: 2),
             Text('$_total',
                 style: const TextStyle(
@@ -151,7 +151,7 @@ class _ScheduleScreenState extends ConsumerState<ScheduleScreen>
                                 fontSize: 15)),
                         Text(q.label,
                             style: const TextStyle(
-                                color: Color(0xFF94A3B8), fontSize: 9.5)),
+                                color: Color(0xFF5C6778), fontSize: 9.5)),
                       ],
                     ),
                   ),

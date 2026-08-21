@@ -8,7 +8,11 @@ import 'package:intl/intl.dart';
 
 import '../../../config/theme.dart';
 import '../../../core/network/api_client.dart';
+import '../../../data/models/photo_model.dart';
+import '../../../data/models/profile_model.dart';
+import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
+import '../../widgets/ai/ai_spark_button.dart';
 import '../../widgets/common/loading_skeleton.dart';
 
 /// Wallet-style earnings: one number, a daily chart, and a payout ledger.
@@ -114,6 +118,7 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
     unawaited(HapticFeedback.selectionClick());
     setState(() {
       _period = key;
+      _customRange = null;
       _selectedBar = null;
     });
     await _load();
@@ -130,9 +135,9 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
           DateTimeRange(start: now.subtract(const Duration(days: 6)), end: now),
       builder: (ctx, child) => Theme(
         data: Theme.of(ctx).copyWith(
-          colorScheme: const ColorScheme.dark(
+          colorScheme: const ColorScheme.light(
             primary: _accent,
-            onPrimary: _ink,
+            onPrimary: Colors.white,
             surface: _surface,
             onSurface: _ink,
           ),
@@ -150,6 +155,97 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
   }
 
   String _money(dynamic n) => _usd.format((n ?? 0) as num);
+
+  DateTime get _today {
+    final now = DateTime.now();
+    return DateTime(now.year, now.month, now.day);
+  }
+
+  DateTime get _periodStart {
+    final today = _today;
+    switch (_period) {
+      case 'today':
+        return today;
+      case 'week':
+        return today.subtract(Duration(days: today.weekday - 1));
+      case 'biweekly':
+        return today.subtract(const Duration(days: 13));
+      case 'month':
+        return DateTime(today.year, today.month, 1);
+      case 'custom':
+        if (_customRange != null) {
+          final s = _customRange!.start;
+          return DateTime(s.year, s.month, s.day);
+        }
+        return today;
+      default:
+        return today.subtract(Duration(days: today.weekday - 1));
+    }
+  }
+
+  DateTime get _periodEnd {
+    final today = _today;
+    switch (_period) {
+      case 'week':
+        return _periodStart.add(const Duration(days: 6));
+      case 'month':
+        return DateTime(today.year, today.month + 1, 0);
+      case 'custom':
+        if (_customRange != null) {
+          final e = _customRange!.end;
+          return DateTime(e.year, e.month, e.day);
+        }
+        return today;
+      default:
+        return today;
+    }
+  }
+
+  List<Map<String, dynamic>> _chartDays(List<dynamic> raw) {
+    final byDate = <String, num>{};
+    for (final d in raw) {
+      final key = '${d['date']}'.split('T').first;
+      if (key.length >= 10) {
+        byDate[key.substring(0, 10)] = (d['amount'] ?? 0) as num;
+      }
+    }
+    final out = <Map<String, dynamic>>[];
+    for (var d = _periodStart;
+        !d.isAfter(_periodEnd);
+        d = d.add(const Duration(days: 1))) {
+      final key = DateFormat('yyyy-MM-dd').format(d);
+      out.add({'date': key, 'amount': byDate[key] ?? 0});
+    }
+    return out;
+  }
+
+  List<dynamic> _payoutsInPeriod(List<dynamic> days) {
+    final start = _periodStart;
+    final end = _periodEnd;
+    return days.where((d) {
+      final date = _parseDate(d['date']);
+      if (date == null) return false;
+      final day = DateTime(date.year, date.month, date.day);
+      return !day.isBefore(start) && !day.isAfter(end);
+    }).toList();
+  }
+
+  String get _chartTitle {
+    switch (_period) {
+      case 'today':
+        return 'Today';
+      case 'week':
+        return 'This week';
+      case 'biweekly':
+        return 'Last 2 weeks';
+      case 'month':
+        return 'This month';
+      case 'custom':
+        return 'Selected range';
+      default:
+        return 'Daily';
+    }
+  }
 
   String get _periodLabel {
     if (_period == 'custom' && _customRange != null) {
@@ -172,14 +268,13 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final daily = (_summary?['daily_totals'] as List?) ?? [];
-    final payoutDays = (_payouts?['daily'] as List?) ?? [];
+    final daily = _chartDays((_summary?['daily_totals'] as List?) ?? []);
+    final payoutDays =
+        _payoutsInPeriod((_payouts?['daily'] as List?) ?? []);
     final totalEarnings = (_summary?['total_earnings'] ?? 0) as num;
     final profiles = ref.watch(profilesProvider).valueOrNull ?? const [];
-    final localAvailable =
-        profiles.fold<int>(0, (sum, p) => sum + (p.payRate ?? 0));
-    final available =
-        (_summary?['available_earnings'] as num?) ?? localAvailable;
+    final photos = ref.watch(photosProvider).valueOrNull ?? const [];
+    final openJobs = _openJobs(profiles, photos);
     final jobsDone = (_summary?['jobs_completed'] ?? 0) as num;
     final avgPerJob = (_summary?['average_per_job'] ?? 0) as num;
     final highest = _summary?['highest_paying_job'] as Map<String, dynamic>?;
@@ -207,13 +302,10 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
                 SliverToBoxAdapter(child: _skeleton())
               else ...[
                 SliverToBoxAdapter(
-                  child: _hero(
-                    total: totalEarnings,
-                    jobsDone: jobsDone,
-                    earned: totalEarnings,
-                    open: available,
-                  ),
+                  child: _hero(total: totalEarnings, jobsDone: jobsDone),
                 ),
+                if (openJobs.isNotEmpty)
+                  SliverToBoxAdapter(child: _openJobsCard(openJobs)),
                 SliverToBoxAdapter(
                   child: _trendCard(daily),
                 ),
@@ -237,17 +329,24 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
   }
 
   Widget _header() {
-    return const Padding(
-      padding: EdgeInsets.fromLTRB(20, 12, 20, 0),
-      child: Text(
-        'Earnings',
-        style: TextStyle(
-          fontSize: 34,
-          fontWeight: FontWeight.w800,
-          color: _ink,
-          letterSpacing: -1.2,
-          height: 1.1,
-        ),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 12, 16, 0),
+      child: Row(
+        children: [
+          const Expanded(
+            child: Text(
+              'Earnings',
+              style: TextStyle(
+                fontSize: 34,
+                fontWeight: FontWeight.w800,
+                color: _ink,
+                letterSpacing: -1.2,
+                height: 1.1,
+              ),
+            ),
+          ),
+          const AiSparkButton(),
+        ],
       ),
     );
   }
@@ -341,7 +440,7 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
               child: Icon(
                 CupertinoIcons.calendar,
                 size: 18,
-                color: _period == 'custom' ? _ink : _muted,
+                color: _period == 'custom' ? Colors.white : _muted,
               ),
             ),
           ),
@@ -353,11 +452,7 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
   Widget _hero({
     required num total,
     required num jobsDone,
-    required num earned,
-    required num open,
   }) {
-    final pool = earned + open;
-    final earnedFrac = pool > 0 ? (earned / pool).clamp(0.0, 1.0) : 0.0;
     final jobs = jobsDone.toInt();
 
     return Padding(
@@ -392,97 +487,116 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
           const SizedBox(height: 8),
           Text(
             jobs == 0
-                ? 'No completed jobs yet'
-                : '$jobs job${jobs == 1 ? '' : 's'} completed',
+                ? 'No completed attempts yet'
+                : '$jobs attempt${jobs == 1 ? '' : 's'} completed',
             style: const TextStyle(fontSize: 15, color: _subtle, height: 1.2),
-          ),
-          const SizedBox(height: 22),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(3),
-            child: SizedBox(
-              height: 4,
-              child: Stack(
-                children: [
-                  const ColoredBox(
-                    color: Color(0xFF2A3340),
-                    child: SizedBox.expand(),
-                  ),
-                  FractionallySizedBox(
-                    widthFactor: earnedFrac.toDouble(),
-                    child: const ColoredBox(color: _success),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              Expanded(
-                child: _splitStat(
-                  label: 'Completed',
-                  value: _money(earned),
-                  swatch: _success,
-                ),
-              ),
-              Container(width: 1, height: 36, color: _hair),
-              Expanded(
-                child: _splitStat(
-                  label: 'Open jobs',
-                  value: _money(open),
-                  swatch: _accent,
-                ),
-              ),
-            ],
           ),
         ],
       ),
     );
   }
 
-  Widget _splitStat({
-    required String label,
-    required String value,
-    required Color swatch,
-  }) {
+  /// Profiles that still have a pay rate and are not fully closed out.
+  List<({String name, int pay})> _openJobs(
+    List<ProfileModel> profiles,
+    List<PhotoModel> photos,
+  ) {
+    final apiJobs = _summary?['open_jobs'] as List?;
+    if (apiJobs != null && apiJobs.isNotEmpty) {
+      return [
+        for (final j in apiJobs)
+          (
+            name: '${j['name'] ?? 'Job'}',
+            pay: ((j['pay_rate'] ?? 0) as num).toInt(),
+          ),
+      ].where((j) => j.pay > 0).toList();
+    }
+
+    final byProfile = <int, List<PhotoModel>>{};
+    for (final ph in photos) {
+      final id = ph.profileId;
+      if (id == null) continue;
+      byProfile.putIfAbsent(id, () => []).add(ph);
+    }
+
+    final out = <({String name, int pay})>[];
+    for (final p in profiles) {
+      final rate = p.payRate;
+      if (rate == null || rate <= 0) continue;
+      final shots = byProfile[p.id] ?? const <PhotoModel>[];
+      if (shots.isNotEmpty &&
+          shots.every((ph) {
+            final s = (ph.status ?? '').toLowerCase();
+            return s == 'completed' || s == 'archived';
+          })) {
+        continue;
+      }
+      out.add((name: p.name, pay: rate));
+    }
+    return out;
+  }
+
+  Widget _openJobsCard(List<({String name, int pay})> jobs) {
+    final total = jobs.fold<int>(0, (s, j) => s + j.pay);
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 6,
-                height: 6,
-                decoration: BoxDecoration(
-                  color: swatch,
-                  borderRadius: BorderRadius.circular(3),
-                ),
+      padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
+      child: _group(
+        title: 'Unfinished jobs',
+        trailing: Text(
+          _money(total),
+          style: const TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
+            color: _ink,
+            fontFeatures: _tabular,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(0, 8, 0, 12),
+              child: Text(
+                'Pay assigned to jobs you have not closed out. '
+                'This is not a payout — it moves into the total above when you complete them.',
+                style: TextStyle(fontSize: 13, height: 1.35, color: _muted),
               ),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                  color: _muted,
+            ),
+            const Divider(height: 1, color: _hair),
+            for (var i = 0; i < jobs.length; i++) ...[
+              if (i > 0) const Divider(height: 1, color: _hair),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        jobs[i].name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          color: _ink,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Text(
+                      _money(jobs[i].pay),
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        color: _ink,
+                        fontFeatures: _tabular,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            value,
-            style: const TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.w700,
-              color: _ink,
-              letterSpacing: -0.6,
-              fontFeatures: _tabular,
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -491,17 +605,19 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 28, 16, 0),
       child: _group(
-        title: 'Daily',
-        trailing: daily.isEmpty
-            ? null
-            : Text(
-                '${daily.length} day${daily.length == 1 ? '' : 's'}',
+        title: _chartTitle,
+        trailing: Text(
+                DateFormat('MMM d').format(_periodStart) ==
+                        DateFormat('MMM d').format(_periodEnd)
+                    ? DateFormat('MMM d').format(_periodStart)
+                    : '${DateFormat('MMM d').format(_periodStart)}'
+                        ' – ${DateFormat('MMM d').format(_periodEnd)}',
                 style: const TextStyle(fontSize: 13, color: _subtle),
               ),
         child: daily.isEmpty
             ? _empty(
                 icon: CupertinoIcons.chart_bar,
-                message: 'Complete a job to see a daily trend.',
+                message: 'Complete an attempt to see a daily trend.',
               )
             : _chart(daily),
       ),
@@ -513,7 +629,21 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
       0,
       (m, d) => ((d['amount'] ?? 0) as num) > m ? (d['amount'] as num) : m,
     );
-    final selected = _selectedBar ?? (daily.isEmpty ? 0 : daily.length - 1);
+    final selected = () {
+      if (_selectedBar != null &&
+          _selectedBar! >= 0 &&
+          _selectedBar! < daily.length) {
+        return _selectedBar!;
+      }
+      final todayKey = DateFormat('yyyy-MM-dd').format(_today);
+      final todayIdx =
+          daily.indexWhere((d) => '${d['date']}' == todayKey);
+      if (todayIdx >= 0) return todayIdx;
+      for (var i = daily.length - 1; i >= 0; i--) {
+        if (((daily[i]['amount'] ?? 0) as num) > 0) return i;
+      }
+      return daily.isEmpty ? 0 : daily.length - 1;
+    }();
 
     return SizedBox(
       height: 176,
@@ -556,7 +686,7 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
       final name = (highest['profile_name']?.toString().trim().isNotEmpty ??
               false)
           ? highest['profile_name'].toString()
-          : 'job';
+          : 'attempt';
       bits.add('Best ${_money(highest['pay_rate'])} · $name');
     }
 
@@ -579,8 +709,8 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
         trailing: payoutDays.isEmpty
             ? null
             : Text(
-                '${_money(_payouts?['total_earnings'])}'
-                ' · ${_payouts?['total_jobs'] ?? 0}',
+                '${_money(payoutDays.fold<num>(0, (s, d) => s + ((d['amount'] ?? 0) as num)))}'
+                ' · ${payoutDays.fold<int>(0, (s, d) => s + ((d['jobs'] ?? 0) as num).toInt())}',
                 style: const TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
@@ -591,7 +721,7 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
         child: payoutDays.isEmpty
             ? _empty(
                 icon: CupertinoIcons.doc_text,
-                message: 'Close out a job and it will land here.',
+                message: 'Close out an attempt and it will land here.',
               )
             : Column(
                 children: [
@@ -646,7 +776,7 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        '${d['jobs']} job${d['jobs'] == 1 ? '' : 's'}',
+                        '${d['jobs']} attempt${d['jobs'] == 1 ? '' : 's'}',
                         style: const TextStyle(fontSize: 12, color: _subtle),
                       ),
                     ],
@@ -716,7 +846,7 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  (name == null || name.isEmpty) ? 'Job' : name,
+                  (name == null || name.isEmpty) ? 'Attempt' : name,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
@@ -870,12 +1000,6 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
             height: 14,
             borderRadius: BorderRadius.all(Radius.circular(4)),
           ),
-          SizedBox(height: 28),
-          LoadingSkeleton(
-            width: double.infinity,
-            height: 4,
-            borderRadius: BorderRadius.all(Radius.circular(3)),
-          ),
           SizedBox(height: 24),
           LoadingSkeleton(
             width: double.infinity,
@@ -921,8 +1045,8 @@ class _DayBar extends StatelessWidget {
 
   String get _label {
     if (date == null) return '';
+    if (period == 'today') return DateFormat('EEE').format(date!);
     if (period == 'month' || dense) return DateFormat('d').format(date!);
-    if (period == 'today') return DateFormat('ha').format(date!).toLowerCase();
     return DateFormat('E').format(date!).substring(0, 1);
   }
 

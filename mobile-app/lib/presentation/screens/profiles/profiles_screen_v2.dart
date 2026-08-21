@@ -253,6 +253,7 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
                   serviceType: kDefaultCategory,
                   company: kDefaultCompanyId,
                   payRate: int.tryParse(payRateController.text.trim()),
+                  deliveryStyle: null,
                   status: null,
                   address: null,
                   city: null,
@@ -335,6 +336,7 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
                   company: profile.company,
                   note: noteController.text.isEmpty ? null : noteController.text,
                   payRate: int.tryParse(payRateController.text.trim()),
+                  deliveryStyle: profile.deliveryStyle,
                   // This dialog only edits name/note/pay rate — preserve
                   // whatever Status/Profile Location was already stored so
                   // saving here can't silently wipe them.

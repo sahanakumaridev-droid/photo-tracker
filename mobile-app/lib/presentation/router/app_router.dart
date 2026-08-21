@@ -177,12 +177,11 @@ class _ShellScaffold extends ConsumerStatefulWidget {
 }
 
 class _ShellScaffoldState extends ConsumerState<_ShellScaffold> {
-  // Index map (matches BottomNav): 0 Home (map) · 1 Jobs · 2 Log ·
-  // 3 Earnings. Upload lives in each screen's app bar, not the tab bar.
+  // Index map: 0 Home · 1 Upload · 2 Log · 3 Earnings
   int _indexForLocation(String loc) {
     if (loc.startsWith('/map')) return 0;
     if (loc.startsWith('/home')) return 0;
-    if (loc.startsWith('/jobs')) return 1;
+    if (loc.startsWith('/upload')) return 1;
     if (loc.startsWith('/log')) return 2;
     if (loc.startsWith('/earnings')) return 3;
     return -1;
@@ -226,7 +225,7 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold> {
     }
     switch (index) {
       case 0: context.go('/map'); break;
-      case 1: context.go('/jobs'); break;
+      case 1: context.go('/upload'); break;
       case 2: context.go('/log'); break;
       case 3: context.go('/earnings'); break;
     }

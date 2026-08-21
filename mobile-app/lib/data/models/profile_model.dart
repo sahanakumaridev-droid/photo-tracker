@@ -14,6 +14,7 @@ class ProfileModel {
     this.payRate,
     this.company,
     this.companyName,
+    this.deliveryStyle,
     this.status,
     this.address,
     this.city,
@@ -44,6 +45,10 @@ class ProfileModel {
   /// Denormalized company display name from the API (optional).
   @JsonKey(name: 'company_name')
   final String? companyName;
+
+  /// Standing delivery style copied onto attempts as `completion_type`.
+  @JsonKey(name: 'delivery_style')
+  final String? deliveryStyle;
 
   /// Profile-level lifecycle flag, e.g. "awaiting_attempt". Independent of
   /// any Attempt/Photo status — see Photo.status for that.
@@ -88,6 +93,7 @@ class ProfileModel {
     int? payRate,
     String? company,
     String? companyName,
+    String? deliveryStyle,
     String? status,
     String? address,
     String? city,
@@ -105,6 +111,7 @@ class ProfileModel {
         payRate: payRate ?? this.payRate,
         company: company ?? this.company,
         companyName: companyName ?? this.companyName,
+        deliveryStyle: deliveryStyle ?? this.deliveryStyle,
         status: status ?? this.status,
         address: address ?? this.address,
         city: city ?? this.city,

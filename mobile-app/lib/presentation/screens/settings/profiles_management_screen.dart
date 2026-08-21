@@ -1,14 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../../../core/ai/spoken_parser.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../core/utils/text_formatters.dart';
 import '../../../data/models/company.dart';
+import '../../../data/models/delivery_style.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/profile_provider.dart';
+import '../../widgets/ai/speak_fill_banner.dart';
+import '../../widgets/ai/voice_mic_button.dart';
 import '../upload/location_picker_map.dart';
 
 class ProfilesManagementScreen extends ConsumerStatefulWidget {
@@ -28,12 +33,12 @@ class _ProfilesManagementScreenState
   // ── Design tokens — matches the rest of the app (Upload screen, Profile
   // Detail): soft-lavender canvas, white cards with a subtle shadow, colored
   // icon badges per section. ─────────────────────────────────────────────────
-  static const Color _canvas = Color(0xFF0F1219);
-  static const Color _surface = Color(0xFF1C222E);
-  static const Color _ink = Color(0xFFFFFFFF);
-  static const Color _inkMuted = Color(0xFF94A3B8);
-  static const Color _inkSubtle = Color(0xFF6B7A8D);
-  static const Color _separator = Color(0xFF2A3340);
+  static const Color _canvas = Color(0xFFF2F4F7);
+  static const Color _surface = Color(0xFFFFFFFF);
+  static const Color _ink = Color(0xFF1A2130);
+  static const Color _inkMuted = Color(0xFF5C6778);
+  static const Color _inkSubtle = Color(0xFF8B95A5);
+  static const Color _separator = Color(0xFFE3E7EE);
   static const Color _accent = Color(0xFF4A90E2);
   static const Color _accentSoft = Color(0x1F4A90E2);
   static const Color _successGreen = Color(0xFF10B981);
@@ -49,6 +54,7 @@ class _ProfilesManagementScreenState
   late TextEditingController _payRateController;
   String _selectedServiceType = 'standard';
   late String _companyId;
+  String? _deliveryStyle;
   bool _isLoading = false;
 
   // ── Status: independent of any Attempt/Photo status. ──────────────────────
@@ -77,7 +83,7 @@ class _ProfilesManagementScreenState
   ];
   static const List<String> _stepSubtitles = [
     'Name and status for this profile.',
-    'Company, priorities, and optional pay rate.',
+    'Company, priority, delivery style, and payout.',
     'Optional work location for this profile.',
   ];
 
@@ -92,6 +98,9 @@ class _ProfilesManagementScreenState
     _payRateController =
         TextEditingController(text: p?.payRate?.toString() ?? '');
     _companyId = companyById(p?.company)?.id ?? kDefaultCompanyId;
+    final savedStyle = (p?.deliveryStyle ?? '').trim();
+    _deliveryStyle =
+        kDeliveryStyles.contains(savedStyle) ? savedStyle : null;
     if (p?.serviceType != null &&
         companyOrDefault(_companyId).allowsPriority(p!.serviceType)) {
       _selectedServiceType = p.serviceType;
@@ -116,6 +125,7 @@ class _ProfilesManagementScreenState
     // Profile Name is required — its "done" badge must update live as the
     // user types, matching the Upload screen's required-field pattern.
     _nameController.addListener(_onNameChanged);
+    _payRateController.addListener(_onNameChanged);
 
     // Convenience auto-fill: whenever there's no Profile Location yet — a
     // brand-new profile, or an existing one nobody has set a location for —
@@ -130,13 +140,41 @@ class _ProfilesManagementScreenState
 
   void _onNameChanged() => setState(() {});
 
+  void _applyDraft(SpokenDraft d) {
+    setState(() {
+      if (d.name != null && d.name!.trim().isNotEmpty) {
+        _nameController.text = d.name!;
+      }
+      if (d.companyId != null) {
+        _companyId = d.companyId!;
+        if (!companyOrDefault(_companyId).allowsPriority(_selectedServiceType)) {
+          _selectedServiceType = defaultPriorityForCompany(_companyId);
+        }
+      }
+      if (d.priority != null &&
+          companyOrDefault(_companyId).allowsPriority(d.priority)) {
+        _selectedServiceType = d.priority!;
+      }
+      if (d.payRate != null) {
+        _payRateController.text = '${d.payRate}';
+      }
+      if (d.address != null) _addressController.text = d.address!;
+      if (d.city != null) _cityController.text = d.city!;
+      if (d.state != null) _stateController.text = d.state!;
+      if (d.postalCode != null) _zipController.text = d.postalCode!;
+      if (d.note != null) _noteController.text = d.note!;
+    });
+  }
+
   @override
   void dispose() {
     _nameController
       ..removeListener(_onNameChanged)
       ..dispose();
+    _payRateController
+      ..removeListener(_onNameChanged)
+      ..dispose();
     _noteController.dispose();
-    _payRateController.dispose();
     _addressController.dispose();
     _cityController.dispose();
     _stateController.dispose();
@@ -149,6 +187,13 @@ class _ProfilesManagementScreenState
   bool get _hasLocation =>
       _latController.text.trim().isNotEmpty &&
       _lngController.text.trim().isNotEmpty;
+
+  LatLng? get _previewPoint {
+    final lat = double.tryParse(_latController.text.trim());
+    final lng = double.tryParse(_lngController.text.trim());
+    if (lat == null || lng == null) return null;
+    return LatLng(lat, lng);
+  }
 
   String get _locationSummary {
     final parts = <String>[
@@ -246,9 +291,19 @@ class _ProfilesManagementScreenState
       );
       return;
     }
-
-    setState(() => _isLoading = true);
+    if (_deliveryStyle == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please choose a delivery style')),
+      );
+      return;
+    }
     final payRate = int.tryParse(_payRateController.text.trim());
+    if (payRate == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enter a payout amount')),
+      );
+      return;
+    }
     // Only treated as set when BOTH parse — a partially-edited pair is
     // treated as "not set" rather than silently saving a mismatched point.
     final lat = double.tryParse(_latController.text.trim());
@@ -258,6 +313,7 @@ class _ProfilesManagementScreenState
     String? orNull(TextEditingController c) =>
         c.text.trim().isEmpty ? null : c.text.trim();
 
+    setState(() => _isLoading = true);
     try {
       if (widget.profileToEdit != null) {
         // Update existing profile
@@ -268,6 +324,7 @@ class _ProfilesManagementScreenState
           company: _companyId,
           note: _noteController.text.isEmpty ? null : _noteController.text,
           payRate: payRate,
+          deliveryStyle: _deliveryStyle,
           status: _status,
           address: orNull(_addressController),
           city: orNull(_cityController),
@@ -289,6 +346,7 @@ class _ProfilesManagementScreenState
           serviceType: _selectedServiceType,
           company: _companyId,
           payRate: payRate,
+          deliveryStyle: _deliveryStyle,
           status: _status,
           address: orNull(_addressController),
           city: orNull(_cityController),
@@ -463,7 +521,12 @@ class _ProfilesManagementScreenState
         child: Container(height: 1, color: _separator),
       );
 
-  InputDecoration _deco({required String hint, IconData? icon}) =>
+  InputDecoration _deco({
+    required String hint,
+    IconData? icon,
+    TextEditingController? voiceFor,
+    VoiceFillMode voiceMode = VoiceFillMode.replace,
+  }) =>
       InputDecoration(
         hintText: hint,
         hintStyle: const TextStyle(color: _inkSubtle, fontSize: 14),
@@ -471,6 +534,9 @@ class _ProfilesManagementScreenState
             icon != null ? Icon(icon, size: 18, color: _inkSubtle) : null,
         prefixIconConstraints:
             const BoxConstraints(minWidth: 40, minHeight: 40),
+        suffixIcon: voiceFor != null
+            ? VoiceMicButton(controller: voiceFor, mode: voiceMode)
+            : null,
         filled: true,
         fillColor: _canvas,
         contentPadding:
@@ -595,8 +661,9 @@ class _ProfilesManagementScreenState
               inputFormatters: const [TitleCaseInputFormatter()],
               style: _fieldStyle,
               decoration: _deco(
-                hint: 'Enter profile name',
+                hint: 'Enter profile name or tap the mic',
                 icon: Icons.person_outline_rounded,
+                voiceFor: _nameController,
               ),
             ),
             _divider(),
@@ -669,6 +736,42 @@ class _ProfilesManagementScreenState
             ),
           ),
           const SizedBox(height: 12),
+          _fieldLabel('Priority Level'),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final c in company.priorityCategories)
+                ChoiceChip(
+                  label: Text(c.label),
+                  selected: _selectedServiceType == c.value,
+                  onSelected: (_) {
+                    HapticFeedback.selectionClick();
+                    setState(() => _selectedServiceType = c.value);
+                  },
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _fieldLabel('Delivery Style'),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final s in kDeliveryStyles)
+                ChoiceChip(
+                  label: Text(s),
+                  selected: _deliveryStyle == s,
+                  onSelected: (_) {
+                    HapticFeedback.selectionClick();
+                    setState(() => _deliveryStyle = s);
+                  },
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
           Wrap(
             spacing: 8,
             runSpacing: 8,
@@ -686,6 +789,113 @@ class _ProfilesManagementScreenState
   }
 
   // ── Location ──────────────────────────────────────────────────────────────
+  Widget _buildMiniMap(LatLng point) {
+    return GestureDetector(
+      onTap: _pickOnMap,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: const Color(0xFFE6EAF0)),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(14),
+          child: SizedBox(
+            height: 156,
+            width: double.infinity,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                IgnorePointer(
+                  child: FlutterMap(
+                    key: ValueKey(
+                      '${point.latitude.toStringAsFixed(5)},'
+                      '${point.longitude.toStringAsFixed(5)}',
+                    ),
+                    options: MapOptions(
+                      initialCenter: point,
+                      initialZoom: 15,
+                      interactionOptions: const InteractionOptions(
+                        flags: InteractiveFlag.none,
+                      ),
+                    ),
+                    children: [
+                      TileLayer(
+                        urlTemplate:
+                            'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+                        subdomains: const ['a', 'b', 'c', 'd'],
+                        retinaMode: false,
+                        tileSize: 256,
+                        userAgentPackageName: 'com.example.photo_tracker',
+                      ),
+                      MarkerLayer(
+                        markers: [
+                          Marker(
+                            point: point,
+                            width: 36,
+                            height: 36,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: _accent,
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: Colors.white,
+                                  width: 2.5,
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: _accent.withValues(alpha: 0.4),
+                                    blurRadius: 8,
+                                  ),
+                                ],
+                              ),
+                              child: const Icon(
+                                Icons.location_on_rounded,
+                                color: Colors.white,
+                                size: 18,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                Positioned(
+                  right: 10,
+                  bottom: 10,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.94),
+                      borderRadius: BorderRadius.circular(20),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.08),
+                          blurRadius: 8,
+                        ),
+                      ],
+                    ),
+                    child: const Text(
+                      'Tap to edit',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: _inkMuted,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildLocationCard() => _card(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -697,6 +907,10 @@ class _ProfilesManagementScreenState
             ),
             const SizedBox(height: 6),
             _helper('Optional. Where this profile’s work is associated.'),
+            if (_previewPoint != null) ...[
+              const SizedBox(height: 12),
+              _buildMiniMap(_previewPoint!),
+            ],
             if (_hasLocation && _locationSummary.isNotEmpty) ...[
               const SizedBox(height: 12),
               Container(
@@ -759,7 +973,11 @@ class _ProfilesManagementScreenState
               controller: _addressController,
               textCapitalization: TextCapitalization.words,
               style: _fieldStyle,
-              decoration: _deco(hint: 'Address', icon: Icons.apartment_rounded),
+              decoration: _deco(
+                hint: 'Address',
+                icon: Icons.apartment_rounded,
+                voiceFor: _addressController,
+              ),
               onChanged: (_) => setState(() {}),
             ),
             const SizedBox(height: 10),
@@ -887,18 +1105,19 @@ class _ProfilesManagementScreenState
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _sectionLabel('Details', Icons.tune_rounded),
+            _sectionLabel('Payout', Icons.attach_money_rounded, done: _payoutDone),
             const SizedBox(height: 6),
-            _helper('Optional pay rate and notes for this profile.'),
+            _helper('Required. Standing payout for this profile.'),
             const SizedBox(height: 14),
-            _fieldLabel('Pay Rate'),
+            _fieldLabel('Payout (\$)'),
             const SizedBox(height: 8),
             TextField(
               controller: _payRateController,
               keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               style: _fieldStyle,
               decoration: _deco(
-                hint: 'Enter pay rate',
+                hint: 'e.g. 50',
                 icon: Icons.attach_money_rounded,
               ),
             ),
@@ -915,6 +1134,8 @@ class _ProfilesManagementScreenState
                 decoration: _deco(
                   hint: 'Add a note about this profile',
                   icon: Icons.description_outlined,
+                  voiceFor: _noteController,
+                  voiceMode: VoiceFillMode.append,
                 ),
               ),
             ],
@@ -923,11 +1144,19 @@ class _ProfilesManagementScreenState
       );
 
   bool get _nameDone => _nameController.text.trim().isNotEmpty;
+  bool get _payoutDone =>
+      int.tryParse(_payRateController.text.trim()) != null;
+  bool get _deliveryDone =>
+      _deliveryStyle != null && kDeliveryStyles.contains(_deliveryStyle);
 
   bool get _canAdvance {
     if (_step == 0) return _nameDone;
+    if (_step == 1) return _deliveryDone && _payoutDone;
     return true;
   }
+
+  bool get _requiredComplete =>
+      _nameDone && _deliveryDone && _payoutDone;
 
   void _goNext() {
     if (!_canAdvance) return;
@@ -1060,12 +1289,27 @@ class _ProfilesManagementScreenState
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            SpeakFillBanner(
+              hint: 'Say a company and pay, e.g. “First Legal, 125 dollars”',
+              onDraft: _applyDraft,
+            ),
+            const SizedBox(height: 12),
             _buildCompanyCard(),
             _buildDetailsCard(),
           ],
         );
       case 2:
-        return _buildLocationCard();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SpeakFillBanner(
+              hint: 'Say the street, city, state, and ZIP',
+              onDraft: _applyDraft,
+            ),
+            const SizedBox(height: 12),
+            _buildLocationCard(),
+          ],
+        );
       default:
         return const SizedBox.shrink();
     }
@@ -1073,14 +1317,11 @@ class _ProfilesManagementScreenState
 
   // ── Sticky stepper CTA ────────────────────────────────────────────────────
   Widget _buildStickyFooter() {
-    final isLast = _step == _stepCount - 1;
-    final canPrimary = isLast ? _nameDone : _canAdvance;
-    final primaryLabel = isLast
-        ? (_isEditing ? 'Update Profile' : 'Create Profile')
-        : 'Continue';
-    final primaryIcon = isLast
-        ? (_isEditing ? Icons.check_rounded : Icons.add_rounded)
-        : Icons.arrow_forward_rounded;
+    final canPrimary =
+        _step < _stepCount - 1 ? _canAdvance : _requiredComplete;
+    final primaryLabel = _isEditing ? 'Update Profile' : 'Create Profile';
+    final primaryIcon =
+        _isEditing ? Icons.check_rounded : Icons.add_rounded;
 
     return Container(
       decoration: BoxDecoration(
@@ -1105,117 +1346,78 @@ class _ProfilesManagementScreenState
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Row(
-            children: [
-              if (_step > 0) ...[
-                SizedBox(
-                  height: 54,
-                  width: 54,
-                  child: OutlinedButton(
-                    onPressed: _isLoading ? null : _goBack,
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: _ink,
-                      side: const BorderSide(color: _separator),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      padding: EdgeInsets.zero,
-                    ),
-                    child: const Icon(Icons.arrow_back_rounded, size: 22),
-                  ),
-                ),
-                const SizedBox(width: 10),
-              ],
-              Expanded(
-                child: SizedBox(
-                  height: 54,
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      gradient:
-                          (!_isLoading && canPrimary) ? _btnGradient : null,
-                      color: (_isLoading || !canPrimary) ? _separator : null,
-                      borderRadius: BorderRadius.circular(16),
-                      boxShadow: (!_isLoading && canPrimary)
-                          ? [
-                              BoxShadow(
-                                color: _accent.withValues(alpha: 0.35),
-                                blurRadius: 16,
-                                offset: const Offset(0, 6),
-                              ),
-                            ]
-                          : null,
-                    ),
-                    child: Material(
-                      color: Colors.transparent,
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(16),
-                        onTap: (_isLoading || !canPrimary) ? null : _goNext,
-                        child: Center(
-                          child: _isLoading
-                              ? const SizedBox(
-                                  height: 20,
-                                  width: 20,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    valueColor: AlwaysStoppedAnimation<Color>(
-                                      _inkMuted,
-                                    ),
-                                  ),
-                                )
-                              : Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(
-                                      primaryIcon,
-                                      size: 20,
-                                      color: canPrimary
-                                          ? Colors.white
-                                          : _inkSubtle,
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      primaryLabel,
-                                      style: TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.w700,
-                                        color: canPrimary
-                                            ? Colors.white
-                                            : _inkSubtle,
-                                        letterSpacing: 0.2,
-                                      ),
-                                    ),
-                                  ],
-                                ),
+          SizedBox(
+            height: 54,
+            width: double.infinity,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: (!_isLoading && canPrimary) ? _btnGradient : null,
+                color: (_isLoading || !canPrimary) ? _separator : null,
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: (!_isLoading && canPrimary)
+                    ? [
+                        BoxShadow(
+                          color: _accent.withValues(alpha: 0.35),
+                          blurRadius: 16,
+                          offset: const Offset(0, 6),
                         ),
-                      ),
-                    ),
+                      ]
+                    : null,
+              ),
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(16),
+                  onTap: (_isLoading || !canPrimary) ? null : _saveProfile,
+                  child: Center(
+                    child: _isLoading
+                        ? const SizedBox(
+                            height: 20,
+                            width: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                _inkMuted,
+                              ),
+                            ),
+                          )
+                        : Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                primaryIcon,
+                                size: 20,
+                                color: canPrimary
+                                    ? Colors.white
+                                    : _inkSubtle,
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                primaryLabel,
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                  color: canPrimary
+                                      ? Colors.white
+                                      : _inkSubtle,
+                                  letterSpacing: 0.2,
+                                ),
+                              ),
+                            ],
+                          ),
                   ),
                 ),
               ),
-            ],
+            ),
           ),
-          if (isLast && !_isEditing) ...[
-            const SizedBox(height: 6),
-            const Text(
-              'You can skip optional steps — only name is required.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 12,
-                color: _inkSubtle,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ],
-          const SizedBox(height: 2),
-          TextButton(
-            onPressed: _isLoading ? null : () => context.pop(),
-            style: TextButton.styleFrom(
-              foregroundColor: _inkMuted,
-              minimumSize: const Size(48, 40),
-            ),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+          const SizedBox(height: 6),
+          const Text(
+            'Name, company, and priority are required. Location is optional.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 12,
+              color: _inkSubtle,
+              fontWeight: FontWeight.w500,
             ),
           ),
         ],
@@ -1228,7 +1430,7 @@ class _ProfilesManagementScreenState
     return Scaffold(
       appBar: AppBar(
         title: Text(
-          _isEditing ? 'Edit Profile' : 'Add Profile',
+          _isEditing ? 'Edit Profile' : 'New Profile',
           style: const TextStyle(
             fontSize: 17,
             fontWeight: FontWeight.w700,
@@ -1241,7 +1443,7 @@ class _ProfilesManagementScreenState
         foregroundColor: _ink,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_rounded),
-          onPressed: _isLoading ? null : _goBack,
+          onPressed: _isLoading ? null : () => context.pop(),
         ),
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(1),
@@ -1251,28 +1453,22 @@ class _ProfilesManagementScreenState
       backgroundColor: _canvas,
       body: Column(
         children: [
-          _buildStepHeader(),
           Expanded(
             child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 220),
-                switchInCurve: Curves.easeOut,
-                switchOutCurve: Curves.easeIn,
-                transitionBuilder: (child, anim) => FadeTransition(
-                  opacity: anim,
-                  child: SlideTransition(
-                    position: Tween<Offset>(
-                      begin: const Offset(0.04, 0),
-                      end: Offset.zero,
-                    ).animate(anim),
-                    child: child,
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  SpeakFillBanner(
+                    hint: 'Say a name, company, address, or pay rate',
+                    onDraft: _applyDraft,
                   ),
-                ),
-                child: KeyedSubtree(
-                  key: ValueKey<int>(_step),
-                  child: _buildStepBody(),
-                ),
+                  const SizedBox(height: 12),
+                  _buildIdentityCard(_nameDone),
+                  _buildCompanyCard(),
+                  _buildDetailsCard(),
+                  _buildLocationCard(),
+                ],
               ),
             ),
           ),

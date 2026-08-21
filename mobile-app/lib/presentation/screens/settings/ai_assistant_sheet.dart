@@ -1,54 +1,87 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:go_router/go_router.dart';
 
-/// GeoTag AI — an interactive assistant preview. It accepts typed questions and
-/// quick prompts and replies with helpful, on-device guidance. Wire [_reply] to
-/// the AI backend when it ships; the chat UX stays exactly the same.
+import '../../../core/ai/copilot.dart';
+import '../../../core/ai/spoken_parser.dart';
+import '../../../core/network/api_client.dart';
+import '../../../core/utils/location_service.dart';
+import '../../../data/models/company.dart';
+import '../../providers/photo_provider.dart';
+import '../../providers/profile_provider.dart';
+import '../../widgets/ai/voice_mic_button.dart';
+
+/// GeoTag AI — talk or type. Answers with live jobs/earnings and can create
+/// a profile from one spoken sentence.
 Future<void> showAiAssistantSheet(BuildContext context) {
   HapticFeedback.selectionClick();
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
-    backgroundColor: const Color(0xFF1C222E),
+    backgroundColor: const Color(0xFFFFFFFF),
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
     ),
-    builder: (_) => const _AiAssistantSheet(),
+    builder: (_) => const AiAssistantSheet(),
   );
 }
 
 class _Msg {
-  const _Msg(this.text, {required this.fromUser});
+  const _Msg(this.text, {required this.fromUser, this.draft});
   final String text;
   final bool fromUser;
+  final SpokenDraft? draft;
 }
 
-class _AiAssistantSheet extends StatefulWidget {
-  const _AiAssistantSheet();
+class AiAssistantSheet extends ConsumerStatefulWidget {
+  const AiAssistantSheet({super.key});
 
   @override
-  State<_AiAssistantSheet> createState() => _AiAssistantSheetState();
+  ConsumerState<AiAssistantSheet> createState() => _AiAssistantSheetState();
 }
 
-class _AiAssistantSheetState extends State<_AiAssistantSheet> {
-  static const Color _ink = Color(0xFFFFFFFF);
-  static const Color _muted = Color(0xFF94A3B8);
-  static const Color _bg = Color(0xFF0F1219);
-  static const Color _hair = Color(0xFF2A3340);
+class _AiAssistantSheetState extends ConsumerState<AiAssistantSheet> {
+  static const Color _ink = Color(0xFF1A2130);
+  static const Color _muted = Color(0xFF5C6778);
+  static const Color _bg = Color(0xFFF2F4F7);
+  static const Color _hair = Color(0xFFE3E7EE);
   static const Color _purple = Color(0xFF4A90E2);
 
   final _controller = TextEditingController();
   final _scroll = ScrollController();
   final List<_Msg> _messages = [];
   bool _thinking = false;
+  bool _creating = false;
+  Map<String, dynamic>? _earnings;
+  Position? _position;
 
   static const _prompts = [
-    'How much did I earn this week?',
-    "What's my next ASAP job?",
-    "What's the closest job to me?",
-    "Summarize today's uploads",
-    'Tips to get paid faster',
+    'How much is available?',
+    'What’s the closest job?',
+    'Create a profile by voice',
+    'How do I add an attempt?',
+    'Search by saying a ZIP',
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _prefetch());
+  }
+
+  Future<void> _prefetch() async {
+    try {
+      final api = ref.read(apiServiceProvider);
+      final earnings = await api.getEarnings(period: 'week');
+      if (mounted) setState(() => _earnings = earnings);
+    } catch (_) {}
+    try {
+      final pos = await LocationService.getCurrentLocation();
+      if (mounted) setState(() => _position = pos);
+    } catch (_) {}
+  }
 
   @override
   void dispose() {
@@ -56,6 +89,13 @@ class _AiAssistantSheetState extends State<_AiAssistantSheet> {
     _scroll.dispose();
     super.dispose();
   }
+
+  CopilotContext get _ctx => CopilotContext(
+        profiles: ref.read(profilesProvider).valueOrNull ?? const [],
+        photos: ref.read(photosProvider).valueOrNull ?? const [],
+        earnings: _earnings,
+        position: _position,
+      );
 
   void _send(String raw) {
     final text = raw.trim();
@@ -67,65 +107,86 @@ class _AiAssistantSheetState extends State<_AiAssistantSheet> {
       _controller.clear();
     });
     _scrollToEnd();
-    // Simulate a short "thinking" beat, then answer locally.
-    Future.delayed(const Duration(milliseconds: 650), () {
+    Future.delayed(const Duration(milliseconds: 420), () async {
       if (!mounted) return;
+      final reply = answerCopilot(text, _ctx);
       setState(() {
         _thinking = false;
-        _messages.add(_Msg(_reply(text), fromUser: false));
+        _messages.add(_Msg(reply.text,
+            fromUser: false, draft: reply.createDraft));
       });
       _scrollToEnd();
+      if (reply.createDraft == null &&
+          reply.route != null &&
+          _shouldAutoOpen(text)) {
+        await Future<void>.delayed(const Duration(milliseconds: 550));
+        if (!mounted) return;
+        Navigator.of(context).maybePop();
+        if (context.mounted) context.go(reply.route!);
+      }
     });
+  }
+
+  bool _shouldAutoOpen(String text) {
+    final l = text.toLowerCase();
+    return l.contains('open') ||
+        l.contains('show') ||
+        l.contains('go to') ||
+        l.contains('take me') ||
+        l.contains('how much') ||
+        l.contains('closest') ||
+        l.contains('nearest');
+  }
+
+  Future<void> _createFromDraft(SpokenDraft draft) async {
+    if (_creating || draft.name == null) return;
+    setState(() => _creating = true);
+    try {
+      await ref.read(createProfileProvider((
+        name: draft.name!.trim(),
+        serviceType: draft.priority ??
+            defaultPriorityForCompany(draft.companyId),
+        company: draft.companyId ?? kDefaultCompanyId,
+        payRate: draft.payRate,
+        deliveryStyle: null,
+        status: 'awaiting_attempt',
+        address: draft.address,
+        city: draft.city,
+        state: draft.state,
+        postalCode: draft.postalCode,
+        latitude: null,
+        longitude: null,
+      )).future);
+      ref.invalidate(profilesProvider);
+      if (!mounted) return;
+      setState(() {
+        _creating = false;
+        _messages.add(const _Msg(
+          'Profile saved. It’s on Home as a pin once you set a location — '
+          'or open it from Profiles.',
+          fromUser: false,
+        ));
+      });
+      _scrollToEnd();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _creating = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not create that profile')),
+      );
+    }
   }
 
   void _scrollToEnd() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
         _scroll.animateTo(
-          _scroll.position.maxScrollExtent + 120,
-          duration: const Duration(milliseconds: 250),
+          _scroll.position.maxScrollExtent + 140,
+          duration: const Duration(milliseconds: 220),
           curve: Curves.easeOut,
         );
       }
     });
-  }
-
-  // Lightweight on-device responder. Swap for a real model call when ready.
-  String _reply(String q) {
-    final l = q.toLowerCase();
-    if (l.contains('closest') ||
-        l.contains('nearest') ||
-        l.contains('near me')) {
-      return 'Your jobs are sorted nearest-first on the Home feed and in the '
-          'Log — the top card is the closest one to where you are right now. '
-          'Open the Map and tap the location button to recenter, or pick a '
-          'service filter to see the closest job of just that type.';
-    }
-    if (l.contains('earn') || l.contains('paid') || l.contains('money') ||
-        l.contains('payout')) {
-      return 'Open the Earnings tab to see today, this week, and bi-weekly '
-          'payouts. To get paid faster: upload right after each job, attach a '
-          'clear geotagged photo, and clear your ASAP queue first — those pay '
-          'at the highest rate.';
-    }
-    if (l.contains('asap') || l.contains('next') || l.contains('job') ||
-        l.contains('schedule')) {
-      return 'Your next jobs live in the Schedule, grouped as ASAP, Next Day, '
-          'Standard, and Special. ASAP jobs are time-sensitive — tackle those '
-          'first. Want me to prioritize your route around the closest ASAP pin?';
-    }
-    if (l.contains('upload') || l.contains('photo') || l.contains('today')) {
-      return "Today's uploads appear in the Log, newest first. With Auto-Tag "
-          'on, each photo is captioned and categorized by location '
-          'automatically — just review and confirm before submitting.';
-    }
-    if (l.contains('route') || l.contains('map') || l.contains('navigate')) {
-      return 'Smart Suggestions can order your stops to cut driving time. '
-          'Open the Map, tap a pin, and choose “Optimize route” to sequence '
-          'your remaining jobs from where you are now.';
-    }
-    return 'I can help with earnings, your schedule, uploads, and routing. '
-        'Try one of the prompts above, or ask about a specific job or payout.';
   }
 
   @override
@@ -135,7 +196,7 @@ class _AiAssistantSheetState extends State<_AiAssistantSheet> {
     return Padding(
       padding: EdgeInsets.only(bottom: viewInsets),
       child: SizedBox(
-        height: height * 0.8,
+        height: height * 0.82,
         child: Column(
           children: [
             const SizedBox(height: 10),
@@ -183,7 +244,7 @@ class _AiAssistantSheetState extends State<_AiAssistantSheet> {
                         fontSize: 17,
                         fontWeight: FontWeight.w800,
                         color: _ink)),
-                Text('Your intelligent field copilot',
+                Text('Talk — don’t type',
                     style: TextStyle(fontSize: 12.5, color: _muted)),
               ],
             ),
@@ -198,7 +259,7 @@ class _AiAssistantSheetState extends State<_AiAssistantSheet> {
   Widget _empty() => ListView(
         padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
         children: [
-          const Text('TRY ASKING',
+          const Text('TRY SAYING',
               style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w700,
@@ -213,7 +274,11 @@ class _AiAssistantSheetState extends State<_AiAssistantSheet> {
         padding: const EdgeInsets.only(bottom: 8),
         child: InkWell(
           borderRadius: BorderRadius.circular(13),
-          onTap: () => _send(text),
+          onTap: () => _send(
+            text.toLowerCase().contains('voice')
+                ? 'Create a new profile'
+                : text,
+          ),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
             decoration: BoxDecoration(
@@ -253,11 +318,38 @@ class _AiAssistantSheetState extends State<_AiAssistantSheet> {
           }
           final m = _messages[i];
           return _bubble(
-            Text(m.text,
-                style: TextStyle(
-                    fontSize: 14.5,
-                    height: 1.35,
-                    color: m.fromUser ? Colors.white : _ink)),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(m.text.replaceAll('**', ''),
+                    style: TextStyle(
+                        fontSize: 14.5,
+                        height: 1.35,
+                        color: m.fromUser ? Colors.white : _ink)),
+                if (m.draft != null) ...[
+                  const SizedBox(height: 10),
+                  GestureDetector(
+                    onTap: _creating ? null : () => _createFromDraft(m.draft!),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: _purple,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        _creating ? 'Creating…' : 'Create profile',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
             fromUser: m.fromUser,
           );
         },
@@ -292,13 +384,18 @@ class _AiAssistantSheetState extends State<_AiAssistantSheet> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Container(
-                padding: const EdgeInsets.fromLTRB(16, 2, 6, 2),
+                padding: const EdgeInsets.fromLTRB(6, 2, 6, 2),
                 decoration: BoxDecoration(
                   color: _bg,
                   borderRadius: BorderRadius.circular(15),
                   border: Border.all(color: _hair),
                 ),
                 child: Row(children: [
+                  VoiceMicButton(
+                    controller: _controller,
+                    mode: VoiceFillMode.replace,
+                    tooltip: 'Talk to GeoTag AI',
+                  ),
                   Expanded(
                     child: TextField(
                       controller: _controller,
@@ -311,7 +408,7 @@ class _AiAssistantSheetState extends State<_AiAssistantSheet> {
                       decoration: const InputDecoration(
                         isDense: true,
                         border: InputBorder.none,
-                        hintText: 'Message GeoTag AI…',
+                        hintText: 'Talk or type…',
                         hintStyle: TextStyle(fontSize: 14.5, color: _muted),
                       ),
                     ),
@@ -334,7 +431,8 @@ class _AiAssistantSheetState extends State<_AiAssistantSheet> {
                 ]),
               ),
               const SizedBox(height: 6),
-              const Text('AI can make mistakes. Verify important details.',
+              const Text(
+                  'Tap the mic and speak. AI can make mistakes — verify payouts.',
                   style: TextStyle(fontSize: 11, color: Color(0xFF9CA3AF))),
             ],
           ),

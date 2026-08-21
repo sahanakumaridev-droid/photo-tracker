@@ -5,6 +5,9 @@ import 'package:go_router/go_router.dart';
 
 import '../../../core/utils/attempt_status.dart';
 import '../../../core/utils/text_formatters.dart';
+import '../../../data/models/delivery_style.dart';
+import '../../widgets/ai/note_suggestion_chips.dart';
+import '../../widgets/ai/voice_mic_button.dart';
 import '../../widgets/common/pill_chip.dart';
 import 'attempt_draft_controller.dart';
 
@@ -23,12 +26,12 @@ class AttemptDetailsScreen extends ConsumerWidget {
   final AttemptDraftController controller;
 
   // ── Design tokens ─────────────────────────────────────────────────────────
-  static const Color _canvas = Color(0xFF0F1219);
-  static const Color _surface = Color(0xFF1C222E);
-  static const Color _ink = Color(0xFFFFFFFF);
-  static const Color _inkMuted = Color(0xFF94A3B8);
-  static const Color _inkSubtle = Color(0xFF6B7A8D);
-  static const Color _separator = Color(0xFF2A3340);
+  static const Color _canvas = Color(0xFFF2F4F7);
+  static const Color _surface = Color(0xFFFFFFFF);
+  static const Color _ink = Color(0xFF1A2130);
+  static const Color _inkMuted = Color(0xFF5C6778);
+  static const Color _inkSubtle = Color(0xFF8B95A5);
+  static const Color _separator = Color(0xFFE3E7EE);
   static const Color _accent = Color(0xFF4A90E2);
   static const Color _accentSoft = Color(0x1F4A90E2);
   static const Color _accentMid = Color(0xFF64B5F6);
@@ -107,45 +110,73 @@ class AttemptDetailsScreen extends ConsumerWidget {
               style: TextStyle(fontSize: 13, color: _inkSubtle),
             ),
             const SizedBox(height: 12),
-            Container(
-              decoration: BoxDecoration(
-                color: _canvas,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<String>(
-                  value: controller.deliveryStyle,
-                  isExpanded: true,
-                  icon: const Icon(Icons.expand_more_rounded,
-                      color: _inkSubtle),
-                  hint: const Row(
-                    children: [
-                      Icon(Icons.assignment_turned_in_outlined,
-                          size: 18, color: _inkSubtle),
-                      SizedBox(width: 8),
-                      Text('Select a delivery style…',
-                          style:
-                              TextStyle(fontSize: 14, color: _inkSubtle)),
-                    ],
-                  ),
-                  style: const TextStyle(fontSize: 14, color: _ink),
+            if (controller.isExistingProfileAttempt)
+              Container(
+                width: double.infinity,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+                decoration: BoxDecoration(
+                  color: _accentSoft,
                   borderRadius: BorderRadius.circular(12),
-                  items: AttemptDraftController.kDeliveryStyles
-                      .map((s) => DropdownMenuItem<String>(
-                            value: s,
-                            child: Text(s,
-                                style: const TextStyle(
-                                    fontSize: 14, color: _ink)),
-                          ))
-                      .toList(),
-                  onChanged: (value) {
-                    HapticFeedback.selectionClick();
-                    controller.setDeliveryStyle(value);
-                  },
+                  border: Border.all(color: _accent, width: 1.5),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        controller.deliveryStyle ?? '—',
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: _ink,
+                        ),
+                      ),
+                    ),
+                    const Icon(Icons.lock_outline_rounded,
+                        size: 16, color: _accent),
+                  ],
+                ),
+              )
+            else
+              Container(
+                decoration: BoxDecoration(
+                  color: _canvas,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String>(
+                    value: controller.deliveryStyle,
+                    isExpanded: true,
+                    icon: const Icon(Icons.expand_more_rounded,
+                        color: _inkSubtle),
+                    hint: const Row(
+                      children: [
+                        Icon(Icons.assignment_turned_in_outlined,
+                            size: 18, color: _inkSubtle),
+                        SizedBox(width: 8),
+                        Text('Select a delivery style…',
+                            style:
+                                TextStyle(fontSize: 14, color: _inkSubtle)),
+                      ],
+                    ),
+                    style: const TextStyle(fontSize: 14, color: _ink),
+                    borderRadius: BorderRadius.circular(12),
+                    items: kDeliveryStyles
+                        .map((s) => DropdownMenuItem<String>(
+                              value: s,
+                              child: Text(s,
+                                  style: const TextStyle(
+                                      fontSize: 14, color: _ink)),
+                            ))
+                        .toList(),
+                    onChanged: (value) {
+                      HapticFeedback.selectionClick();
+                      controller.setDeliveryStyle(value);
+                    },
+                  ),
                 ),
               ),
-            ),
           ],
         ),
       );
@@ -165,6 +196,7 @@ class AttemptDetailsScreen extends ConsumerWidget {
               icon: Icons.attach_money,
               keyboardType: TextInputType.number,
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              enabled: !controller.isExistingProfileAttempt,
             ),
           ],
         ),
@@ -179,12 +211,16 @@ class AttemptDetailsScreen extends ConsumerWidget {
             const SizedBox(height: 14),
             _inputField(
               controller: controller.noteController,
-              hint: 'Add a note about this photo…',
+              hint: 'Tap the mic and talk the note…',
               icon: Icons.description_outlined,
               maxLines: 3,
               textCapitalization: TextCapitalization.sentences,
               inputFormatters: const [SentenceCaseInputFormatter()],
+              voice: true,
+              voiceMode: VoiceFillMode.append,
             ),
+            const SizedBox(height: 10),
+            NoteSuggestionChips(controller: controller.noteController),
             const SizedBox(height: 16),
             _sectionLabel(
               'Attempt Status',
@@ -268,6 +304,7 @@ class AttemptDetailsScreen extends ConsumerWidget {
                   hint: 'e.g. Spouse, Coworker, Roommate',
                   icon: Icons.groups_outlined,
                   textCapitalization: TextCapitalization.words,
+                  voice: true,
                 ),
               ],
             ],
@@ -952,12 +989,16 @@ class AttemptDetailsScreen extends ConsumerWidget {
     required String hint,
     required IconData icon,
     int maxLines = 1,
+    bool enabled = true,
     TextInputType? keyboardType,
     List<TextInputFormatter>? inputFormatters,
     TextCapitalization textCapitalization = TextCapitalization.none,
+    bool voice = false,
+    VoiceFillMode voiceMode = VoiceFillMode.replace,
   }) =>
       TextField(
         controller: controller,
+        enabled: enabled,
         maxLines: maxLines,
         keyboardType: keyboardType,
         inputFormatters: inputFormatters,
@@ -977,6 +1018,9 @@ class AttemptDetailsScreen extends ConsumerWidget {
             minWidth: 40,
             minHeight: 40,
           ),
+          suffixIcon: voice
+              ? VoiceMicButton(controller: controller, mode: voiceMode)
+              : null,
           filled: true,
           fillColor: _canvas,
           contentPadding: const EdgeInsets.symmetric(

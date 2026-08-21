@@ -6,6 +6,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../../../core/utils/location_service.dart';
+import '../../widgets/ai/voice_mic_button.dart';
 
 /// Result returned by [LocationPickerMap]: the chosen point plus the address
 /// the picker resolved for it (so the caller shows exactly what was confirmed).
@@ -30,10 +31,10 @@ class LocationPickerMap extends StatefulWidget {
 
 class _LocationPickerMapState extends State<LocationPickerMap> {
   static const Color _accent = Color(0xFF4A90E2);
-  static const Color _ink = Color(0xFFFFFFFF);
-  static const Color _inkMuted = Color(0xFF94A3B8);
-  static const Color _inkSubtle = Color(0xFF6B7A8D);
-  static const Color _surface = Color(0xFF1C222E);
+  static const Color _ink = Color(0xFF1A2130);
+  static const Color _inkMuted = Color(0xFF5C6778);
+  static const Color _inkSubtle = Color(0xFF8B95A5);
+  static const Color _surface = Color(0xFFFFFFFF);
 
   late MapController _mapController;
   final TextEditingController _searchController = TextEditingController();
@@ -212,7 +213,7 @@ class _LocationPickerMapState extends State<LocationPickerMap> {
   Widget build(BuildContext context) {
     if (_loadingInitial || _pinPosition == null) {
       return Scaffold(
-        backgroundColor: const Color(0xFF0F1219),
+        backgroundColor: const Color(0xFFF2F4F7),
         body: Center(
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             const CircularProgressIndicator(color: _accent),
@@ -224,7 +225,7 @@ class _LocationPickerMapState extends State<LocationPickerMap> {
     }
 
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: const Color(0xFFF2F4F7),
       body: Stack(children: [
         // ── Map ──────────────────────────────────────────────────────
         FlutterMap(
@@ -269,7 +270,7 @@ class _LocationPickerMapState extends State<LocationPickerMap> {
           children: [
             TileLayer(
               urlTemplate:
-                  'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+                  'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
               subdomains: const ['a', 'b', 'c', 'd'],
               retinaMode: false,
               tileSize: 256,
@@ -318,14 +319,28 @@ class _LocationPickerMapState extends State<LocationPickerMap> {
                 focusNode: _searchFocus,
                 style: const TextStyle(fontSize: 14, color: _ink),
                 decoration: InputDecoration(
-                  hintText: 'Search address or place…',
+                  hintText: 'Say an address or place…',
                   hintStyle: const TextStyle(fontSize: 14, color: _inkSubtle),
                   prefixIcon: _searching
                       ? const Padding(padding: EdgeInsets.all(12), child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: _accent)))
                       : const Icon(Icons.search_rounded, color: _inkSubtle, size: 20),
-                  suffixIcon: _searchController.text.isNotEmpty
-                      ? IconButton(icon: const Icon(Icons.close_rounded, size: 18), color: _inkSubtle, onPressed: () { _searchController.clear(); setState(() { _showResults = false; }); })
-                      : null,
+                  suffixIcon: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      VoiceMicButton(controller: _searchController),
+                      if (_searchController.text.isNotEmpty)
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded, size: 18),
+                          color: _inkSubtle,
+                          onPressed: () {
+                            _searchController.clear();
+                            setState(() => _showResults = false);
+                          },
+                        ),
+                    ],
+                  ),
+                  suffixIconConstraints:
+                      const BoxConstraints(minWidth: 0, minHeight: 0),
                   border: InputBorder.none,
                   contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
                 ),

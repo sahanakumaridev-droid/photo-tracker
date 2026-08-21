@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -5,10 +6,10 @@ import 'package:go_router/go_router.dart';
 
 import '../../../config/theme.dart';
 import '../../../data/models/attempt.dart';
-import '../../../data/models/company.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/profile_provider.dart';
 import '../../widgets/common/loading_skeleton.dart';
+import '../../widgets/common/profile_facts_card.dart';
 import '../upload/attempt_draft_controller.dart';
 import '../upload/attempt_limits.dart';
 
@@ -27,14 +28,14 @@ class ProfileDetailScreen extends ConsumerStatefulWidget {
 
 class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
   // Shared light/purple theme — matches the rest of the app.
-  static const Color _surface = Color(0xFF1C222E);
+  static const Color _surface = Color(0xFFFFFFFF);
   static const Color _ink = AppTheme.darkText;
   static const Color _muted = AppTheme.darkTextSecondary;
   static const Color _hair = AppTheme.darkBorder;
   static const Color _accent = AppTheme.primary;
 
   /// Collapse long attempt lists; user expands via "+N more".
-  static const int _kInitialVisible = 4;
+  static const int _kInitialVisible = 5;
   bool _showAllAttempts = false;
 
   Future<void> _startAttempt() async {
@@ -47,7 +48,9 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
       knownCount: known,
     );
     if (!ok || !context.mounted) return;
-    context.push('/upload?profileId=${widget.profileId}');
+    await context.push('/upload?profileId=${widget.profileId}');
+    if (!mounted) return;
+    refreshProfileWork(ref, profileId: widget.profileId);
   }
 
   @override
@@ -66,10 +69,6 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
       }
     }
 
-    final attemptCount = attemptsAsync.valueOrNull?.length ?? 0;
-    final atCap =
-        attemptCount >= AttemptDraftController.kMaxAttemptsPerJob;
-
     return Scaffold(
       backgroundColor: AppTheme.darkBg,
       appBar: AppBar(
@@ -85,25 +84,6 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
           style: const TextStyle(
               fontSize: 18, fontWeight: FontWeight.w700, color: _ink),
         ),
-        actions: [
-          TextButton.icon(
-            onPressed: _startAttempt,
-            icon: Icon(
-              atCap ? CupertinoIcons.exclamationmark_circle : CupertinoIcons.plus,
-              size: 16,
-              color: atCap ? const Color(0xFFFBBF24) : _accent,
-            ),
-            label: Text(
-              atCap
-                  ? 'Max ${AttemptDraftController.kMaxAttemptsPerJob} attempts'
-                  : 'Add to Existing Profile',
-              style: TextStyle(
-                  color: atCap ? const Color(0xFFFBBF24) : _accent,
-                  fontWeight: FontWeight.w700,
-                  fontSize: 13),
-            ),
-          ),
-        ],
       ),
       body: attemptsAsync.when(
         loading: () => ListView.builder(
@@ -123,11 +103,25 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
           ]),
         ),
         data: (attempts) {
-          return CustomScrollView(
-            slivers: [
+          return RefreshIndicator(
+            color: _accent,
+            onRefresh: () async {
+              refreshProfileWork(ref, profileId: widget.profileId);
+              await ref.read(
+                  profileAttemptsProvider(widget.profileId).future);
+            },
+            child: CustomScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              slivers: [
               // ── Profile-specific information (above attempts) ───────────
               SliverToBoxAdapter(
                 child: _buildProfileInfo(profile, attempts.length),
+              ),
+              SliverToBoxAdapter(
+                child: _buildAttemptActions(
+                  atCap: attempts.length >=
+                      AttemptDraftController.kMaxAttemptsPerJob,
+                ),
               ),
               SliverToBoxAdapter(
                 child: _buildAddressesSection(context, profile),
@@ -144,37 +138,53 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                 ),
               const SliverToBoxAdapter(child: SizedBox(height: 40)),
             ],
+            ),
           );
         },
       ),
     );
   }
 
+  Widget _buildAttemptActions({required bool atCap}) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: IntrinsicWidth(
+          child: GestureDetector(
+            onTap: atCap ? null : _startAttempt,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
+              decoration: BoxDecoration(
+                color: atCap ? const Color(0xFFE3E7EE) : _accent,
+                borderRadius: BorderRadius.circular(24),
+              ),
+              alignment: Alignment.center,
+              child: Text(
+                atCap ? 'Max attempts' : 'Add Attempt',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: atCap ? _muted : Colors.white,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildProfileInfo(ProfileModel? profile, int attemptCount) {
-    final company = companyById(profile?.company);
+    if (profile == null) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (company != null) ...[
-            Text(company.name,
-                style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: _muted)),
-            const SizedBox(height: 4),
-            Text(company.email,
-                style: const TextStyle(fontSize: 12, color: _muted)),
-            const SizedBox(height: 4),
-            Text(
-              '${company.attemptsForDiligence} diligence attempts · '
-              '${company.payoutScheduleDescription}',
-              style: const TextStyle(fontSize: 12, color: _muted),
-            ),
-            const SizedBox(height: 6),
-          ],
-          if (profile?.isAwaitingAttempt == true) ...[
+          ProfileFactsCard(profile: profile),
+          if (profile.isAwaitingAttempt) ...[
+            const SizedBox(height: 10),
             Container(
               padding:
                   const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -188,11 +198,12 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                       fontWeight: FontWeight.w700,
                       color: AppTheme.warning)),
             ),
-            const SizedBox(height: 10),
           ],
-          if (profile?.note?.isNotEmpty == true)
-            Text(profile!.note!,
+          if (profile.note?.isNotEmpty == true) ...[
+            const SizedBox(height: 10),
+            Text(profile.note!,
                 style: const TextStyle(fontSize: 13, color: _muted)),
+          ],
         ],
       ),
     );
@@ -298,7 +309,7 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                   fontSize: 15, fontWeight: FontWeight.w700, color: _ink)),
           const Spacer(),
           Text(
-            '$count Attempt${count == 1 ? '' : 's'}',
+            '$count of ${AttemptDraftController.kMaxAttemptsPerJob} attempts',
             style: const TextStyle(fontSize: 13, color: _muted),
           ),
         ],
@@ -324,23 +335,9 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                   fontSize: 15, fontWeight: FontWeight.w700, color: _ink)),
           const SizedBox(height: 6),
           const Text(
-            'Add an attempt to this profile — only attempt details will be collected.',
+            'Profile details stay pre-filled. Add the remaining attempt fields next.',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 13, color: _muted, height: 1.35),
-          ),
-          const SizedBox(height: 18),
-          ElevatedButton.icon(
-            onPressed: _startAttempt,
-            icon: const Icon(CupertinoIcons.plus, size: 16),
-            label: const Text('Add to Existing Profile'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: _accent,
-              foregroundColor: Colors.white,
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
-            ),
           ),
         ],
       ),
@@ -421,51 +418,122 @@ class _AttemptRow extends StatelessWidget {
   final Attempt attempt;
   final VoidCallback onTap;
 
-  static const Color _ink = AppTheme.lightText;
-  static const Color _muted = AppTheme.lightTextSecondary;
+  static const Color _ink = Color(0xFF1A2130);
+  static const Color _muted = Color(0xFF5C6778);
+  static const Color _subtle = Color(0xFF8B95A5);
+  static const Color _thumbBg = Color(0xFFE8EDF3);
 
   @override
   Widget build(BuildContext context) {
+    final outcome = attempt.statusOption;
+    final fileNo = (attempt.fileNumber ?? '').trim();
+    final notes = (attempt.note ?? '').trim();
+    final thumb = attempt.primaryPhoto?.imageUrl.trim() ?? '';
+
     return InkWell(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 14, 10, 14),
+        padding: const EdgeInsets.fromLTRB(12, 12, 10, 12),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: SizedBox(
+                width: 56,
+                height: 56,
+                child: thumb.isEmpty
+                    ? const ColoredBox(
+                        color: _thumbBg,
+                        child: Icon(CupertinoIcons.photo,
+                            size: 22, color: _subtle),
+                      )
+                    : CachedNetworkImage(
+                        imageUrl: thumb,
+                        fit: BoxFit.cover,
+                        placeholder: (_, __) => const ColoredBox(
+                          color: _thumbBg,
+                          child: Center(
+                            child: SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                          ),
+                        ),
+                        errorWidget: (_, __, ___) => const ColoredBox(
+                          color: _thumbBg,
+                          child: Icon(CupertinoIcons.photo,
+                              size: 22, color: _subtle),
+                        ),
+                      ),
+              ),
+            ),
+            const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    attempt.title,
-                    style: const TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                        color: _ink),
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: outcome.softColor,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          outcome.label,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                            color: outcome.color,
+                          ),
+                        ),
+                      ),
+                      if (fileNo.isNotEmpty) ...[
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'File $fileNo',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: _ink,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
-                  const SizedBox(height: 4),
+                  const SizedBox(height: 6),
                   Text(
-                    attempt.noteSnippet,
+                    notes.isEmpty ? 'No notes' : notes,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 13, color: _muted, height: 1.35),
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: notes.isEmpty ? _subtle : _muted,
+                      height: 1.35,
+                    ),
                   ),
                   if (attempt.displayTimestamp.isNotEmpty) ...[
-                    const SizedBox(height: 6),
+                    const SizedBox(height: 5),
                     Text(
                       attempt.displayTimestamp,
-                      style: const TextStyle(fontSize: 12, color: _muted),
+                      style: const TextStyle(fontSize: 12, color: _subtle),
                     ),
                   ],
                 ],
               ),
             ),
             const Padding(
-              padding: EdgeInsets.only(top: 4, left: 8),
+              padding: EdgeInsets.only(top: 4, left: 6),
               child: Icon(CupertinoIcons.chevron_right,
-                  size: 16, color: _muted),
+                  size: 16, color: _subtle),
             ),
           ],
         ),

@@ -11,6 +11,7 @@ import '../../../data/models/profile_model.dart';
 import '../../providers/location_provider.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
+import '../../widgets/ai/voice_mic_button.dart';
 import '../../widgets/common/loading_skeleton.dart';
 
 class ProfilesListScreen extends ConsumerStatefulWidget {
@@ -40,11 +41,11 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
   void _openCreateProfile() => context.push('/profiles-management');
 
   // ── Design tokens ─────────────────────────────────────────────────────────
-  static const Color _grayBg   = Color(0xFF1C222E);
-  static const Color _grayText = Color(0xFF94A3B8);
-  static const Color _graySubtle = Color(0xFF6B7A8D);
+  static const Color _grayBg   = Color(0xFFFFFFFF);
+  static const Color _grayText = Color(0xFF5C6778);
+  static const Color _graySubtle = Color(0xFF8B95A5);
   static const Color _accent   = Color(0xFF4A90E2);
-  static const Color _border   = Color(0xFF2A3340);
+  static const Color _border   = Color(0xFFE3E7EE);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -124,7 +125,7 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
       appBar: AppBar(
         title: Text(_searchQuery.isEmpty ? 'Profiles' : 'Search results'),
         elevation: 0,
-        backgroundColor: const Color(0xFF0F1219),
+        backgroundColor: const Color(0xFFF2F4F7),
         foregroundColor: _grayText,
         actions: [
           IconButton(
@@ -233,23 +234,28 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
                       setState(() => _searchQuery = v.toLowerCase()),
                   style: const TextStyle(fontSize: 14, color: _grayText),
                   decoration: InputDecoration(
-                    hintText: 'Search by name, type or note…',
+                    hintText: 'Say a name, type or note…',
                     hintStyle:
                         const TextStyle(color: _graySubtle, fontSize: 14),
                     prefixIcon: const Icon(Icons.search_rounded,
                         size: 20, color: _graySubtle),
-                    suffixIcon: _searchQuery.isNotEmpty
-                        ? GestureDetector(
-                            onTap: () {
-                              _searchCtrl.clear();
-                              setState(() => _searchQuery = '');
-                            },
-                            child: const Icon(Icons.close_rounded,
-                                size: 18, color: _graySubtle),
-                          )
-                        : null,
+                    suffixIcon: VoiceSuffix(
+                      controller: _searchCtrl,
+                      onChanged: (v) =>
+                          setState(() => _searchQuery = v.toLowerCase()),
+                      extra: _searchQuery.isNotEmpty
+                          ? GestureDetector(
+                              onTap: () {
+                                _searchCtrl.clear();
+                                setState(() => _searchQuery = '');
+                              },
+                              child: const Icon(Icons.close_rounded,
+                                  size: 18, color: _graySubtle),
+                            )
+                          : null,
+                    ),
                     filled: true,
-                    fillColor: const Color(0xFF242B38),
+                    fillColor: const Color(0xFFEEF1F5),
                     contentPadding: const EdgeInsets.symmetric(
                         horizontal: 16, vertical: 12),
                     border: OutlineInputBorder(
@@ -366,7 +372,7 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
 
     return Container(
       decoration: BoxDecoration(
-        color: const Color(0xFF1C222E),
+        color: const Color(0xFFFFFFFF),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: _border, width: 1),
         boxShadow: [
@@ -504,8 +510,31 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
                   ),
                 ] else ...[
                   const SizedBox(width: 8),
-                  const Icon(Icons.chevron_right_rounded,
-                      size: 24, color: _border),
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      OutlinedButton(
+                        onPressed: () => context.push(
+                            '/upload?profileId=${profile.id}'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: _accent,
+                          side: BorderSide(
+                              color: _accent.withValues(alpha: 0.4)),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 8),
+                          minimumSize: Size.zero,
+                        ),
+                        child: const Text('Add Attempt',
+                            style: TextStyle(fontSize: 12)),
+                      ),
+                      TextButton(
+                        onPressed: () =>
+                            context.push('/profile/${profile.id}'),
+                        child: const Text('View Attempts',
+                            style: TextStyle(fontSize: 11)),
+                      ),
+                    ],
+                  ),
                 ],
               ],
             ),

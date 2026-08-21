@@ -6,13 +6,14 @@ import 'package:go_router/go_router.dart';
 
 import '../../../config/theme.dart';
 import '../../../core/utils/location_service.dart';
+import '../../../core/utils/place_search.dart';
 import '../../../data/models/company.dart';
 import '../../../data/models/photo_model.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/location_provider.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
-import '../../widgets/common/upload_app_bar_button.dart';
+import '../../widgets/ai/voice_mic_button.dart';
 import '../upload/attempt_draft_controller.dart';
 import '../upload/attempt_limits.dart';
 
@@ -89,14 +90,17 @@ class _JobsScreenState extends ConsumerState<JobsScreen> {
     final q = _searchCtrl.text.trim().toLowerCase();
     if (q.isEmpty) return jobs;
     return jobs.where((j) {
-      final hay = [
-        j.jobId,
-        j.recipient,
-        j.address,
-        j.client ?? '',
-        j.zip,
-      ].join(' ').toLowerCase();
-      return hay.contains(q);
+      return PlaceSearch.matches(
+        query: q,
+        fields: [
+          j.recipient,
+          j.jobId,
+          j.zip,
+          j.address,
+          j.client,
+          PlaceSearch.countyOf(address: j.address, extra: j.zip),
+        ],
+      );
     }).toList();
   }
 
@@ -133,7 +137,7 @@ class _JobsScreenState extends ConsumerState<JobsScreen> {
               children: [
                 const Expanded(
                   child: Text(
-                    'Jobs',
+                    'Attempts',
                     style: TextStyle(
                       fontSize: 28,
                       fontWeight: FontWeight.w800,
@@ -149,7 +153,6 @@ class _JobsScreenState extends ConsumerState<JobsScreen> {
                   },
                   icon: const Icon(Icons.refresh_rounded, color: _muted),
                 ),
-                const UploadAppBarButton(),
               ],
             ),
           ),
@@ -194,10 +197,9 @@ class _JobsScreenState extends ConsumerState<JobsScreen> {
                     itemBuilder: (context, i) {
                       final job = jobs[i];
                       return _JobCard(
-                        jobId: job.jobId,
                         distance: _distanceLabel(job, userPos),
                         recipient: job.recipient,
-                        address: job.address,
+                        address: PlaceSearch.withoutZip(job.address),
                         client: job.client,
                         attempts: job.attemptCount,
                         atCap: job.attemptCount >=
@@ -307,7 +309,7 @@ class _SearchField extends StatelessWidget {
     return Container(
       height: 48,
       decoration: BoxDecoration(
-        color: const Color(0xE61C222E),
+        color: const Color(0xF5FFFFFF),
         borderRadius: BorderRadius.circular(24),
         border: Border.all(color: AppTheme.darkBorder),
       ),
@@ -323,7 +325,7 @@ class _SearchField extends StatelessWidget {
               controller: controller,
               style: const TextStyle(fontSize: 14, color: AppTheme.darkText),
               decoration: const InputDecoration(
-                hintText: 'Job number, recipient, zip',
+                hintText: 'Say a profile, job #, ZIP…',
                 hintStyle: TextStyle(
                     color: AppTheme.darkTextTertiary, fontSize: 14),
                 border: InputBorder.none,
@@ -332,15 +334,18 @@ class _SearchField extends StatelessWidget {
               ),
             ),
           ),
+          VoiceMicButton(controller: controller),
           if (controller.text.isNotEmpty)
             GestureDetector(
               onTap: controller.clear,
               child: const Padding(
-                padding: EdgeInsets.only(right: 12),
+                padding: EdgeInsets.only(right: 8),
                 child: Icon(Icons.close_rounded,
                     size: 18, color: AppTheme.darkTextTertiary),
               ),
-            ),
+            )
+          else
+            const SizedBox(width: 8),
         ],
       ),
     );
@@ -349,7 +354,6 @@ class _SearchField extends StatelessWidget {
 
 class _JobCard extends StatelessWidget {
   const _JobCard({
-    required this.jobId,
     required this.recipient,
     required this.address,
     required this.attempts,
@@ -360,7 +364,6 @@ class _JobCard extends StatelessWidget {
     this.atCap = false,
   });
 
-  final String jobId;
   final String? distance;
   final String recipient;
   final String address;
@@ -384,9 +387,9 @@ class _JobCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              Text(jobId,
-                  style: const TextStyle(
-                      fontSize: 13,
+              const Text('Profile',
+                  style: TextStyle(
+                      fontSize: 12,
                       fontWeight: FontWeight.w600,
                       color: AppTheme.darkTextSecondary)),
               const Spacer(),
@@ -454,20 +457,22 @@ class _JobCard extends StatelessWidget {
               Expanded(
                 child: _ActionBtn(
                   icon: atCap ? Icons.block_rounded : Icons.add_rounded,
-                  label: atCap ? 'Max attempts' : 'New Attempt',
+                  label: atCap ? 'Max attempts' : 'Add Attempt',
                   filled: !atCap,
                   onTap: onNewAttempt,
                 ),
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _ActionBtn(
-                  icon: Icons.visibility_outlined,
-                  label: 'View Job',
-                  filled: false,
-                  onTap: onViewJob,
+              if (attempts > 0) ...[
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _ActionBtn(
+                    icon: Icons.visibility_outlined,
+                    label: 'View Attempts',
+                    filled: false,
+                    onTap: onViewJob,
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
         ],
@@ -497,21 +502,21 @@ class _ActionBtn extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 13),
           decoration: BoxDecoration(
-            color: filled ? AppTheme.primary : const Color(0xFF2A3340),
+            color: filled ? AppTheme.primary : const Color(0xFFE3E7EE),
             borderRadius: BorderRadius.circular(24),
             border: filled ? null : Border.all(color: AppTheme.darkBorder),
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, size: 15, color: Colors.white),
+              Icon(icon, size: 15, color: filled ? Colors.white : AppTheme.darkText),
               const SizedBox(width: 6),
               Text(
                 label,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w700,
-                  color: Colors.white,
+                  color: filled ? Colors.white : AppTheme.darkText,
                 ),
               ),
             ],
@@ -537,7 +542,7 @@ class _EmptyState extends StatelessWidget {
                 size: 44, color: AppTheme.darkTextTertiary),
             const SizedBox(height: 12),
             Text(
-              searching ? 'No jobs match that search' : 'No jobs yet',
+              searching ? 'No attempts match that search' : 'No attempts yet',
               style: const TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w700,
@@ -547,7 +552,7 @@ class _EmptyState extends StatelessWidget {
             Text(
               searching
                   ? 'Try a job number, recipient, or ZIP.'
-                  : 'Jobs from the map show up here.',
+                  : 'Attempts from the map show up here.',
               textAlign: TextAlign.center,
               style: const TextStyle(
                   fontSize: 13, color: AppTheme.darkTextSecondary),

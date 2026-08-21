@@ -60,9 +60,9 @@ class _PhotoTrackerAppState extends ConsumerState<PhotoTrackerApp> {
 
     return MaterialApp.router(
       title: 'Geo Tag',
-      theme: AppTheme.darkTheme(themeState.accentColor),
-      darkTheme: AppTheme.darkTheme(themeState.accentColor),
-      themeMode: ThemeMode.dark,
+      theme: AppTheme.lightTheme(themeState.accentColor),
+      darkTheme: AppTheme.lightTheme(themeState.accentColor),
+      themeMode: ThemeMode.light,
       locale: locale,
       routerConfig: router,
       debugShowCheckedModeBanner: false,

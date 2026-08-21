@@ -42,8 +42,8 @@ class BottomNav extends StatelessWidget {
               children: [
                 _tab(0, Icons.home_outlined, Icons.home_rounded, 'Home',
                     accent),
-                _tab(1, Icons.work_outline_rounded, Icons.work_rounded, 'Jobs',
-                    accent),
+                _tab(1, Icons.cloud_upload_outlined, Icons.cloud_upload_rounded,
+                    'Upload', accent),
                 _tab(2, Icons.receipt_long_outlined, Icons.receipt_long_rounded,
                     'Log', accent),
                 _tab(3, Icons.payments_outlined, Icons.payments_rounded,

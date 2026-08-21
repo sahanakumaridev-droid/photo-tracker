@@ -10,11 +10,11 @@ import 'package:go_router/go_router.dart';
 class MoreScreen extends StatelessWidget {
   const MoreScreen({super.key});
 
-  static const Color _ink = Color(0xFFFFFFFF);
-  static const Color _muted = Color(0xFF94A3B8);
-  static const Color _bg = Color(0xFF0F1219);
-  static const Color _card = Color(0xFF1C222E);
-  static const Color _hair = Color(0xFF2A3340);
+  static const Color _ink = Color(0xFF1A2130);
+  static const Color _muted = Color(0xFF5C6778);
+  static const Color _bg = Color(0xFFF2F4F7);
+  static const Color _card = Color(0xFFFFFFFF);
+  static const Color _hair = Color(0xFFE3E7EE);
 
   static const List<BoxShadow> _softShadow = [
     BoxShadow(color: Color(0x0A0F172A), blurRadius: 12, offset: Offset(0, 4)),
