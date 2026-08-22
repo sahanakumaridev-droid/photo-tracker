@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -503,10 +504,7 @@ class ApiService {
     await _dio.delete('/api/recipients/$id');
   }
 
-  /// F11: generate an Excel file server-side and email to recipients.
-  /// Profile-list export. When [includePhoto] is true (manual selection) the
-  /// server embeds each profile's most recent photo (watermarked) and adds a
-  /// Photo column; false (full list) returns the same fields without the photo.
+  /// Email logged fields plus watermarked photos (no spreadsheet).
   Future<Map<String, dynamic>> exportExcel({
     required List<String> recipients,
     required List<Map<String, dynamic>> records,
@@ -520,19 +518,9 @@ class ApiService {
     return response.data as Map<String, dynamic>;
   }
 
-  /// Single-job export: a detailed Excel (one row per attempt) plus the
-  /// watermarked photo(s) attached alongside. Pass empty [recipients] to just
-  /// get the Excel back (as `file_base64`) for the OS share sheet.
-  ///
-  /// [attachments] entries: {filename, content_b64, mimetype}.
-  ///
-  /// [header] carries the Rockstar service-record header fields (service_name,
-  /// status, agent, address, completion_type, served_to). [latestOnly] tells
-  /// the server to render just the most recent note vs the full attempt log.
-  /// [photoIds] (parallel to [records]) → the server watermarks those photos
-  /// itself (reliable on any device) and either attaches them to the email or
-  /// returns them under `photos` for the share flow. Prefer this over
-  /// [attachments] (kept for backward compatibility).
+  /// Single-attempt export: logged fields in the email body plus a
+  /// timestamp/geotag photo attached. Pass empty [recipients] to get
+  /// watermarked `photos` back for the OS share sheet (no spreadsheet).
   Future<Map<String, dynamic>> exportJobExcel({
     required List<String> recipients,
     required List<Map<String, dynamic>> records,
@@ -556,6 +544,17 @@ class ApiService {
       if (baseName != null) 'base_name': baseName,
     });
     return response.data as Map<String, dynamic>;
+  }
+
+  /// PNG bytes of a photo with timestamp + geotag burned in.
+  Future<Uint8List?> getWatermarkedPhotoBytes(int photoId) async {
+    final response = await _dio.get<List<int>>(
+      '/api/photos/$photoId/watermarked',
+      options: Options(responseType: ResponseType.bytes),
+    );
+    final data = response.data;
+    if (data == null || data.isEmpty) return null;
+    return Uint8List.fromList(data);
   }
 
   /// Email a client-generated single-job PDF service record to recipients.

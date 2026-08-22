@@ -2327,9 +2327,12 @@ def _watermark_photo_png(image_path, caption_lines, max_w=300, max_h=400):
                        fill=(0, 0, 0, 160))
         y = img.height - box_h + pad
         for ln in lines:
+            bbox = draw.textbbox((0, 0), ln, font=font)
+            tw = bbox[2] - bbox[0]
+            x = max(0, (img.width - tw) / 2)
             # 2px shadow keeps white text legible on bright photos.
-            draw.text((pad + 2, y + 2), ln, fill=(0, 0, 0, 200), font=font)
-            draw.text((pad, y), ln, fill=(255, 255, 255, 255), font=font)
+            draw.text((x + 2, y + 2), ln, fill=(0, 0, 0, 200), font=font)
+            draw.text((x, y), ln, fill=(255, 255, 255, 255), font=font)
             y += line_h
     out = io.BytesIO()
     img.save(out, format="PNG")
@@ -2393,6 +2396,23 @@ def _photo_caption(ph):
     if ph.latitude is not None and ph.longitude is not None:
         lines.append(f"{ph.latitude:.6f}, {ph.longitude:.6f}")
     return lines
+
+
+def _watermarked_photo_payloads(photo_ids, max_w=1600, max_h=1600):
+    """[{filename, content_b64, mimetype}] for each photo id, timestamp +
+    geotag already burned in. Used as regular email attachments and as the
+    share-sheet payload so the spreadsheet is no longer required."""
+    payloads = []
+    for pid in photo_ids or []:
+        img_bytes = _get_watermarked_bytes(pid, max_w=max_w, max_h=max_h)
+        if not img_bytes:
+            continue
+        payloads.append({
+            "filename": f"photo_{pid}.png",
+            "content_b64": base64.b64encode(img_bytes).decode(),
+            "mimetype": "image/png",
+        })
+    return payloads
 
 
 def _get_watermarked_bytes(photo_id, max_w=800, max_h=800):
@@ -2543,11 +2563,8 @@ def _pro_email_text(intro, *, sender=None, count=None, closing=None):
 
 @app.post("/export/excel")
 async def export_excel(request: Request):
-    """Email the selected profiles to one or more recipients. A single
-    selected profile puts its fields (File Number, Name, Date & Time,
-    Priority Level, Address, Notes) and watermarked photo directly in the
-    message body — no attachment. Multiple profiles keep the existing
-    Excel-attachment flow with a link to each profile's latest photo."""
+    """Email the selected profiles to one or more recipients. Each record's
+    fields and watermarked photo go in the message body — no spreadsheet."""
     content_type = request.headers.get("content-type", "")
     if "application/json" in content_type:
         data = await request.json()
@@ -2573,27 +2590,19 @@ async def export_excel(request: Request):
     sg_api_key = os.environ.get("SENDGRID_API_KEY")
     sg_sender = os.environ.get("SENDGRID_SENDER_EMAIL")
 
-    single = len(records) == 1
-    if single:
+    # Logged fields + watermarked photos live in the email body. A spreadsheet
+    # is only generated as a fallback when outbound email isn't configured
+    # (web download). Recipients never receive an .xlsx — that was removed.
+    photo_ids = [r["photo_id"] for r in records if r.get("photo_id") is not None]
+    body_html = _build_records_export_html(records)
+    body_text = None
+    file_bytes, fname = _build_xlsx_with_photos(records)
+    b64 = base64.b64encode(file_bytes).decode()
+    if len(records) == 1:
         rec = records[0]
         subject = f"GeoTagging CRM — {rec.get('name') or 'Profile'} Export"
-        body_html = _build_records_export_html(records)
-        body_text = None
-        file_bytes = fname = b64 = None
-        photo_ids = [rec["photo_id"]] if rec.get("photo_id") is not None else []
     else:
-        # Every export row gets a link to its (watermarked) photo — no
-        # distinction between a hand-picked selection and the full list.
-        file_bytes, fname = _build_xlsx_with_photos(records)
-        b64 = base64.b64encode(file_bytes).decode()
         subject = f"GeoTagging CRM — Profiles Export ({len(records)} records)"
-        intro = (f"Please find attached the profiles export you requested from "
-                 f"GeoTagging CRM, containing {len(records)} profiles with the "
-                 f"most recent photo for each profile.")
-        body_html = _pro_email_html(intro, sender=sg_sender or smtp_user,
-                                    count=len(records))
-        body_text = _pro_email_text(intro, sender=sg_sender or smtp_user,
-                                    count=len(records))
 
     if not sg_api_key and (not smtp_host or not smtp_user):
         return {"ok": True, "message": "Email not configured — file returned",
@@ -2603,15 +2612,8 @@ async def export_excel(request: Request):
         if sg_api_key and SendGridAPIClient and Mail:
             message = Mail(from_email=sg_sender, to_emails=recipients,
                            subject=subject, html_content=body_html)
-            if single:
-                for att in _sendgrid_inline_attachments(photo_ids):
-                    message.add_attachment(att)
-            else:
-                from sendgrid.helpers.mail import Attachment, FileContent, FileName, FileType, Disposition
-                message.attachment = Attachment(
-                    FileContent(b64), FileName(fname),
-                    FileType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-                    Disposition("attachment"))
+            for att in _sendgrid_inline_attachments(photo_ids):
+                message.add_attachment(att)
             SendGridAPIClient(sg_api_key).send(message)
             return {"ok": True, "message": f"Export sent to {', '.join(recipients)}",
                     "count": len(records)}
@@ -2620,23 +2622,15 @@ async def export_excel(request: Request):
             msg["Subject"] = subject
             msg["From"] = smtp_user
             msg["To"] = ", ".join(recipients)
-            # `related` holds the HTML + any inline (cid:) images so mail
-            # clients associate them; `mixed` holds that plus any attachment.
             related = MIMEMultipart("related")
             alt = MIMEMultipart("alternative")
             if body_text:
                 alt.attach(MIMEText(body_text, "plain"))
             alt.attach(MIMEText(body_html, "html"))
             related.attach(alt)
-            if single:
-                for part in _smtp_inline_photo_parts(photo_ids):
-                    related.attach(part)
+            for part in _smtp_inline_photo_parts(photo_ids):
+                related.attach(part)
             msg.attach(related)
-            if not single:
-                from email.mime.application import MIMEApplication
-                part = MIMEApplication(file_bytes, _subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                part.add_header("Content-Disposition", "attachment", filename=fname)
-                msg.attach(part)
             with smtplib.SMTP(smtp_host, smtp_port) as server:
                 server.starttls()
                 server.login(smtp_user, smtp_pass)
@@ -2682,6 +2676,8 @@ def _build_records_export_html(records):
             ("Priority Level", _esc(rec.get("priority_level")) or "—"),
             ("Address",        _esc(rec.get("address")) or "—"),
         ]
+        if rec.get("coordinates"):
+            rows.append(("Lat / Long", _esc(rec.get("coordinates"))))
         rows_html = "".join(
             f'<tr><td style="padding:2px 12px 2px 0;color:#64748b;white-space:nowrap;">'
             f'{label}:</td><td style="padding:2px 0;color:#0f172a;font-weight:600;">'
@@ -2736,6 +2732,7 @@ def _build_service_record_html(records, header=None, latest_only=False,
         ("Date & Time",    hv("date_time", "date_time")),
         ("Priority Level", hv("priority_level", "service_ordered", "Standard")),
         ("Address",        hv("address", "address")),
+        ("Lat / Long",     hv("coordinates", "coordinates")),
     ]
     header_html = "".join(
         f'<tr><td style="padding:2px 12px 2px 0;color:#64748b;white-space:nowrap;">'
@@ -2842,14 +2839,13 @@ def _build_job_xlsx_with_photos(records, photo_ids, base_name="service-record"):
 
 @app.post("/export/job")
 async def export_job(request: Request):
-    """Single-job export: a detailed one-sheet Excel (one row per attempt, with
-    coordinates / status / agent) plus the watermarked photo(s) attached
-    alongside in the same email, with a Rockstar-style service-record HTML body.
-    JSON body only (mobile).
+    """Single-attempt export: email the logged fields plus a picture with
+    timestamp and geotag burned in (inline in the body and attached as a
+    PNG). Spreadsheets are not emailed — the client asked that removed.
 
-    With no recipients (or when email isn't configured) the Excel is returned as
-    base64 so the app can hand it to the OS share sheet together with the photos
-    it already holds locally.
+    With no recipients (or when email isn't configured) watermarked photos
+    are returned as base64 for the OS share sheet. An .xlsx is still
+    generated in that fallback only, for the web download path.
     """
     data = await request.json()
     recipients = data.get("recipients") or ([data["to"]] if data.get("to") else [])
@@ -2857,28 +2853,21 @@ async def export_job(request: Request):
     records = data.get("records", [])
     # attachments: [{"filename", "content_b64", "mimetype"}] — legacy client photos.
     attachments = data.get("attachments", [])
-    # Preferred path: the client sends photo_ids (parallel to records) and the
-    # server watermarks + EMBEDS each photo directly in the .xlsx (Photo column),
-    # so the picture shows inside the spreadsheet. No separate photo attachments
-    # are needed in that case.
     photo_ids = data.get("photo_ids") or []
     subject = (data.get("subject") or "Service Record").strip()
     latest_only = bool(data.get("latest_only"))
-    # This export is always for a single profile/job — show just the one
-    # (most recent) photo inline in the email body, not every attempt's.
     html_body = _build_service_record_html(
         records, data.get("header"), latest_only,
         photo_id=photo_ids[0] if photo_ids else None)
 
     base_name = data.get("base_name") or "service-record"
-    if photo_ids:
-        file_bytes, fname = _build_job_xlsx_with_photos(
-            records, photo_ids, base_name=base_name)
-        attachments = []  # photos are embedded in the sheet
-    else:
-        file_bytes, fname = _build_xlsx(
-            records, _EXPORT_COLUMNS_JOB, sheet_title="Service Record",
-            base_name=base_name)
+    photo_payloads = _watermarked_photo_payloads(photo_ids)
+    if not photo_payloads:
+        photo_payloads = [a for a in attachments if a.get("content_b64")]
+
+    file_bytes, fname = _build_xlsx(
+        records, _EXPORT_COLUMNS_JOB, sheet_title="Service Record",
+        base_name=base_name)
     xlsx_b64 = base64.b64encode(file_bytes).decode()
 
     smtp_host = os.environ.get("SMTP_HOST")
@@ -2888,59 +2877,46 @@ async def export_job(request: Request):
     sg_api_key = os.environ.get("SENDGRID_API_KEY")
     sg_sender = os.environ.get("SENDGRID_SENDER_EMAIL")
 
-    # Share flow (no recipients) or email not configured → return the file, plus
-    # the server-watermarked photos so the client can share/save them too.
     if not recipients or (not sg_api_key and (not smtp_host or not smtp_user)):
         return {"ok": True,
                 "message": ("File generated" if not recipients
                             else "Email not configured — file returned"),
                 "filename": fname, "file_base64": xlsx_b64,
-                "photos": attachments, "count": len(records)}
+                "photos": photo_payloads, "count": len(records)}
 
-    _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    # The single photo referenced by html_body's cid:photo_{id} (see above).
     inline_photo_ids = [photo_ids[0]] if photo_ids else []
     try:
         if sg_api_key and SendGridAPIClient and Mail:
             from sendgrid.helpers.mail import (
                 Attachment, FileContent, FileName, FileType, Disposition)
-            atts = [Attachment(
-                FileContent(xlsx_b64), FileName(fname),
-                FileType(_XLSX_MIME), Disposition("attachment"))]
-            for a in attachments:
-                if a.get("content_b64"):
-                    atts.append(Attachment(
-                        FileContent(a["content_b64"]),
-                        FileName(a.get("filename", "photo.jpg")),
-                        FileType(a.get("mimetype", "image/jpeg")),
-                        Disposition("attachment")))
+            atts = []
+            for a in photo_payloads:
+                atts.append(Attachment(
+                    FileContent(a["content_b64"]),
+                    FileName(a.get("filename", "photo.png")),
+                    FileType(a.get("mimetype", "image/png")),
+                    Disposition("attachment")))
             atts.extend(_sendgrid_inline_attachments(inline_photo_ids))
             message = Mail(from_email=sg_sender, to_emails=recipients,
                            subject=subject, html_content=html_body)
             message.attachment = atts
             SendGridAPIClient(sg_api_key).send(message)
         else:
-            from email.mime.application import MIMEApplication
             from email.mime.image import MIMEImage
             msg = MIMEMultipart("mixed")
             msg["Subject"] = subject
             msg["From"] = smtp_user
             msg["To"] = ", ".join(recipients)
-            # `related` holds the HTML + the inline (cid:) photo it references.
             related = MIMEMultipart("related")
             related.attach(MIMEText(html_body, "html"))
             for part in _smtp_inline_photo_parts(inline_photo_ids):
                 related.attach(part)
             msg.attach(related)
-            part = MIMEApplication(file_bytes, _subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            part.add_header("Content-Disposition", "attachment", filename=fname)
-            msg.attach(part)
-            for a in attachments:
-                if a.get("content_b64"):
-                    img = MIMEImage(base64.b64decode(a["content_b64"]))
-                    img.add_header("Content-Disposition", "attachment",
-                                   filename=a.get("filename", "photo.jpg"))
-                    msg.attach(img)
+            for a in photo_payloads:
+                img = MIMEImage(base64.b64decode(a["content_b64"]), _subtype="png")
+                img.add_header("Content-Disposition", "attachment",
+                               filename=a.get("filename", "photo.png"))
+                msg.attach(img)
             with smtplib.SMTP(smtp_host, smtp_port) as server:
                 server.starttls()
                 server.login(smtp_user, smtp_pass)

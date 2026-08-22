@@ -14,7 +14,6 @@ import '../../../config/app_config.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/utils/attempt_status.dart';
 import '../../../core/utils/category.dart';
-import '../../../core/utils/job_pdf.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../core/utils/photo_stamp.dart';
 import '../../../core/utils/text_formatters.dart';
@@ -301,36 +300,16 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
         ),
       );
 
-  // ── Single-job export: detailed Excel + watermarked photo(s) ──────────────
-  // One row per attempt (ID & Cntrl #, Date & Time, Service Ordered, Address,
-  // Lat/Long, Job Status, Agent, Detailed Notes); the watermarked photos ride
-  // along as separate attachments in the same email. Multi-job Excel export
-  // (in the Log screen) is unchanged.
-  // Options dialog removed for now — export goes straight to the share sheet
-  // with every attempt and photos included; long-press the icon to email
-  // the same record to saved recipients instead.
+  // ── Single-attempt export: email with logged data + stamped photo ─────────
+  // Tap emails saved recipients. Long-press opens the share sheet with the
+  // watermarked photo and a text summary — never an Excel spreadsheet.
   Future<void> _exportJob(PhotoModel photo, {bool email = false}) async {
-    const opts = JobExportOptions(latestOnly: false, includeImages: true);
     if (!mounted) return;
-
-    // A "job" = all attempts for the same profile, newest-first.
-    final all = ref.read(photosProvider).valueOrNull ?? const <PhotoModel>[];
-    final pid = photo.profileId;
-    final attempts = (pid == null
-        ? <PhotoModel>[photo]
-        : all.where((p) => p.profileId == pid).toList())
-      ..sort((a, b) => (b.takenAt ?? b.timestamp ?? '')
-          .compareTo(a.takenAt ?? a.timestamp ?? ''));
-    if (attempts.isEmpty) attempts.add(photo);
-
-    // Latest-only = just the most recent attempt; otherwise every attempt.
-    final selected = opts.latestOnly ? attempts.take(1).toList() : attempts;
-    final total = attempts.length;
 
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(
-        content: Text('Building service record…'),
+      ..showSnackBar(SnackBar(
+        content: Text(email ? 'Preparing export…' : 'Preparing photo…'),
         behavior: SnackBarBehavior.floating,
       ));
 
@@ -340,27 +319,18 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
           ? agentEmail.split('@').first
           : (agentEmail ?? '');
 
-      final records = <Map<String, dynamic>>[];
-      // Photo ids (parallel to records) — the SERVER watermarks these reliably
-      // (device image codecs can't decompress some photos). No client fetch or
-      // baking here.
-      final photoIds = <int>[];
-
-      for (final p in selected) {
-        // Chronological attempt number (#1 = earliest) within the full job.
-        final attemptNo = total - attempts.indexOf(p);
-        records.add(_jobRecord(p, attemptNo, agentName));
-        if (opts.includeImages) photoIds.add(p.id);
-      }
-
+      final records = <Map<String, dynamic>>[
+        _jobRecord(photo, 1, agentName),
+      ];
+      final photoIds = <int>[photo.id];
+      final header = _jobHeader(photo, agentName);
       final safeName = (photo.profileName ?? 'job')
           .replaceAll(RegExp(r'[^A-Za-z0-9_-]+'), '_');
-      final baseName = 'service-record-$safeName';
+      final baseName = 'attempt-$safeName';
 
       if (!mounted) return;
       if (email) {
-        await _emailJobRecord(photo, records, photoIds, baseName,
-            _jobHeader(photo, agentName), opts.latestOnly);
+        await _emailJobRecord(photo, records, photoIds, baseName, header, true);
       } else {
         await _shareJobRecord(photo, records, photoIds, baseName);
       }
@@ -442,11 +412,12 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
       'date_time': dateTime,
       'priority_level': categoryLabel(photo.category ?? photo.serviceType),
       'address': _streetZip(address: photo.address, zipCode: photo.zipCode),
+      'coordinates':
+          '${photo.latitude.toStringAsFixed(6)}, ${photo.longitude.toStringAsFixed(6)}',
     };
   }
 
-  /// Emails the Excel + photo attachments to chosen recipients (Dispatch /
-  /// client), after letting the user pick from saved recipients + a one-off.
+  /// Emails logged data + the stamped photo (no spreadsheet).
   Future<void> _emailJobRecord(
     PhotoModel photo,
     List<Map<String, dynamic>> records,
@@ -525,9 +496,8 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
     return Rect.fromLTWH(screen.width / 2 - 20, screen.height - 120, 40, 40);
   }
 
-  /// Builds the Excel server-side (no recipients) and hands it to the OS share
-  /// sheet together with the server-watermarked photos it returns under
-  /// `photos`.
+  /// Share the watermarked photo plus a text summary of the logged fields.
+  /// Never includes a spreadsheet.
   Future<void> _shareJobRecord(
     PhotoModel photo,
     List<Map<String, dynamic>> records,
@@ -540,20 +510,12 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
       records: records,
       photoIds: photoIds,
       baseName: baseName,
+      header: _jobHeader(photo, ''),
+      latestOnly: true,
     );
     if (!mounted) return;
 
     final files = <XFile>[];
-    final b64 = res['file_base64'] as String?;
-    if (b64 != null) {
-      files.add(XFile.fromData(
-        base64Decode(b64),
-        name: (res['filename'] as String?) ?? '$baseName.xlsx',
-        mimeType:
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      ));
-    }
-    // Server-watermarked photos returned for the share flow.
     final photos = (res['photos'] as List?) ?? const [];
     for (final a in photos) {
       final m = (a as Map).cast<String, dynamic>();
@@ -565,12 +527,52 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
         mimeType: m['mimetype'] as String? ?? 'image/png',
       ));
     }
-    if (files.isEmpty) return;
+    if (files.isEmpty) {
+      for (final id in photoIds) {
+        try {
+          final bytes = await api.getWatermarkedPhotoBytes(id);
+          if (bytes == null || bytes.isEmpty) continue;
+          files.add(XFile.fromData(
+            bytes,
+            name: 'attempt_$id.png',
+            mimeType: 'image/png',
+          ));
+        } catch (_) {}
+      }
+    }
+    if (files.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(
+          content: Text('Could not attach the photo for sharing.'),
+          behavior: SnackBarBehavior.floating,
+        ));
+      return;
+    }
+
+    final rec = records.isNotEmpty ? records.first : <String, dynamic>{};
+    final lines = <String>[
+      if ((rec['name'] as String?)?.isNotEmpty == true) rec['name'] as String,
+      if ((rec['file_number'] as String?)?.isNotEmpty == true)
+        'File: ${rec['file_number']}',
+      if ((rec['date_time'] as String?)?.isNotEmpty == true)
+        rec['date_time'] as String,
+      if ((rec['priority_level'] as String?)?.isNotEmpty == true)
+        rec['priority_level'] as String,
+      if ((rec['address'] as String?)?.isNotEmpty == true)
+        rec['address'] as String,
+      if ((rec['coordinates'] as String?)?.isNotEmpty == true)
+        rec['coordinates'] as String,
+      if ((rec['detailed_notes'] as String?)?.isNotEmpty == true)
+        rec['detailed_notes'] as String,
+    ];
 
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
     await Share.shareXFiles(
       files,
-      subject: 'Service Record — ${photo.profileName ?? ''}',
+      subject: 'Attempt — ${photo.profileName ?? ''}',
+      text: lines.join('\n'),
       sharePositionOrigin: _shareOrigin(),
     );
   }
@@ -956,13 +958,13 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
               // Export this job as a PDF service record — tap to share,
               // long-press to email saved recipients instead.
               GestureDetector(
-                onLongPress: () => _exportJob(photo, email: true),
+                onLongPress: () => _exportJob(photo),
                 child: IconButton(
                   icon: const Icon(Icons.ios_share_rounded,
                       color: Colors.white),
                   tooltip:
-                      'Export service record (PDF) — long-press to email',
-                  onPressed: () => _exportJob(photo),
+                      'Email this attempt — long-press to share the photo',
+                  onPressed: () => _exportJob(photo, email: true),
                 ),
               ),
               // Edit photo

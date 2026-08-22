@@ -76,9 +76,8 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     });
   }
 
-  // Sends the selected entries via `/api/export/excel`, which already routes
-  // correctly: a single selected record goes in the email body, multiple go
-  // as an Excel attachment (see backend `export_excel`).
+  // Sends the selected entries via `/api/export/excel`: logged fields plus
+  // a timestamp/geotag photo in the email — no spreadsheet.
   Future<void> _sendSelected(List<LogEntryModel> allLogs) async {
     final chosen =
         allLogs.where((l) => _selectedLogIds.contains(l.id)).toList();
@@ -314,12 +313,12 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
         builder: (ctx, ss) => AlertDialog(
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Text('Export Excel'),
+          title: const Text('Email export'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('${logs.length} record(s) → .xlsx',
+              Text('${logs.length} record(s) with photo',
                   style: const TextStyle(fontSize: 13, color: _inkMuted)),
               const SizedBox(height: 12),
               if (recipients.isEmpty)
@@ -401,7 +400,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
       return;
     }
 
-    _showSnack('Generating Excel…');
+    _showSnack('Sending export email…');
     try {
       // Profile-list export schema (matches backend _EXPORT_COLUMNS_LIST):
       // file_number | name | date_time | priority_level | address | notes
@@ -429,7 +428,9 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
           'priority_level': categoryLabel(log.category),
           'address': _streetZip(log),
           'notes': log.note ?? '',
-          'photo_id': log.id, // every export links to the latest photo
+          'coordinates':
+              '${log.latitude.toStringAsFixed(6)}, ${log.longitude.toStringAsFixed(6)}',
+          'photo_id': log.id,
         };
         return rec;
       }).toList();
@@ -439,10 +440,10 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
           includePhoto: true);
       if (!mounted) return;
       _showSnack(result['file_base64'] != null
-          ? 'Email not configured — Excel generated on server'
-          : '✓ Excel sent to ${selected.length} recipient(s)');
+          ? 'Email isn\'t set up on the server yet.'
+          : '✓ Export emailed to ${selected.length} recipient(s)');
     } catch (e) {
-      if (mounted) _showSnack('Excel export failed: $e');
+      if (mounted) _showSnack('Export failed: $e');
     }
   }
 
@@ -854,9 +855,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                 ),
               ),
               // ── Send selected — only while selecting, and only once
-              // something is chosen. Routes through `_sendSelected`, which
-              // sends a single record as an email body or multiple as an
-              // Excel attachment (see backend `export_excel`).
+              // something is chosen. Emails logged data + photo.
               if (_selectionMode && _selectedLogIds.isNotEmpty)
                 GestureDetector(
                   onTap: () => _sendSelected(logs),

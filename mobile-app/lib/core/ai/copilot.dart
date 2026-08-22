@@ -77,7 +77,8 @@ CopilotAction answerCopilot(String raw, CopilotContext ctx) {
   if (_any(l, ['log', 'export', 'excel', 'sheet'])) {
     return const CopilotAction(
       text: 'Log lists today’s work. Tap a card to open it. Long-press to '
-          'export one record, or Select for a multi-record Excel export.',
+          'export one record as an email with the photo attached, or Select '
+          'to email several records.',
       route: '/log',
     );
   }
