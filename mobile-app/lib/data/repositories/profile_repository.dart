@@ -5,6 +5,8 @@ import 'package:dio/dio.dart';
 import 'package:photo_tracker/data/models/company.dart' show Company;
 
 import '../../core/storage/api_cache.dart';
+import '../../core/storage/local_storage.dart';
+import '../../core/utils/file_number.dart';
 import '../models/attempt.dart';
 import '../models/photo_model.dart';
 import '../models/profile_model.dart';
@@ -24,7 +26,8 @@ class ProfileRepository {
         final list = response.data as List;
         unawaited(ApiCache.write(_cacheKey, jsonEncode(list)));
         return list
-            .map((p) => ProfileModel.fromJson(p as Map<String, dynamic>))
+            .map((p) => _hydrateFileNumber(
+                ProfileModel.fromJson(p as Map<String, dynamic>)))
             .toList();
       }
       return [];
@@ -32,7 +35,8 @@ class ProfileRepository {
       final cached = ApiCache.read(_cacheKey);
       if (cached != null) {
         return (jsonDecode(cached) as List)
-            .map((p) => ProfileModel.fromJson(p as Map<String, dynamic>))
+            .map((p) => _hydrateFileNumber(
+                ProfileModel.fromJson(p as Map<String, dynamic>)))
             .toList();
       }
       throw _handleError(e);
@@ -49,6 +53,7 @@ class ProfileRepository {
     String? company,
     int? payRate,
     String? deliveryStyle,
+    String? fileNumber,
     String? status,
     String? address,
     String? city,
@@ -67,6 +72,8 @@ class ProfileRepository {
           if (payRate != null) 'pay_rate': payRate,
           if (deliveryStyle != null && deliveryStyle.isNotEmpty)
             'delivery_style': deliveryStyle,
+          if (fileNumber != null && fileNumber.isNotEmpty)
+            'file_number': fileNumber,
           'status': status,
           'address': address,
           'city': city,
@@ -76,7 +83,24 @@ class ProfileRepository {
           'longitude': longitude,
         },
       );
-      return ProfileModel.fromJson(response.data);
+      var profile = ProfileModel.fromJson(
+        response.data as Map<String, dynamic>,
+      );
+      final submitted = (fileNumber ?? '').trim();
+      if (submitted.isNotEmpty && (profile.fileNumber ?? '').trim().isEmpty) {
+        try {
+          await _dio.patch(
+            '/api/profiles/${profile.id}',
+            data: {'file_number': submitted},
+          );
+        } catch (_) {}
+        profile = profile.copyWith(fileNumber: submitted);
+      }
+      final stored = (profile.fileNumber ?? submitted).trim();
+      if (stored.isNotEmpty) {
+        unawaited(LocalStorage.saveProfileFileNumber(profile.id, stored));
+      }
+      return _hydrateFileNumber(profile, submitted: submitted);
     } on DioException catch (e) {
       throw _handleError(e);
     }
@@ -93,6 +117,7 @@ class ProfileRepository {
     String? note,
     int? payRate,
     String? deliveryStyle,
+    String? fileNumber,
     String? status,
     String? address,
     String? city,
@@ -111,7 +136,8 @@ class ProfileRepository {
           if (note != null) 'note': note,
           if (payRate != null) 'pay_rate': payRate,
           if (deliveryStyle != null) 'delivery_style': deliveryStyle,
-          'status': status,
+          if (fileNumber != null) 'file_number': fileNumber,
+          if (status != null) 'status': status,
           'address': address,
           'city': city,
           'state': state,
@@ -119,6 +145,20 @@ class ProfileRepository {
           'latitude': latitude,
           'longitude': longitude,
         },
+      );
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  Future<void> setProfileStatus({
+    required int profileId,
+    required String status,
+  }) async {
+    try {
+      await _dio.patch(
+        '/api/profiles/$profileId',
+        data: {'status': status},
       );
     } on DioException catch (e) {
       throw _handleError(e);
@@ -159,7 +199,44 @@ class ProfileRepository {
       if (response.data is Map) {
         final data = response.data as Map<String, dynamic>;
         final rows = data['attempts'];
-        if (rows is List) return attemptsFromJsonList(rows);
+        if (rows is List) {
+          var attempts = attemptsFromJsonList(rows);
+          final rawProfile = data['profile'];
+          if (rawProfile is Map<String, dynamic>) {
+            final profile = _hydrateFileNumber(
+              ProfileModel.fromJson(rawProfile),
+            );
+            final pfn = (profile.fileNumber ?? '').trim();
+            if (pfn.isNotEmpty) {
+              attempts = [
+                for (final a in attempts)
+                  isAbsentFileNumber(a.fileNumber)
+                      ? Attempt(
+                          id: a.id,
+                          photos: a.photos,
+                          profileId: a.profileId,
+                          profileName: a.profileName,
+                          attemptStatus: a.attemptStatus,
+                          completionType: a.completionType,
+                          note: a.note,
+                          takenAt: a.takenAt,
+                          timestamp: a.timestamp,
+                          address: a.address,
+                          category: a.category,
+                          fileNumber: pfn,
+                          status: a.status,
+                          latitude: a.latitude,
+                          longitude: a.longitude,
+                          servedTo: a.servedTo,
+                          relationTo: a.relationTo,
+                          payRate: a.payRate,
+                        )
+                      : a,
+              ];
+            }
+          }
+          return attempts;
+        }
       }
       // Fallback to legacy photos endpoint.
       final photos = await getProfilePhotos(profileId);
@@ -193,6 +270,18 @@ class ProfileRepository {
     }
   }
 
+  ProfileModel _hydrateFileNumber(ProfileModel p, {String? submitted}) {
+    var fn = (p.fileNumber ?? '').trim();
+    if (fn.isEmpty) fn = (submitted ?? '').trim();
+    if (fn.isEmpty) {
+      fn = LocalStorage.fileNumberForProfile(p.id) ?? '';
+    }
+    if (fn.isEmpty) return p;
+    unawaited(LocalStorage.saveProfileFileNumber(p.id, fn));
+    if (fn == (p.fileNumber ?? '').trim()) return p;
+    return p.copyWith(fileNumber: fn);
+  }
+
   Exception _handleError(DioException e) {
     if (e.response != null) {
       final statusCode = e.response!.statusCode ?? 0;
@@ -203,6 +292,7 @@ class ProfileRepository {
         case 401: return Exception('Session expired. Please log in again.');
         case 403: return Exception('You don\'t have permission to do that.');
         case 404: return Exception(detail ?? 'Profile not found.');
+        case 409: return Exception(detail ?? 'This file number already exists');
         case 422: return Exception(detail ?? 'Invalid data. Please check your input.');
         case 500:
         case 502:

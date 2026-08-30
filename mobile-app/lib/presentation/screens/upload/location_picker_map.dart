@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../../../config/map_tiles.dart';
 import '../../../core/utils/location_service.dart';
 import '../../widgets/ai/voice_mic_button.dart';
 
@@ -268,14 +269,7 @@ class _LocationPickerMapState extends State<LocationPickerMap> {
             },
           ),
           children: [
-            TileLayer(
-              urlTemplate:
-                  'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-              subdomains: const ['a', 'b', 'c', 'd'],
-              retinaMode: false,
-              tileSize: 256,
-              userAgentPackageName: 'com.example.photo_tracker',
-            ),
+            AppMapTiles.layer(),
           ],
         ),
 

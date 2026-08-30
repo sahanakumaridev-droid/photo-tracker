@@ -52,9 +52,9 @@ function photoIcon(imageUrl, serviceType) {
   return L.divIcon({ html, className: '', iconSize: [48, 68], iconAnchor: [24, 68], popupAnchor: [0, -72] })
 }
 
-// Soft map tile — CartoDB Positron (whites, greys, blues)
-const MAP_TILE = 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'
-const MAP_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+// OpenStreetMap — Carto's public light_all tiles now watermark "API KEY REQUIRED"
+const MAP_TILE = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
+const MAP_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
 
 function MapClickHandler({ onMapClick }) {
   useMapEvents({ click: e => onMapClick(e.latlng.lat, e.latlng.lng) })

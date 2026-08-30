@@ -3,10 +3,12 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../../core/storage/upload_queue.dart';
 import '../../../core/utils/category.dart';
+import '../../../core/utils/file_number.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../core/utils/photo_stamp.dart';
 import '../../../core/utils/text_formatters.dart';
@@ -70,23 +72,13 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
   // as a watermark and baked into the image on upload.
   String? _takenAt;
   final _noteCtrl = TextEditingController();
-  final _fileNumberCtrl = TextEditingController();
   bool _uploading = false;
   String? _error;
   final _picker = ImagePicker();
 
   @override
-  void initState() {
-    super.initState();
-    // File Number is required — the submit button's enabled state depends on
-    // it, so it needs to rebuild live as the user types.
-    _fileNumberCtrl.addListener(() => setState(() {}));
-  }
-
-  @override
   void dispose() {
     _noteCtrl.dispose();
-    _fileNumberCtrl.dispose();
     super.dispose();
   }
 
@@ -115,31 +107,50 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
   }
 
   Future<void> _upload() async {
-    final fileNumber = _fileNumberCtrl.text.trim();
     if (_pickedFile == null || _selectedProfile == null) return;
-    if (fileNumber.isEmpty) {
-      setState(() => _error = 'Please enter a file number');
-      return;
-    }
+    final fromProfile = inheritedFileNumber(
+      profileFileNumber: _selectedProfile!.fileNumber,
+      attemptFileNumber: null,
+    );
+    final fileNumber = fromProfile.isNotEmpty ? fromProfile : kFileNumberNA;
     HapticFeedback.mediumImpact();
     setState(() { _uploading = true; _error = null; });
+    final gps = await LocationService.getCurrentLocation() ??
+        await Geolocator.getLastKnownPosition();
+    if (!mounted) return;
+    if (gps == null) {
+      setState(() {
+        _uploading = false;
+        _error = 'Could not read your GPS. Enable location and try again.';
+      });
+      return;
+    }
+    final jobLat = _selectedProfile!.latitude ?? widget.lat;
+    final jobLng = _selectedProfile!.longitude ?? widget.lng;
+    if (LocationService.usableCoordinates(jobLat, jobLng)) {
+      final ft = LocationService.distanceFeet(
+        gps.latitude, gps.longitude, jobLat, jobLng,
+      );
+      if (ft > _kProfileProximityFt) {
+        setState(() {
+          _uploading = false;
+          _error =
+              'You are ${ft >= 5280 ? '${(ft / 5280).toStringAsFixed(1)} mi' : '${ft.round()} ft'} '
+              'from this job. Log an attempt only within ${_kProfileProximityFt.toInt()} feet.';
+        });
+        return;
+      }
+    }
     final takenAt = _takenAt ?? DateTime.now().toUtc().toIso8601String();
     final note = _noteCtrl.text.trim().isEmpty ? null : _noteCtrl.text.trim();
     final svc = _selectedCategory;
-    // Upload the ORIGINAL photo. The watermark caption is drawn as a display
-    // overlay in the feed/detail screens and re-baked at export time, so baking
-    // on upload here would double-stamp beneath the overlay.
     final watermarked = _pickedFile!;
-    // ENQUEUE-FIRST: persist to the durable queue BEFORE the network call, so a
-    // signal drop or an app-kill mid-upload auto-resumes on its own. takenAt +
-    // geotag are captured once here and never regenerated. The auto-drainer is
-    // paused so it can't race this upload and double-send.
     UploadQueueService.instance.pauseAutoProcess();
     final queued = await UploadQueueService.instance.enqueue(
       sourceFile: watermarked,
       profileId: _selectedProfile!.id,
-      latitude: widget.lat,
-      longitude: widget.lng,
+      latitude: gps.latitude,
+      longitude: gps.longitude,
       takenAt: takenAt,
       note: note,
       category: svc,
@@ -151,13 +162,12 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
         'filePath': watermarked.path,
         'profileId': _selectedProfile!.id,
         'fileNumber': fileNumber,
-        'latitude': widget.lat,
-        'longitude': widget.lng,
+        'latitude': gps.latitude,
+        'longitude': gps.longitude,
         'note': note,
         'category': svc,
         'takenAt': takenAt,
       }).future);
-      // Sent — drop it from the queue so the drainer can't re-send it.
       await UploadQueueService.instance.remove(queued.id);
       if (mounted) {
         HapticFeedback.heavyImpact();
@@ -165,8 +175,6 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
         widget.onUploaded();
       }
     } catch (e) {
-      // No network error pop-up: it's already in the offline queue (above) and
-      // will upload automatically when signal returns.
       if (mounted) {
         HapticFeedback.heavyImpact();
         Navigator.pop(context);
@@ -266,9 +274,7 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
   @override
   Widget build(BuildContext context) {
     final profilesAsync = ref.watch(profilesProvider);
-    final canUpload = _pickedFile != null &&
-        _selectedProfile != null &&
-        _fileNumberCtrl.text.trim().isNotEmpty;
+    final canUpload = _pickedFile != null && _selectedProfile != null;
 
     return Container(
       decoration: const BoxDecoration(
@@ -353,6 +359,8 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  _photoPicker(),
+                  const SizedBox(height: 16),
                   // Profile selector
                   const Text(
                     'Select Profile',
@@ -458,197 +466,6 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
                   _categoryPicker(),
 
                   const SizedBox(height: 16),
-
-                  // File Number — required, dispatcher-assigned.
-                  Row(
-                    children: [
-                      const Text(
-                        'File Number',
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: _inkMuted,
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        '*',
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                          color: _errorRed.withValues(alpha: 0.8),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: _fileNumberCtrl,
-                    style: const TextStyle(fontSize: 14, color: _ink),
-                    decoration: InputDecoration(
-                      hintText: 'e.g. 24-00123',
-                      hintStyle: const TextStyle(
-                        color: _inkSubtle,
-                        fontSize: 14,
-                      ),
-                      prefixIcon: const Padding(
-                        padding: EdgeInsets.only(left: 12, right: 8),
-                        child: Icon(
-                          Icons.tag_rounded,
-                          size: 18,
-                          color: _inkSubtle,
-                        ),
-                      ),
-                      prefixIconConstraints: const BoxConstraints(
-                        minWidth: 40,
-                        minHeight: 40,
-                      ),
-                      filled: true,
-                      fillColor: _canvas,
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 0,
-                        vertical: 13,
-                      ),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide.none,
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide.none,
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(
-                          color: _accent,
-                          width: 1.5,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: Builder(builder: (_) {
-                      final isNa =
-                          _fileNumberCtrl.text.trim().toUpperCase() ==
-                              kFileNumberNA;
-                      return GestureDetector(
-                        onTap: () {
-                          HapticFeedback.selectionClick();
-                          setState(() {
-                            if (isNa) {
-                              _fileNumberCtrl.clear();
-                            } else {
-                              _fileNumberCtrl.text = kFileNumberNA;
-                            }
-                          });
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 7),
-                          decoration: BoxDecoration(
-                            color: isNa ? _accentSoft : _canvas,
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(
-                              color: isNa ? _accent : const Color(0xFFE5E7EB),
-                            ),
-                          ),
-                          child: Text(
-                            kFileNumberNA,
-                            style: TextStyle(
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.w700,
-                              color: isNa ? _accent : _inkMuted,
-                            ),
-                          ),
-                        ),
-                      );
-                    }),
-                  ),
-
-                  const SizedBox(height: 16),
-
-                  // Photo picker
-                  const Text(
-                    'Photo',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: _inkMuted,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  if (_pickedFile == null)
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _srcBtn(
-                            icon: Icons.camera_alt_rounded,
-                            label: 'Camera',
-                            onTap: () => _pickImage(ImageSource.camera),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: _srcBtn(
-                            icon: Icons.photo_library_outlined,
-                            label: 'Gallery',
-                            onTap: () => _pickImage(ImageSource.gallery),
-                          ),
-                        ),
-                      ],
-                    )
-                  else
-                    Stack(
-                      children: [
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(12),
-                          child: SizedBox(
-                            height: 140,
-                            width: double.infinity,
-                            child: Stack(
-                              fit: StackFit.expand,
-                              children: [
-                                Image.file(_pickedFile!,
-                                    fit: BoxFit.cover, cacheWidth: 720),
-                                // Live timestamp watermark — matches upload.
-                                Positioned(
-                                  left: 0,
-                                  right: 0,
-                                  bottom: 0,
-                                  child: WatermarkBar(takenAtIso: _takenAt),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        Positioned(
-                          top: 8,
-                          right: 8,
-                          child: GestureDetector(
-                            onTap: () => setState(() {
-                              _pickedFile = null;
-                              _takenAt = null;
-                            }),
-                            child: Container(
-                              padding: const EdgeInsets.all(5),
-                              decoration: BoxDecoration(
-                                color: Colors.black.withValues(alpha: 0.65),
-                                borderRadius: BorderRadius.circular(6),
-                              ),
-                              child: const Icon(
-                                Icons.close_rounded,
-                                size: 14,
-                                color: Colors.white,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-
-                  const SizedBox(height: 14),
 
                   // Note
                   TextField(
@@ -961,6 +778,90 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _photoPicker() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Photo',
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: _inkMuted,
+          ),
+        ),
+        const SizedBox(height: 8),
+        if (_pickedFile == null)
+          Row(
+            children: [
+              Expanded(
+                child: _srcBtn(
+                  icon: Icons.camera_alt_rounded,
+                  label: 'Camera',
+                  onTap: () => _pickImage(ImageSource.camera),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _srcBtn(
+                  icon: Icons.photo_library_outlined,
+                  label: 'Gallery',
+                  onTap: () => _pickImage(ImageSource.gallery),
+                ),
+              ),
+            ],
+          )
+        else
+          Stack(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: SizedBox(
+                  height: 140,
+                  width: double.infinity,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Image.file(_pickedFile!,
+                          fit: BoxFit.cover, cacheWidth: 720),
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        child: WatermarkBar(takenAtIso: _takenAt),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              Positioned(
+                top: 8,
+                right: 8,
+                child: GestureDetector(
+                  onTap: () => setState(() {
+                    _pickedFile = null;
+                    _takenAt = null;
+                  }),
+                  child: Container(
+                    padding: const EdgeInsets.all(5),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.65),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: const Icon(
+                      Icons.close_rounded,
+                      size: 14,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+      ],
     );
   }
 

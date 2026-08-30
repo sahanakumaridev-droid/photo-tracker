@@ -5,7 +5,6 @@ import 'package:go_router/go_router.dart';
 
 import '../../../core/utils/attempt_status.dart';
 import '../../../core/utils/text_formatters.dart';
-import '../../../data/models/delivery_style.dart';
 import '../../widgets/ai/note_suggestion_chips.dart';
 import '../../widgets/ai/voice_mic_button.dart';
 import '../../widgets/common/pill_chip.dart';
@@ -106,77 +105,38 @@ class AttemptDetailsScreen extends ConsumerWidget {
                 'Delivery Style', Icons.assignment_turned_in_outlined),
             const SizedBox(height: 6),
             const Text(
-              'How this delivery was completed.',
+              'Required by the job — not per attempt.',
               style: TextStyle(fontSize: 13, color: _inkSubtle),
             ),
             const SizedBox(height: 12),
-            if (controller.isExistingProfileAttempt)
-              Container(
-                width: double.infinity,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
-                decoration: BoxDecoration(
-                  color: _accentSoft,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: _accent, width: 1.5),
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        controller.deliveryStyle ?? '—',
-                        style: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                          color: _ink,
-                        ),
+            Container(
+              width: double.infinity,
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+              decoration: BoxDecoration(
+                color: _accentSoft,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: _accent, width: 1.5),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      controller.selectedProfile?.deliveryStyle ??
+                          controller.deliveryStyle ??
+                          '—',
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        color: _ink,
                       ),
                     ),
-                    const Icon(Icons.lock_outline_rounded,
-                        size: 16, color: _accent),
-                  ],
-                ),
-              )
-            else
-              Container(
-                decoration: BoxDecoration(
-                  color: _canvas,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    value: controller.deliveryStyle,
-                    isExpanded: true,
-                    icon: const Icon(Icons.expand_more_rounded,
-                        color: _inkSubtle),
-                    hint: const Row(
-                      children: [
-                        Icon(Icons.assignment_turned_in_outlined,
-                            size: 18, color: _inkSubtle),
-                        SizedBox(width: 8),
-                        Text('Select a delivery style…',
-                            style:
-                                TextStyle(fontSize: 14, color: _inkSubtle)),
-                      ],
-                    ),
-                    style: const TextStyle(fontSize: 14, color: _ink),
-                    borderRadius: BorderRadius.circular(12),
-                    items: kDeliveryStyles
-                        .map((s) => DropdownMenuItem<String>(
-                              value: s,
-                              child: Text(s,
-                                  style: const TextStyle(
-                                      fontSize: 14, color: _ink)),
-                            ))
-                        .toList(),
-                    onChanged: (value) {
-                      HapticFeedback.selectionClick();
-                      controller.setDeliveryStyle(value);
-                    },
                   ),
-                ),
+                  const Icon(Icons.lock_outline_rounded,
+                      size: 16, color: _accent),
+                ],
               ),
+            ),
           ],
         ),
       );

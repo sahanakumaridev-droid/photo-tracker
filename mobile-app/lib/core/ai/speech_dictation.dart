@@ -68,13 +68,13 @@ class SpeechDictation extends ChangeNotifier {
         onWords(result.recognizedWords, result.finalResult);
         notifyListeners();
       },
-      listenFor: const Duration(seconds: 25),
-      pauseFor: const Duration(seconds: 3),
       localeId: 'en_US',
       listenOptions: SpeechListenOptions(
         partialResults: true,
         cancelOnError: true,
         listenMode: ListenMode.dictation,
+        autoPunctuation: true,
+        pauseFor: const Duration(seconds: 2),
       ),
     );
   }

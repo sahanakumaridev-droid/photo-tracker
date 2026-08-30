@@ -11,11 +11,12 @@ import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../../../config/map_tiles.dart';
 import '../../../core/utils/attempt_status.dart';
 import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
+import '../../../core/utils/file_number.dart';
 import '../../../core/utils/place_search.dart';
-import '../../../data/models/company.dart';
 import '../../../data/models/photo_model.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/photo_provider.dart';
@@ -26,6 +27,7 @@ import '../../widgets/ai/voice_mic_button.dart';
 import '../../widgets/common/photo_preview_gallery.dart';
 import '../upload/attempt_draft_controller.dart';
 import '../upload/attempt_limits.dart';
+import '../upload/resume_attempt_screen.dart';
 import 'map_upload_sheet.dart';
 
 // ── Design tokens (light field UI) ────────────────────────────────────────────
@@ -87,6 +89,16 @@ class _MapJob {
     return 'Unknown';
   }
 
+  /// Pin card heading: profile name when file number is N/A or missing,
+  /// otherwise "fileNumber profileName".
+  String get pinSummaryTitle {
+    final name = recipient;
+    if (isAbsentFileNumber(latest?.fileNumber)) return name;
+    final fn = latest!.fileNumber!.trim();
+    if (name.isEmpty || name == 'Unknown') return fn;
+    return '$fn $name';
+  }
+
   String get address {
     final fromPhoto = latest?.address?.trim();
     if (fromPhoto != null && fromPhoto.isNotEmpty) {
@@ -100,13 +112,6 @@ class _MapJob {
     ].where((s) => s != null && s.trim().isNotEmpty).map((s) => s!.trim());
     if (parts.isNotEmpty) return PlaceSearch.withoutZip(parts.join(', '));
     return '${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}';
-  }
-
-  String? get client {
-    final named = profile?.companyName?.trim();
-    if (named != null && named.isNotEmpty) return named;
-    if (profile != null) return companyOrDefault(profile!.company).name;
-    return null;
   }
 
   double? get _rawLat {
@@ -279,6 +284,37 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
     );
   }
 
+  /// Default window: my GPS + the closest job pin, same viewport.
+  void _fitMeAndNearest(List<LatLng> points) {
+    if (!mounted) return;
+    final user = _userPosition;
+    final pins = _mainClusterPoints(points);
+    if (user == null || pins.isEmpty) {
+      _fitAll(points);
+      return;
+    }
+    final origin = LatLng(user.latitude, user.longitude);
+    LatLng nearest = pins.first;
+    var bestKm = double.infinity;
+    for (final p in pins) {
+      final km = LocationService.calculateDistance(
+          origin.latitude, origin.longitude, p.latitude, p.longitude);
+      if (km < bestKm) {
+        bestKm = km;
+        nearest = p;
+      }
+    }
+    final topInset = MediaQuery.of(context).padding.top;
+    _mapController.fitCamera(
+      CameraFit.bounds(
+        bounds: LatLngBounds.fromPoints([origin, nearest]),
+        padding: EdgeInsets.fromLTRB(56, topInset + 96, 56, 148),
+        maxZoom: 16,
+        forceIntegerZoomLevel: true,
+      ),
+    );
+  }
+
   // Excludes pins farther than [_outlierThresholdMi] from the median position
   // of the group, so a single stray outlier can't force "Fit All" out to a
   // world-scale zoom. Falls back to the full list if that would exclude
@@ -334,6 +370,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
         locationAttemptDone: _locationAttemptDone,
         onMapReady: _onMapReady,
         onFitAll: _fitAll,
+        onFitMeAndNearest: _fitMeAndNearest,
         onRefresh: _refresh,
         onMyLocation: () => _fetchUserLocation(moveCamera: true),
       ),
@@ -349,6 +386,7 @@ class _MapBody extends ConsumerStatefulWidget {
     required this.mapController,
     required this.onMapReady,
     required this.onFitAll,
+    required this.onFitMeAndNearest,
     required this.onRefresh,
     required this.onMyLocation,
     this.userPosition,
@@ -361,6 +399,7 @@ class _MapBody extends ConsumerStatefulWidget {
   final MapController                  mapController;
   final VoidCallback                   onMapReady;
   final ValueChanged<List<LatLng>> onFitAll;
+  final ValueChanged<List<LatLng>> onFitMeAndNearest;
   final VoidCallback                   onRefresh;
   final VoidCallback                   onMyLocation;
   final Position?                      userPosition;
@@ -377,6 +416,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
   // "Today" can combine (e.g. every priority, today only).
   bool _todayOnly = false;
   int _fittedCount = -1;
+  bool _fittedWithGps = false;
   // Distance filter — a radius from the user (0–100 mi).
   double _distanceMi = 100;
   String? _distanceMode; // 'distance' | null
@@ -586,8 +626,16 @@ class _MapBodyState extends ConsumerState<_MapBody> {
         margin: const EdgeInsets.only(bottom: 14),
         padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
         decoration: BoxDecoration(
-          color: const Color(0xFFF2F4F7),
+          color: _kSurface,
           borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: _kSep),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.04),
+              blurRadius: 10,
+              offset: const Offset(0, 2),
+            ),
+          ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -631,11 +679,11 @@ class _MapBodyState extends ConsumerState<_MapBody> {
 
           return Container(
             constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(sheetCtx).size.height * 0.88,
+              maxHeight: MediaQuery.of(sheetCtx).size.height * 0.72,
             ),
             decoration: const BoxDecoration(
-              color: _kSurface,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+              color: Color(0xFFF2F4F7),
+              borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -683,38 +731,9 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // Same categories as the dock pills, with details.
                         _sheetCard(
-                          title: 'Categories',
+                          title: 'When',
                           children: [
-                            _filterDetailRow(
-                              title: 'All',
-                              detail: 'Every pin, regardless of priority.',
-                              color: _kAccent,
-                              icon: Icons.apps_rounded,
-                              selected: _levels.isEmpty,
-                              count: _geotaggedCountFor(null),
-                              onTap: () => refresh(_levels.clear),
-                            ),
-                            for (final value in const [
-                              'standard',
-                              'asap',
-                              'special',
-                              'next_day',
-                            ])
-                              _filterDetailRow(
-                                title: categoryOf(value).label,
-                                detail: _categoryDetail(value),
-                                color: categoryOf(value).color,
-                                icon: categoryOf(value).icon,
-                                selected: _levels.length == 1 &&
-                                    _levels.contains(value),
-                                count: _geotaggedCountFor(value),
-                                onTap: () => refresh(
-                                    () => _levels
-                                      ..clear()
-                                      ..add(value)),
-                              ),
                             _filterDetailRow(
                               title: 'Today',
                               detail: 'Only pins captured today.',
@@ -875,8 +894,8 @@ class _MapBodyState extends ConsumerState<_MapBody> {
     final selected = _isSelectedJob(job);
     return Marker(
       point: _spreadPoint(job, all),
-      width: selected ? 128 : 36,
-      height: selected ? 80 : 44,
+      width: selected ? 36 : 28,
+      height: selected ? 48 : 38,
       alignment: Alignment.topCenter,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
@@ -918,6 +937,40 @@ class _MapBodyState extends ConsumerState<_MapBody> {
       return s.profile!.id == job.profile!.id;
     }
     return s.jobId == job.jobId;
+  }
+
+  Future<void> _startAttemptFromPin(BuildContext context, {_MapJob? job}) async {
+    final selected = job ?? _selectedJob;
+    if (selected == null) return;
+    final pid = selected.profile?.id ?? selected.latest?.profileId;
+    if (pid == null || pid == 0) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Open this job from Profiles, or create a profile first.',
+          ),
+        ),
+      );
+      return;
+    }
+    HapticFeedback.mediumImpact();
+    final ok = await ensureCanStartNewAttempt(
+      context,
+      ref,
+      profileId: pid,
+      knownCount: selected.attemptCount,
+    );
+    if (!ok || !context.mounted) return;
+    await Navigator.of(context, rootNavigator: true).push(
+      MaterialPageRoute<void>(
+        fullscreenDialog: true,
+        builder: (_) => ResumeAttemptScreen(
+          initialProfileId: pid,
+          initialProfile: selected.profile,
+        ),
+      ),
+    );
   }
 
   String? _distanceLabelFor(double lat, double lng) {
@@ -1064,24 +1117,56 @@ class _MapBodyState extends ConsumerState<_MapBody> {
   }
 
   Widget _nextUpChip(List<_MapJob> jobs) {
-    if (jobs.isEmpty) return const SizedBox.shrink();
-    final pos = widget.userPosition;
-    _MapJob next = jobs.first;
-    double? miles;
-    if (pos != null) {
-      var bestMi = double.infinity;
+    final profiles = ref.read(profilesProvider).valueOrNull ?? [];
+    ProfileModel? latestProfile;
+    if (profiles.isNotEmpty) {
+      latestProfile = profiles.reduce((a, b) => a.id >= b.id ? a : b);
+    }
+
+    _MapJob? next;
+    if (latestProfile != null) {
       for (final j in jobs) {
-        if (!j.hasPoint) continue;
-        final mi = Geolocator.distanceBetween(
-              pos.latitude, pos.longitude, j.lat, j.lng) /
-            1609.34;
-        if (mi < bestMi) {
-          bestMi = mi;
+        if (j.profile?.id == latestProfile.id) {
           next = j;
-          miles = mi;
+          break;
         }
       }
     }
+    next ??= jobs.isEmpty ? null : jobs.reduce((a, b) {
+      final aid = a.profile?.id ?? a.latest?.id ?? 0;
+      final bid = b.profile?.id ?? b.latest?.id ?? 0;
+      return bid >= aid ? b : a;
+    });
+
+    if (next == null && latestProfile == null) {
+      return const SizedBox.shrink();
+    }
+
+    final name = latestProfile?.name.trim().isNotEmpty == true
+        ? latestProfile!.name.trim()
+        : next?.recipient ?? 'Unknown';
+    final pid = latestProfile?.id ?? next?.profile?.id;
+
+    double? miles;
+    final pos = widget.userPosition;
+    final lat = latestProfile != null &&
+            _MapJob._usable(latestProfile.latitude, latestProfile.longitude)
+        ? latestProfile.latitude
+        : next?.hasPoint == true
+            ? next!.lat
+            : null;
+    final lng = latestProfile != null &&
+            _MapJob._usable(latestProfile.latitude, latestProfile.longitude)
+        ? latestProfile.longitude
+        : next?.hasPoint == true
+            ? next!.lng
+            : null;
+    if (pos != null && lat != null && lng != null) {
+      miles = Geolocator.distanceBetween(
+            pos.latitude, pos.longitude, lat, lng) /
+          1609.34;
+    }
+
     final dist = miles == null
         ? null
         : miles < 0.1
@@ -1089,15 +1174,17 @@ class _MapBodyState extends ConsumerState<_MapBody> {
             : miles < 10
                 ? '${miles.toStringAsFixed(1)} mi'
                 : '${miles.round()} mi';
-    final pay = next.profile?.payRate;
+    final pay = latestProfile?.payRate ?? next?.profile?.payRate;
     return Padding(
       padding: const EdgeInsets.only(top: 8),
       child: GestureDetector(
         onTap: () {
           HapticFeedback.selectionClick();
-          final pid = next.profile?.id;
           if (pid != null) {
-            context.push('/upload?profileId=$pid');
+            context.push(
+              '/new-attempt?profileId=$pid',
+              extra: latestProfile ?? next?.profile,
+            );
           }
         },
         child: Container(
@@ -1115,7 +1202,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
               Expanded(
                 child: Text(
                   [
-                    'Next up · ${next.recipient}',
+                    'Next up · $name',
                     if (dist != null) dist,
                     if (pay != null) '\$$pay',
                   ].join(' · '),
@@ -1144,11 +1231,15 @@ class _MapBodyState extends ConsumerState<_MapBody> {
     final jobs = _mapJobs();
     final hasData = jobs.isNotEmpty;
 
-    if (hasData && jobs.length != _fittedCount) {
+    if (hasData &&
+        (jobs.length != _fittedCount ||
+            (widget.userPosition != null && !_fittedWithGps))) {
       _fittedCount = jobs.length;
+      _fittedWithGps = widget.userPosition != null;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
-        widget.onFitAll(jobs.map((j) => _spreadPoint(j, jobs)).toList());
+        widget.onFitMeAndNearest(
+            jobs.map((j) => _spreadPoint(j, jobs)).toList());
       });
     }
 
@@ -1176,29 +1267,20 @@ class _MapBodyState extends ConsumerState<_MapBody> {
               keepAlive: true,
               backgroundColor: const Color(0xFFF2F4F7),
               onMapReady: widget.onMapReady,
-              onTap: (_, latLng) {
-                HapticFeedback.lightImpact();
-                if (_selectedJob != null) {
-                  setState(() => _selectedJob = null);
-                  return;
-                }
-                showMapUploadSheet(
-                  context,
-                  lat: latLng.latitude,
-                  lng: latLng.longitude,
-                  onUploaded: widget.onRefresh,
-                );
-              },
+              onTap: _selectedJob != null
+                  ? null
+                  : (_, latLng) {
+                      HapticFeedback.lightImpact();
+                      showMapUploadSheet(
+                        context,
+                        lat: latLng.latitude,
+                        lng: latLng.longitude,
+                        onUploaded: widget.onRefresh,
+                      );
+                    },
             ),
             children: [
-              TileLayer(
-                urlTemplate:
-                    'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-                subdomains: const ['a', 'b', 'c', 'd'],
-                retinaMode: false,
-                tileSize: 256,
-                userAgentPackageName: 'com.example.photo_tracker',
-              ),
+              AppMapTiles.layer(),
             // Visualize the active radius filter
             if (_distanceMode == 'distance' && widget.userPosition != null)
               CircleLayer(
@@ -1245,6 +1327,19 @@ class _MapBodyState extends ConsumerState<_MapBody> {
           ),
         ),
 
+        // Full-screen catcher so the map cannot steal Add Attempt taps
+        // (flutter_map competes in the gesture arena with overlays).
+        if (_selectedJob != null)
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTap: () {
+                HapticFeedback.lightImpact();
+                setState(() => _selectedJob = null);
+              },
+            ),
+          ),
+
         // ── Top: search + filter ───────────────────────────────────────
         Positioned(
           top: topPad + 10,
@@ -1268,26 +1363,13 @@ class _MapBodyState extends ConsumerState<_MapBody> {
         ),
 
         // ── Filter dock ────────────────────────────────────────────────
+          if (_selectedJob == null)
           Positioned(
             left: 0,
             right: 0,
             bottom: 0,
             child: _MapFilterDock(
-              levels: _levels,
-              todayOnly: _todayOnly,
-              moreFiltersActive: _distanceMode != null,
-              onLevelsChanged: (next) {
-                setState(() {
-                  _levels
-                    ..clear()
-                    ..addAll(next);
-                });
-                _scheduleFilterFit();
-              },
-              onTodayChanged: (v) {
-                setState(() => _todayOnly = v);
-                _scheduleFilterFit();
-              },
+              moreFiltersActive: _todayOnly || _distanceMode != null,
               onMoreFilters: _showFilterSheet,
             ),
           ),
@@ -1297,7 +1379,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
           right: 14,
           bottom: _selectedJob != null
               ? 380
-              : 118,
+              : 86,
           child: Material(
             color: Colors.transparent,
             child: _ZoomControls(
@@ -1327,10 +1409,13 @@ class _MapBodyState extends ConsumerState<_MapBody> {
           Positioned(
             left: 14,
             right: 14,
-            bottom: 118,
+            bottom: _selectedJob != null ? 16 : 86,
             child: Material(
               color: Colors.transparent,
-              child: _JobPreviewCard(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {},
+                child: _JobPreviewCard(
                   key: ValueKey(_selectedJob!.jobId),
                   attempts: _selectedJob!.attemptCount,
                   photos: _selectedJob!.photos,
@@ -1339,24 +1424,10 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                   distance: _distanceLabelFor(
                       _selectedJob!.lat, _selectedJob!.lng),
                   address: _selectedJob!.address,
-                  client: _selectedJob!.client,
+                  title: _selectedJob!.pinSummaryTitle,
                   pending: _selectedJob!.isPending,
-                  onNewAttempt: () async {
-                    final job = _selectedJob;
-                    if (job == null) return;
-                    final pid = job.profile?.id;
-                    final ok = await ensureCanStartNewAttempt(
-                      context,
-                      ref,
-                      profileId: pid,
-                      knownCount: job.attemptCount,
-                    );
-                    if (!ok || !context.mounted) return;
-                    if (pid != null && pid != 0) {
-                      context.push('/upload?profileId=$pid');
-                    } else {
-                      context.push('/upload');
-                    }
+                  onNewAttempt: () {
+                    unawaited(_startAttemptFromPin(context, job: _selectedJob));
                   },
                   onPreviewPhoto: (index) {
                     final photos = _selectedJob?.photos ?? const <PhotoModel>[];
@@ -1368,6 +1439,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                     );
                   },
                 ),
+              ),
             ),
           ),
       ],
@@ -1675,11 +1747,11 @@ class _JobPreviewCard extends StatefulWidget {
     super.key,
     required this.attempts,
     required this.address,
+    required this.title,
     required this.onNewAttempt,
     required this.onPreviewPhoto,
     this.photos = const [],
     this.distance,
-    this.client,
     this.atCap = false,
     this.pending = false,
   });
@@ -1689,7 +1761,7 @@ class _JobPreviewCard extends StatefulWidget {
   final bool pending;
   final String? distance;
   final String address;
-  final String? client;
+  final String title;
   final List<PhotoModel> photos;
   final VoidCallback onNewAttempt;
   final ValueChanged<int> onPreviewPhoto;
@@ -1719,9 +1791,7 @@ class _JobPreviewCardState extends State<_JobPreviewCard> {
 
   @override
   Widget build(BuildContext context) {
-    final title = (widget.client != null && widget.client!.isNotEmpty)
-        ? widget.client!
-        : 'Location';
+    final title = widget.title;
     final preview =
         widget.photos.where((p) => p.imageUrl.trim().isNotEmpty).toList();
     return Container(
@@ -1910,7 +1980,7 @@ class _JobPreviewCardState extends State<_JobPreviewCard> {
               child: _CardBtn(
                 icon: widget.atCap ? Icons.block_rounded : Icons.add_rounded,
                 label: widget.atCap ? 'Max attempts' : 'Add Attempt',
-                onTap: widget.onNewAttempt,
+                onTap: widget.atCap ? null : widget.onNewAttempt,
                 filled: !widget.atCap,
               ),
             ),
@@ -1924,19 +1994,11 @@ class _JobPreviewCardState extends State<_JobPreviewCard> {
 // ── Bottom filter dock — pills only, no profile list. ────────────────────────
 class _MapFilterDock extends StatelessWidget {
   const _MapFilterDock({
-    required this.levels,
-    required this.todayOnly,
     required this.moreFiltersActive,
-    required this.onLevelsChanged,
-    required this.onTodayChanged,
     required this.onMoreFilters,
   });
 
-  final Set<String> levels;
-  final bool todayOnly;
   final bool moreFiltersActive;
-  final ValueChanged<Set<String>> onLevelsChanged;
-  final ValueChanged<bool> onTodayChanged;
   final VoidCallback onMoreFilters;
 
   void _openFromSwipe(DragEndDetails details) {
@@ -1950,8 +2012,8 @@ class _MapFilterDock extends StatelessWidget {
       color: Colors.transparent,
       child: Container(
         decoration: const BoxDecoration(
-          color: Color(0xFFF7F8FA),
-          borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+          color: Color(0xFFFFFFFF),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
           boxShadow: [
             BoxShadow(
               color: Color(0x1A000000),
@@ -1960,18 +2022,15 @@ class _MapFilterDock extends StatelessWidget {
             ),
           ],
         ),
-        padding: const EdgeInsets.fromLTRB(16, 4, 12, 14),
+        padding: const EdgeInsets.fromLTRB(16, 2, 16, 12),
         child: GestureDetector(
           behavior: HitTestBehavior.translucent,
           onVerticalDragEnd: _openFromSwipe,
+          onTap: onMoreFilters,
           child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: onMoreFilters,
-              onVerticalDragEnd: _openFromSwipe,
-              child: Padding(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
                 padding: const EdgeInsets.fromLTRB(24, 8, 24, 10),
                 child: Center(
                   child: Container(
@@ -1984,28 +2043,23 @@ class _MapFilterDock extends StatelessWidget {
                   ),
                 ),
               ),
-            ),
-            Row(
-              children: [
-                Expanded(
-                  child: _FilterPillRow(
-                    levels: levels,
-                    todayOnly: todayOnly,
-                    onLevelsChanged: onLevelsChanged,
-                    onTodayChanged: onTodayChanged,
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Filters',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                        color: _kInk,
+                      ),
+                    ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                GestureDetector(
-                  onTap: () {
-                    HapticFeedback.selectionClick();
-                    onMoreFilters();
-                  },
-                  child: Container(
+                  Container(
                     width: 40,
                     height: 40,
                     decoration: BoxDecoration(
-                      color: moreFiltersActive ? _kAccent : Colors.white,
+                      color: moreFiltersActive ? _kAccent : const Color(0xFFF2F4F7),
                       shape: BoxShape.circle,
                       border: Border.all(
                         color: moreFiltersActive ? _kAccent : _kSep,
@@ -2017,11 +2071,10 @@ class _MapFilterDock extends StatelessWidget {
                       color: moreFiltersActive ? Colors.white : _kInkMuted,
                     ),
                   ),
-                ),
-              ],
-            ),
-          ],
-        ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -2038,19 +2091,21 @@ class _CardBtn extends StatelessWidget {
   });
   final IconData     icon;
   final String       label;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
   final bool         filled;
 
   @override
   Widget build(BuildContext context) => Material(
     color: Colors.transparent,
-    child: InkWell(
-      onTap: () {
-        HapticFeedback.lightImpact();
-        onTap();
-      },
-      borderRadius: BorderRadius.circular(24),
-      child: Ink(
+    child: GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap == null
+          ? null
+          : () {
+              HapticFeedback.lightImpact();
+              onTap!();
+            },
+      child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
         decoration: BoxDecoration(
           color: filled ? _kAccent : const Color(0xFFE3E7EE),
@@ -2100,7 +2155,7 @@ class _PinMarker extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final head = selected ? 24.0 : 20.0;
+    final head = selected ? 26.0 : 22.0;
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -2142,19 +2197,17 @@ class _PinMarker extends StatelessWidget {
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   color: color,
-                  border: Border.all(color: Colors.white, width: 2),
                   boxShadow: [
                     BoxShadow(
-                      color: color.withValues(alpha: selected ? 0.55 : 0.35),
+                      color: color.withValues(alpha: selected ? 0.5 : 0.32),
                       blurRadius: selected ? 10 : 6,
-                      spreadRadius: 0.5,
                     ),
                   ],
                 ),
                 child: Center(
                   child: Container(
-                    width: 5,
-                    height: 5,
+                    width: 6,
+                    height: 6,
                     decoration: const BoxDecoration(
                       shape: BoxShape.circle,
                       color: Colors.white,
@@ -2163,7 +2216,7 @@ class _PinMarker extends StatelessWidget {
                 ),
               ),
               CustomPaint(
-                size: Size(head * 0.55, 8),
+                size: Size(head * 0.42, 9),
                 painter: _PinTipPainter(color),
               ),
             ],

@@ -11,11 +11,11 @@ import '../../../core/utils/attempt_status.dart';
 import '../../../core/utils/photo_stamp.dart';
 import '../../../core/utils/text_formatters.dart';
 import '../../../data/models/company.dart';
-import '../../../data/models/delivery_style.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/profile_provider.dart';
 import '../../widgets/ai/note_suggestion_chips.dart';
 import '../../widgets/ai/voice_mic_button.dart';
+import '../../widgets/common/create_profile_dialog.dart';
 import '../../widgets/common/pill_chip.dart';
 import '../../widgets/common/profile_facts_card.dart';
 import 'attempt_draft_controller.dart';
@@ -89,35 +89,36 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
+                        _buildPhotoHero(),
+                        const SizedBox(height: 12),
                         if (controller.poorNetwork ||
                             controller.locationFrozenFromCache) ...[
                           _buildNetworkCacheBanner(),
                           const SizedBox(height: 14),
                         ],
-                        _buildPhotoHero(),
-                        const SizedBox(height: 12),
                         _buildNotesCard(),
                         const SizedBox(height: 12),
-                        _buildFileAndPriority(),
-                        const SizedBox(height: 12),
+                        if (!controller.isExistingProfileAttempt) ...[
+                          _buildPriorityCard(),
+                          const SizedBox(height: 12),
+                        ],
                         _buildOutcomeCard(context),
                         const SizedBox(height: 12),
                         _buildGeotagChip(),
                         const SizedBox(height: 18),
-                        if (controller.isExistingProfileAttempt &&
-                            controller.selectedProfile != null)
+                        if (controller.selectedProfile != null)
                           ProfileFactsCard(
                             profile: controller.selectedProfile!,
                             locked: true,
+                            fileNumber: controller.fileNumberController.text
+                                .trim(),
                           )
                         else
                           _buildJobCard(profilesAsync),
-                        if (!controller.isExistingProfileAttempt) ...[
-                          const SizedBox(height: 12),
-                          _buildDeliveryCard(),
-                        ],
                         const SizedBox(height: 12),
                         _buildPayAndAddress(),
+                        const SizedBox(height: 12),
+                        _buildLinkProfilesCard(),
                         const SizedBox(height: 8),
                       ],
                     ),
@@ -146,7 +147,7 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
     final shown = widget.isEditing
         ? (existing == 0 ? 1 : existing)
         : existing + 1;
-    final ofMax = AttemptDraftController.kMaxAttemptsPerJob;
+    final ofMax = profile?.attemptCap ?? AttemptDraftController.kMaxAttemptsPerJob;
 
     return Container(
       decoration: BoxDecoration(
@@ -645,82 +646,31 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
     );
   }
 
-  Widget _buildFileAndPriority() {
-    final isNa =
-        controller.fileNumberController.text.trim().toUpperCase() ==
-            kFileNumberNA;
+  Widget _buildPriorityCard() {
     return _card(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _sectionLabel('File number', Icons.tag_rounded, required: true),
+          _sectionLabel('Priority', Icons.label_rounded),
           const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(
-                child: _inputField(
-                  controller: controller.fileNumberController,
-                  hint: 'Dispatcher file number',
-                  icon: Icons.tag_rounded,
-                  enabled: !isNa,
-                ),
-              ),
-              const SizedBox(width: 8),
-              GestureDetector(
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children:
+                priorityCategoriesForCompany(controller.companyId).map((c) {
+              final selected = controller.selectedCategory == c.value;
+              return _chip(
+                label: c.label,
+                icon: c.icon,
+                selected: selected,
+                color: c.color,
                 onTap: () {
                   HapticFeedback.selectionClick();
-                  if (isNa) {
-                    controller.fileNumberController.clear();
-                  } else {
-                    controller.fileNumberController.text = kFileNumberNA;
-                  }
+                  controller.setSelectedCategory(c.value);
                 },
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-                  decoration: BoxDecoration(
-                    color: isNa ? _accentSoft : _canvas,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: isNa ? _accent : _separator,
-                      width: isNa ? 1.5 : 1,
-                    ),
-                  ),
-                  child: Text(
-                    kFileNumberNA,
-                    style: TextStyle(
-                      fontSize: 12.5,
-                      fontWeight: FontWeight.w700,
-                      color: isNa ? _accent : _inkMuted,
-                    ),
-                  ),
-                ),
-              ),
-            ],
+              );
+            }).toList(),
           ),
-          if (!controller.isExistingProfileAttempt) ...[
-            const SizedBox(height: 16),
-            _sectionLabel('Priority', Icons.label_rounded),
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children:
-                  priorityCategoriesForCompany(controller.companyId).map((c) {
-                final selected = controller.selectedCategory == c.value;
-                return _chip(
-                  label: c.label,
-                  icon: c.icon,
-                  selected: selected,
-                  color: c.color,
-                  onTap: () {
-                    HapticFeedback.selectionClick();
-                    controller.setSelectedCategory(c.value);
-                  },
-                );
-              }).toList(),
-            ),
-          ],
         ],
       ),
     );
@@ -782,34 +732,6 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
     );
   }
 
-  Widget _buildDeliveryCard() {
-    return _card(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _sectionLabel('Delivery style', Icons.assignment_turned_in_outlined),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: kDeliveryStyles.map((s) {
-              final selected = controller.deliveryStyle == s;
-              return _chip(
-                label: s,
-                selected: selected,
-                color: _accent,
-                onTap: () {
-                  HapticFeedback.selectionClick();
-                  controller.setDeliveryStyle(selected ? null : s);
-                },
-              );
-            }).toList(),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildNotesCard() {
     return _card(
       child: Column(
@@ -862,6 +784,90 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
             textCapitalization: TextCapitalization.words,
             voice: true,
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLinkProfilesCard() {
+    if (controller.selectedProfile == null) return const SizedBox.shrink();
+    final nearby = controller.nearbyLinkProfiles(ref);
+    if (nearby.isEmpty) return const SizedBox.shrink();
+    return _card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _sectionLabel('Link profiles', Icons.link_rounded, optional: true),
+          const SizedBox(height: 6),
+          Text(
+            'Duplicate this attempt onto nearby profiles after you save. '
+            'Only shown when another profile is within '
+            '${AttemptDraftController.kProfileProximityFt.toInt()} ft.',
+            style: const TextStyle(
+              fontSize: 12.5,
+              height: 1.35,
+              color: _inkMuted,
+            ),
+          ),
+          const SizedBox(height: 12),
+          for (final p in nearby)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: () {
+                    HapticFeedback.selectionClick();
+                    controller.toggleLinkProfile(p.id);
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 12,
+                    ),
+                    decoration: BoxDecoration(
+                      color: controller.linkProfileIds.contains(p.id)
+                          ? _accentSoft
+                          : _canvas,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: controller.linkProfileIds.contains(p.id)
+                            ? _accent
+                            : _separator,
+                        width: controller.linkProfileIds.contains(p.id)
+                            ? 1.5
+                            : 1,
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          controller.linkProfileIds.contains(p.id)
+                              ? Icons.check_circle_rounded
+                              : Icons.circle_outlined,
+                          size: 20,
+                          color: controller.linkProfileIds.contains(p.id)
+                              ? _accent
+                              : _inkSubtle,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            p.name,
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                              color: _ink,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -1088,9 +1094,11 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
                 const Divider(height: 20, color: _separator),
                 _summaryRow(
                   'File #',
-                  controller.fileNumberController.text.trim().isEmpty
+                  (controller.selectedProfile?.fileNumber ?? '')
+                          .trim()
+                          .isEmpty
                       ? '—'
-                      : controller.fileNumberController.text.trim(),
+                      : controller.selectedProfile!.fileNumber!.trim(),
                 ),
               ],
             ),
@@ -1392,7 +1400,7 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
   }
 
   Future<void> _createProfile() async {
-    final created = await context.push<ProfileModel>('/profiles-management');
+    final created = await showCreateProfileDialog(context);
     if (created != null && mounted) {
       controller.setSelectedProfile(created, ref: ref);
       controller.showSnack(context, 'Profile "${created.name}" created');
@@ -1621,7 +1629,8 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
         child: child,
       );
 
-  Widget _sectionLabel(String label, IconData icon, {bool required = false}) {
+  Widget _sectionLabel(String label, IconData icon,
+      {bool required = false, bool optional = false}) {
     return Row(
       children: [
         Icon(icon, size: 16, color: _accent),
@@ -1641,6 +1650,11 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
               style: TextStyle(
                   color: _errorRed, fontWeight: FontWeight.w800, fontSize: 14)),
         ],
+        if (optional)
+          const Text(
+            '  optional',
+            style: TextStyle(fontSize: 11, color: _inkSubtle),
+          ),
       ],
     );
   }

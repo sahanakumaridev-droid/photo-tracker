@@ -99,7 +99,11 @@ final routerProvider = Provider<GoRouter>((ref) {
               // land on the dashboard so an in-progress attempt can be
               // resumed instead of always starting blank.
               if (profileId != null) {
-                return ResumeAttemptScreen(initialProfileId: profileId);
+                final extra = state.extra;
+                return ResumeAttemptScreen(
+                  initialProfileId: profileId,
+                  initialProfile: extra is ProfileModel ? extra : null,
+                );
               }
               return const AttemptsDashboardScreen();
             },
@@ -131,6 +135,18 @@ final routerProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => const MoreScreen(),
           ),
         ],
+      ),
+      GoRoute(
+        path: '/new-attempt',
+        builder: (context, state) {
+          final profileId = int.tryParse(
+              state.uri.queryParameters['profileId'] ?? '');
+          final extra = state.extra;
+          return ResumeAttemptScreen(
+            initialProfileId: profileId,
+            initialProfile: extra is ProfileModel ? extra : null,
+          );
+        },
       ),
       GoRoute(
         path: '/profiles-management',
@@ -177,7 +193,7 @@ class _ShellScaffold extends ConsumerStatefulWidget {
 }
 
 class _ShellScaffoldState extends ConsumerState<_ShellScaffold> {
-  // Index map: 0 Home · 1 Upload · 2 Log · 3 Earnings
+  // Index map: 0 Home · 1 Upload · 2 Profiles · 3 Earnings
   int _indexForLocation(String loc) {
     if (loc.startsWith('/map')) return 0;
     if (loc.startsWith('/home')) return 0;

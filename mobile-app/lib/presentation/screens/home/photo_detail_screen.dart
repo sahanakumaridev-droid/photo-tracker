@@ -374,9 +374,9 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
       'date_time': dateTime,
       'service_ordered': categoryLabel(p.category ?? p.serviceType),
       'priority_level': categoryLabel(p.category ?? p.serviceType),
-      'address': _streetZip(address: p.address, zipCode: p.zipCode),
+      'address': formatStreetNameAndZip(address: p.address, zipCode: p.zipCode),
       'coordinates':
-          '${p.latitude.toStringAsFixed(6)}, ${p.longitude.toStringAsFixed(6)}',
+          formatCoordinates(p.latitude, p.longitude),
       'job_status': _statusLabel(p.status ?? 'open'),
       'agent': agentName,
       'completion_type': p.completionType ?? '',
@@ -384,17 +384,6 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
       'detailed_notes': note.isEmpty ? 'Attempt #$attemptNo' : note,
       'notes': note,
     };
-  }
-
-  /// Street number + name, plus ZIP only — matches the Log screen's export.
-  String _streetZip({String? address, String? zipCode}) {
-    final full = (address ?? '').trim();
-    final street = full.isEmpty ? '' : full.split(',').first.trim();
-    var zip = (zipCode ?? '').trim();
-    if (zip.isEmpty) {
-      zip = RegExp(r'\b\d{5}(?:-\d{4})?\b').firstMatch(full)?.group(0) ?? '';
-    }
-    return [street, zip].where((s) => s.isNotEmpty).join(', ');
   }
 
   /// Single-profile service-record header for the email body: File Number,
@@ -411,9 +400,9 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
       'name': photo.profileName ?? '',
       'date_time': dateTime,
       'priority_level': categoryLabel(photo.category ?? photo.serviceType),
-      'address': _streetZip(address: photo.address, zipCode: photo.zipCode),
+      'address': formatStreetNameAndZip(address: photo.address, zipCode: photo.zipCode),
       'coordinates':
-          '${photo.latitude.toStringAsFixed(6)}, ${photo.longitude.toStringAsFixed(6)}',
+          formatCoordinates(photo.latitude, photo.longitude),
     };
   }
 
@@ -728,8 +717,42 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
   }
 
   PhotoModel? _findPhoto(List<PhotoModel> photos) {
-    final matches = photos.where((p) => p.id == widget.photoId);
-    return matches.isEmpty ? null : matches.first;
+    final id = _viewingPhotoId ?? widget.photoId;
+    final matches = photos.where((p) => p.id == id);
+    if (matches.isNotEmpty) return matches.first;
+    final fallback = photos.where((p) => p.id == widget.photoId);
+    return fallback.isEmpty ? null : fallback.first;
+  }
+
+  int? _viewingPhotoId;
+  PageController? _photoPageCtrl;
+  PageController? _attemptPageCtrl;
+  int _photoCtrlAttemptKey = -999;
+
+  List<List<PhotoModel>> _attemptGroups(
+      PhotoModel current, List<PhotoModel> all) {
+    final pid = current.profileId;
+    var pool = pid == null
+        ? <PhotoModel>[current]
+        : all.where((p) => p.profileId == pid).toList();
+    if (pool.isEmpty) pool = [current];
+    final map = <int, List<PhotoModel>>{};
+    for (final p in pool) {
+      final key = (p.attemptId != null && p.attemptId != 0)
+          ? p.attemptId!
+          : p.id;
+      map.putIfAbsent(key, () => []).add(p);
+    }
+    for (final list in map.values) {
+      list.sort((a, b) => (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
+    }
+    final keys = map.keys.toList()
+      ..sort((a, b) {
+        final ta = map[a]!.first.timestamp ?? '';
+        final tb = map[b]!.first.timestamp ?? '';
+        return tb.compareTo(ta);
+      });
+    return [for (final k in keys) map[k]!];
   }
 
   // ── Edit actions ──────────────────────────────────────────────────────────
@@ -782,6 +805,28 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
     );
   }
 
+  @override
+  void dispose() {
+    _photoPageCtrl?.dispose();
+    _attemptPageCtrl?.dispose();
+    super.dispose();
+  }
+
+  void _ensureSwipeControllers({
+    required int attemptIdx,
+    required int photoIdx,
+  }) {
+    _attemptPageCtrl ??= PageController(initialPage: attemptIdx);
+    if (_photoPageCtrl == null || _photoCtrlAttemptKey != attemptIdx) {
+      final old = _photoPageCtrl;
+      _photoPageCtrl = PageController(initialPage: photoIdx);
+      _photoCtrlAttemptKey = attemptIdx;
+      if (old != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => old.dispose());
+      }
+    }
+  }
+
   // ── Build ─────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
@@ -799,7 +844,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
         WidgetsBinding.instance.addPostFrameCallback(
           (_) => _resolveAddressIfNeeded(photo),
         );
-        return _buildDetailScaffold(photo);
+        return _buildDetailScaffold(photo, photos);
       },
     );
   }
@@ -937,235 +982,308 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
       );
 
   // ── Main detail scaffold ──────────────────────────────────────────────────
-  Widget _buildDetailScaffold(PhotoModel photo) {
+  Widget _buildDetailScaffold(PhotoModel photo, List<PhotoModel> allPhotos) {
     // Priority reflects the per-photo category (serviceType is the legacy
     // profile field and is no longer the source of truth for priority).
-    final svcColor = categoryOf(photo.category).color;
-    final url = _fullUrl(photo.imageUrl);
+    final groups = _attemptGroups(photo, allPhotos);
+    var attemptIdx = 0;
+    var photoIdx = 0;
+    for (var i = 0; i < groups.length; i++) {
+      final j = groups[i].indexWhere((p) => p.id == photo.id);
+      if (j >= 0) {
+        attemptIdx = i;
+        photoIdx = j;
+        break;
+      }
+    }
+    final attemptPhotos = groups[attemptIdx];
+    _ensureSwipeControllers(attemptIdx: attemptIdx, photoIdx: photoIdx);
+
+    final topPad = MediaQuery.paddingOf(context).top;
+    final photoH = (_imageExpanded ? 420.0 : 300.0) + topPad;
+
+    Widget photoDots() {
+      if (attemptPhotos.length < 2) return const SizedBox.shrink();
+      return Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          for (var i = 0; i < attemptPhotos.length; i++)
+            Container(
+              width: i == photoIdx ? 7 : 6,
+              height: i == photoIdx ? 7 : 6,
+              margin: const EdgeInsets.symmetric(horizontal: 3),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: i == photoIdx
+                    ? Colors.white
+                    : Colors.white.withValues(alpha: 0.4),
+              ),
+            ),
+        ],
+      );
+    }
 
     return Scaffold(
       backgroundColor: _canvas,
-      body: CustomScrollView(
-        slivers: [
-          // ── Hero image app bar ──────────────────────────────────────────
-          SliverAppBar(
-            expandedHeight: _imageExpanded ? 420 : 300,
-            pinned: true,
-            backgroundColor: Colors.black,
-            surfaceTintColor: Colors.transparent,
-            leading: _backButton(context, dark: false),
-            actions: [
-              // Export this job as a PDF service record — tap to share,
-              // long-press to email saved recipients instead.
-              GestureDetector(
-                onLongPress: () => _exportJob(photo),
-                child: IconButton(
-                  icon: const Icon(Icons.ios_share_rounded,
-                      color: Colors.white),
-                  tooltip:
-                      'Email this attempt — long-press to share the photo',
-                  onPressed: () => _exportJob(photo, email: true),
+      body: Column(
+        children: [
+          SizedBox(
+            height: photoH,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                ColoredBox(
+                  color: Colors.black,
+                  child: PageView.builder(
+                    controller: _photoPageCtrl,
+                    physics: attemptPhotos.length < 2
+                        ? const NeverScrollableScrollPhysics()
+                        : const PageScrollPhysics(),
+                    itemCount: attemptPhotos.length,
+                    onPageChanged: (i) {
+                      HapticFeedback.selectionClick();
+                      setState(() => _viewingPhotoId = attemptPhotos[i].id);
+                    },
+                    itemBuilder: (_, i) {
+                      final p = attemptPhotos[i];
+                      return GestureDetector(
+                        onDoubleTap: () {
+                          HapticFeedback.lightImpact();
+                          setState(() => _imageExpanded = !_imageExpanded);
+                        },
+                        child: CachedNetworkImage(
+                          imageUrl: _fullUrl(p.imageUrl),
+                          fit: BoxFit.cover,
+                          placeholder: (_, __) => const Center(
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white54,
+                            ),
+                          ),
+                          errorWidget: (_, __, ___) => const Center(
+                            child: Icon(
+                              Icons.photo_library_outlined,
+                              color: Colors.white38,
+                              size: 48,
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
                 ),
-              ),
-              // Edit photo
-              IconButton(
-                icon: const Icon(Icons.edit_outlined, color: Colors.white),
-                tooltip: 'Edit photo',
-                onPressed: () => _showEditSheet(photo),
-              ),
-              // Expand/collapse image
-              IconButton(
-                icon: Icon(
-                  _imageExpanded
-                      ? Icons.fullscreen_exit_rounded
-                      : Icons.fullscreen_rounded,
-                  color: Colors.white,
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: Padding(
+                    padding: EdgeInsets.only(top: topPad),
+                    child: SizedBox(
+                      height: kToolbarHeight,
+                      child: Row(
+                        children: [
+                          _backButton(context, dark: false),
+                          const Spacer(),
+                          GestureDetector(
+                            onLongPress: () => _exportJob(photo),
+                            child: IconButton(
+                              icon: const Icon(Icons.ios_share_rounded,
+                                  color: Colors.white),
+                              tooltip:
+                                  'Email this attempt — long-press to share the photo',
+                              onPressed: () =>
+                                  _exportJob(photo, email: true),
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.edit_outlined,
+                                color: Colors.white),
+                            tooltip: 'Edit photo',
+                            onPressed: () => _showEditSheet(photo),
+                          ),
+                          IconButton(
+                            icon: Icon(
+                              _imageExpanded
+                                  ? Icons.fullscreen_exit_rounded
+                                  : Icons.fullscreen_rounded,
+                              color: Colors.white,
+                            ),
+                            onPressed: () {
+                              HapticFeedback.lightImpact();
+                              setState(
+                                  () => _imageExpanded = !_imageExpanded);
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
-                onPressed: () {
-                  HapticFeedback.lightImpact();
-                  setState(() => _imageExpanded = !_imageExpanded);
-                },
-              ),
-            ],
-            flexibleSpace: FlexibleSpaceBar(
-              collapseMode: CollapseMode.parallax,
-              background: GestureDetector(
-                onTap: () {
-                  HapticFeedback.lightImpact();
-                  setState(() => _imageExpanded = !_imageExpanded);
-                },
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    CachedNetworkImage(
-                      imageUrl: url,
-                      fit: BoxFit.cover,
-                      placeholder: (_, __) => Container(
-                        color: Colors.black,
-                        child: const Center(
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white54,
-                          ),
-                        ),
-                      ),
-                      errorWidget: (_, __, ___) => Container(
-                        color: Colors.black87,
-                        child: const Center(
-                          child: Icon(
-                            Icons.photo_library_outlined,
-                            color: Colors.white38,
-                            size: 48,
-                          ),
-                        ),
+                Positioned(
+                  top: topPad + 12,
+                  right: 12,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.5),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      '#${photo.id}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.white,
                       ),
                     ),
-                    // Photo ID badge (top-right, clear of the caption below)
-                    Positioned(
-                      top: 12,
-                      right: 12,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 5,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.5),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          '#${photo.id}',
-                          style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ),
-                    ),
-                    // Live watermark caption drawn from the photo's metadata
-                    // (file # / profile · date · street+ZIP · coordinates) so
-                    // EVERY photo shows it — including ones uploaded before the
-                    // stamp was baked in. Includes its own bottom gradient.
-                    WatermarkCaption(
-                      takenAtIso: photo.takenAt ?? photo.timestamp,
-                      address: photo.address ?? '',
-                      zipCode: photo.zipCode,
-                      fileNumber: photo.fileNumber,
-                      profileName: photo.profileName,
-                      latitude: photo.latitude,
-                      longitude: photo.longitude,
-                    ),
-                  ],
+                  ),
+                ),
+                WatermarkCaption(
+                  takenAtIso: photo.takenAt ?? photo.timestamp,
+                  address: photo.address ?? '',
+                  zipCode: photo.zipCode,
+                  fileNumber: photo.fileNumber,
+                  profileName: photo.profileName,
+                  latitude: photo.latitude,
+                  longitude: photo.longitude,
+                  below: attemptPhotos.length > 1 ? photoDots() : null,
+                ),
+              ],
+            ),
+          ),
+          if (groups.length > 1)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+              child: Text(
+                'Attempt ${attemptIdx + 1} of ${groups.length}  ·  swipe below for older attempts',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: _inkMuted,
                 ),
               ),
             ),
-          ),
-
-          // ── Detail content ──────────────────────────────────────────────
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildProfileHeader(photo, svcColor),
-                  const SizedBox(height: 14),
-
-                  _buildDetailsGroup(
-                    title: 'Job',
-                    children: [
-                      _detailRow(
-                        'File Number',
-                        (photo.fileNumber != null &&
-                                photo.fileNumber!.trim().isNotEmpty)
-                            ? photo.fileNumber!
-                            : '—',
-                      ),
-                      _detailRow(
-                        'Job Status',
-                        (photo.status ?? 'open').replaceAll('_', ' '),
-                      ),
-                      if (photo.payRate != null)
-                        _detailRow('Payout', '\$${photo.payRate}'),
-                    ],
+          Expanded(
+            child: PageView.builder(
+              controller: _attemptPageCtrl,
+              physics: groups.length < 2
+                  ? const NeverScrollableScrollPhysics()
+                  : const PageScrollPhysics(),
+              itemCount: groups.length,
+              onPageChanged: (i) {
+                HapticFeedback.selectionClick();
+                setState(() => _viewingPhotoId = groups[i].first.id);
+              },
+              itemBuilder: (_, i) {
+                final shown = i == attemptIdx ? photo : groups[i].first;
+                return SingleChildScrollView(
+                  padding: const EdgeInsets.all(16),
+                  child: _buildAttemptDetails(
+                    shown,
+                    categoryOf(shown.category).color,
                   ),
-                  const SizedBox(height: 12),
-
-                  if (photo.status == 'completed' ||
-                      photo.status == 'archived') ...[
-                    _buildStatusSummaryCard(photo),
-                    const SizedBox(height: 12),
-                  ],
-
-                  _buildDetailsGroup(
-                    title: 'Attempt',
-                    children: [
-                      _detailRow(
-                        'Attempt Status',
-                        attemptStatusByValue(photo.attemptStatus)?.label ??
-                            photo.attemptStatus,
-                      ),
-                      _detailRow(
-                        'Captured',
-                        _formatTs(photo.timestamp),
-                        trailing: _withinTsWindow(photo)
-                            ? TextButton(
-                                onPressed: () => _editTimestamp(photo),
-                                child: const Text('Edit'),
-                              )
-                            : null,
-                      ),
-                      _detailRow(
-                        'Delivery Style',
-                        (photo.completionType != null &&
-                                photo.completionType!.trim().isNotEmpty)
-                            ? photo.completionType!
-                            : '—',
-                      ),
-                      _detailRow(
-                        'Served To',
-                        (photo.servedTo != null &&
-                                photo.servedTo!.trim().isNotEmpty)
-                            ? photo.servedTo!
-                            : '—',
-                      ),
-                      _detailRow(
-                        'Relation To',
-                        (photo.relationTo != null &&
-                                photo.relationTo!.trim().isNotEmpty)
-                            ? photo.relationTo!
-                            : '—',
-                      ),
-                      _detailRow(
-                        'Note',
-                        (photo.note != null && photo.note!.trim().isNotEmpty)
-                            ? photo.note!
-                            : '—',
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-
-                  _buildLocationCard(photo),
-                  const SizedBox(height: 12),
-
-                  _buildStatusCard(photo),
-
-                  if (photo.profiles != null && photo.profiles!.isNotEmpty) ...[
-                    const SizedBox(height: 12),
-                    _buildProfileTags(photo),
-                  ],
-
-                  const SizedBox(height: 24),
-                  _buildDeleteButton(photo),
-                  const SizedBox(height: 32),
-                ],
-              ),
+                );
+              },
             ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildAttemptDetails(PhotoModel photo, Color svcColor) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildProfileHeader(photo, svcColor),
+        const SizedBox(height: 14),
+        _buildDetailsGroup(
+          title: 'Job',
+          children: [
+            _detailRow(
+              'File Number',
+              (photo.fileNumber != null &&
+                      photo.fileNumber!.trim().isNotEmpty)
+                  ? photo.fileNumber!
+                  : '—',
+            ),
+            _detailRow(
+              'Job Status',
+              (photo.status ?? 'open').replaceAll('_', ' '),
+            ),
+            if (photo.payRate != null)
+              _detailRow('Payout', '\$${photo.payRate}'),
+          ],
+        ),
+        const SizedBox(height: 12),
+        if (photo.status == 'completed' || photo.status == 'archived') ...[
+          _buildStatusSummaryCard(photo),
+          const SizedBox(height: 12),
+        ],
+        _buildDetailsGroup(
+          title: 'Attempt',
+          children: [
+            _detailRow(
+              'Attempt Status',
+              attemptStatusByValue(photo.attemptStatus)?.label ??
+                  photo.attemptStatus,
+            ),
+            _detailRow(
+              'Captured',
+              _formatTs(photo.timestamp),
+              trailing: _withinTsWindow(photo)
+                  ? TextButton(
+                      onPressed: () => _editTimestamp(photo),
+                      child: const Text('Edit'),
+                    )
+                  : null,
+            ),
+            _detailRow(
+              'Delivery Style',
+              (photo.completionType != null &&
+                      photo.completionType!.trim().isNotEmpty)
+                  ? photo.completionType!
+                  : '—',
+            ),
+            _detailRow(
+              'Served To',
+              (photo.servedTo != null && photo.servedTo!.trim().isNotEmpty)
+                  ? photo.servedTo!
+                  : '—',
+            ),
+            _detailRow(
+              'Relation To',
+              (photo.relationTo != null &&
+                      photo.relationTo!.trim().isNotEmpty)
+                  ? photo.relationTo!
+                  : '—',
+            ),
+            _detailRow(
+              'Note',
+              (photo.note != null && photo.note!.trim().isNotEmpty)
+                  ? photo.note!
+                  : '—',
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        _buildLocationCard(photo),
+        const SizedBox(height: 12),
+        _buildStatusCard(photo),
+        if (photo.profiles != null &&
+            photo.profiles!
+                .where((p) => p.id != photo.profileId)
+                .isNotEmpty) ...[
+          const SizedBox(height: 12),
+          _buildProfileTags(photo),
+        ],
+        const SizedBox(height: 24),
+        _buildDeleteButton(photo),
+        const SizedBox(height: 32),
+      ],
     );
   }
 
@@ -2053,7 +2171,9 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
             Wrap(
               spacing: 8,
               runSpacing: 8,
-              children: photo.profiles!.map((p) {
+              children: photo.profiles!
+                  .where((p) => p.id != photo.profileId)
+                  .map((p) {
                 final color = _svcColor(p.serviceType);
                 return Container(
                   padding: const EdgeInsets.symmetric(

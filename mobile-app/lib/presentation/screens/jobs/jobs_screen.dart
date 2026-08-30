@@ -214,7 +214,10 @@ class _JobsScreenState extends ConsumerState<JobsScreen> {
                           );
                           if (!ok || !context.mounted) return;
                           if (pid != null) {
-                            context.push('/upload?profileId=$pid');
+                            context.push(
+                              '/new-attempt?profileId=$pid',
+                              extra: job.profile,
+                            );
                           } else {
                             context.push('/upload');
                           }

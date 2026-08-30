@@ -17,6 +17,7 @@ import '../../providers/log_provider.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
 import '../settings/ai_assistant_sheet.dart';
+import '../../widgets/common/create_profile_dialog.dart';
 import '../../widgets/common/pill_chip.dart';
 import 'attempt_draft_controller.dart';
 import 'attempt_limits.dart';
@@ -271,7 +272,7 @@ class _AttemptsDashboardScreenState
             color: AttemptsDashboardScreen._accent,
             borderRadius: BorderRadius.circular(12),
             child: InkWell(
-              onTap: () => context.push('/profiles-management'),
+              onTap: () => _openNewProfile(context),
               borderRadius: BorderRadius.circular(12),
               child: const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -287,6 +288,24 @@ class _AttemptsDashboardScreenState
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Future<void> _openNewProfile(BuildContext context) async {
+    HapticFeedback.lightImpact();
+    final created = await showCreateProfileDialog(context);
+    if (!mounted || created == null) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Profile "${created.name}" created'),
+        action: SnackBarAction(
+          label: 'Add attempt',
+          onPressed: () => context.push(
+            '/new-attempt?profileId=${created.id}',
+            extra: created,
+          ),
+        ),
       ),
     );
   }

@@ -47,6 +47,7 @@ typedef CreateProfileArgs = ({
   String? company,
   int? payRate,
   String? deliveryStyle,
+  String? fileNumber,
   String? status,
   String? address,
   String? city,
@@ -67,6 +68,7 @@ final createProfileProvider =
       company: args.company,
       payRate: args.payRate,
       deliveryStyle: args.deliveryStyle,
+      fileNumber: args.fileNumber,
       status: args.status,
       address: args.address,
       city: args.city,
@@ -117,6 +119,19 @@ final updateProfileProvider =
       latitude: args.latitude,
       longitude: args.longitude,
     );
+  },
+);
+
+/// Set profile lifecycle status (archive from completed).
+final setProfileStatusProvider =
+    FutureProvider.family<void, ({int profileId, String status})>(
+  (ref, args) async {
+    final repository = ref.watch(profileRepositoryProvider);
+    await repository.setProfileStatus(
+      profileId: args.profileId,
+      status: args.status,
+    );
+    ref.invalidate(profilesProvider);
   },
 );
 

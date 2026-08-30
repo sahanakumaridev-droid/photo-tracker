@@ -11,6 +11,7 @@ import '../../../data/models/profile_model.dart';
 import '../../providers/location_provider.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
+import '../../widgets/common/create_profile_dialog.dart';
 
 class ProfilesScreenV2 extends ConsumerStatefulWidget {
   const ProfilesScreenV2({super.key});
@@ -196,90 +197,11 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
     );
   }
 
-  void _showCreateProfileDialog(BuildContext context) {
-    final nameController = TextEditingController();
-    final payRateController = TextEditingController();
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Create Profile'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameController,
-              textCapitalization: TextCapitalization.words,
-              inputFormatters: const [TitleCaseInputFormatter()],
-              decoration: const InputDecoration(
-                labelText: 'Profile Name',
-                hintText: 'Enter profile name',
-              ),
-            ),
-            const SizedBox(height: 8),
-            // Service level is chosen per-photo during upload, not on the
-            // profile — so there's only ever one place to set it.
-            const Text(
-              "You'll choose the service level when you upload a photo.",
-              style: TextStyle(fontSize: 12, color: Colors.grey),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: payRateController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: 'Pay Rate (Optional)',
-                prefixText: r'$',
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              if (nameController.text.isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Please enter a name')),
-                );
-                return;
-              }
-              try {
-                await ref.read(createProfileProvider((
-                  name: nameController.text,
-                  serviceType: kDefaultCategory,
-                  company: kDefaultCompanyId,
-                  payRate: int.tryParse(payRateController.text.trim()),
-                  deliveryStyle: null,
-                  status: null,
-                  address: null,
-                  city: null,
-                  state: null,
-                  postalCode: null,
-                  latitude: null,
-                  longitude: null,
-                )).future);
-                if (context.mounted) {
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Profile created')),
-                  );
-                }
-              } catch (e) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Error: $e')),
-                  );
-                }
-              }
-            },
-            child: const Text('Create'),
-          ),
-        ],
-      ),
+  Future<void> _showCreateProfileDialog(BuildContext context) async {
+    final created = await showCreateProfileDialog(context);
+    if (!context.mounted || created == null) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Profile "${created.name}" created')),
     );
   }
 

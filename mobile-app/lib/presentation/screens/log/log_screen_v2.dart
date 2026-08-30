@@ -14,11 +14,18 @@ import '../../../core/utils/attempt_status.dart';
 import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../core/utils/maps_launcher.dart';
+import '../../../core/utils/photo_stamp.dart';
+import '../../../core/utils/profile_lifecycle.dart';
+import '../../../data/models/company.dart';
 import '../../../data/models/log_entry_model.dart';
+import '../../../data/models/profile_model.dart';
 import '../../providers/location_provider.dart';
 import '../../providers/log_provider.dart';
+import '../../providers/profile_provider.dart';
 import '../../widgets/ai/voice_mic_button.dart';
+import '../../widgets/common/create_profile_dialog.dart';
 import '../../widgets/common/pill_chip.dart';
+import '../upload/attempt_draft_controller.dart';
 
 class LogScreenV2 extends ConsumerStatefulWidget {
   const LogScreenV2({super.key, this.initialCategory});
@@ -426,10 +433,10 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
           'name': log.profileName ?? '',
           'date_time': dateTime,
           'priority_level': categoryLabel(log.category),
-          'address': _streetZip(log),
+          'address': formatStreetNameAndZip(
+              address: log.address, zipCode: log.zipCode),
           'notes': log.note ?? '',
-          'coordinates':
-              '${log.latitude.toStringAsFixed(6)}, ${log.longitude.toStringAsFixed(6)}',
+          'coordinates': formatCoordinates(log.latitude, log.longitude),
           'photo_id': log.id,
         };
         return rec;
@@ -445,18 +452,6 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     } catch (e) {
       if (mounted) _showSnack('Export failed: $e');
     }
-  }
-
-  // Address for the profile export: street number + name, plus ZIP. Falls back
-  // to any 5-digit token in the address when zip_code isn't set.
-  String _streetZip(LogEntryModel log) {
-    final full = (log.address ?? '').trim();
-    final street = full.isEmpty ? '' : full.split(',').first.trim();
-    var zip = (log.zipCode ?? '').trim();
-    if (zip.isEmpty) {
-      zip = RegExp(r'\b\d{5}(?:-\d{4})?\b').firstMatch(full)?.group(0) ?? '';
-    }
-    return [street, zip].where((s) => s.isNotEmpty).join(', ');
   }
 
   // ── Filter sheet ──────────────────────────────────────────────────────────
@@ -830,7 +825,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'Activity',
+                      'Profiles',
                       style: TextStyle(
                         fontSize: 28,
                         fontWeight: FontWeight.w800,
@@ -854,6 +849,49 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                   ],
                 ),
               ),
+              if (!_selectionMode)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Material(
+                    color: _accent,
+                    borderRadius: BorderRadius.circular(12),
+                    child: InkWell(
+                      onTap: () async {
+                        HapticFeedback.lightImpact();
+                        final created =
+                            await showCreateProfileDialog(context);
+                        if (!mounted || created == null) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content:
+                                Text('Profile "${created.name}" created'),
+                            action: SnackBarAction(
+                              label: 'Add attempt',
+                              onPressed: () => context
+                                  .push(
+                                '/new-attempt?profileId=${created.id}',
+                                extra: created,
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                      borderRadius: BorderRadius.circular(12),
+                      child: const Padding(
+                        padding:
+                            EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        child: Text(
+                          'New Profile',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               // ── Send selected — only while selecting, and only once
               // something is chosen. Emails logged data + photo.
               if (_selectionMode && _selectedLogIds.isNotEmpty)
@@ -1188,22 +1226,30 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
   // ── Grouped list ──────────────────────────────────────────────────────────
   Widget _buildGroupedList(List<LogEntryModel> logs, dynamic userPos) {
     final groups = _groupByDate(logs);
-    // Sort each date group nearest-first when location is available.
-    if (userPos != null) {
-      for (final key in groups.keys) {
-        groups[key]!.sort((a, b) {
-          final da = LocationService.calculateDistance(
-            userPos.latitude, userPos.longitude, a.latitude, a.longitude);
-          final db = LocationService.calculateDistance(
-            userPos.latitude, userPos.longitude, b.latitude, b.longitude);
-          return da.compareTo(db);
-        });
-      }
+    for (final list in groups.values) {
+      list.sort((a, b) => (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
     }
     final sectionOrder = ['Today', 'Yesterday', 'Earlier This Week'];
+    DateTime? sectionDate(String key) {
+      try {
+        return DateFormat('MMMM yyyy').parse(key);
+      } catch (_) {
+        return null;
+      }
+    }
+
+    final extraKeys = groups.keys.where((k) => !sectionOrder.contains(k)).toList()
+      ..sort((a, b) {
+        final da = sectionDate(a);
+        final db = sectionDate(b);
+        if (da != null && db != null) return db.compareTo(da);
+        if (da != null) return -1;
+        if (db != null) return 1;
+        return a.compareTo(b);
+      });
     final orderedKeys = [
       ...sectionOrder.where(groups.containsKey),
-      ...groups.keys.where((k) => !sectionOrder.contains(k)),
+      ...extraKeys,
     ];
 
     return RefreshIndicator(
@@ -1326,6 +1372,26 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     final selected = _selectedLogIds.contains(log.id);
     final unsuccessful =
         normalizeAttemptStatus(log.attemptStatus) == kAttemptStatusUnsuccessful;
+    ProfileModel? profile;
+    if (log.profiles != null && log.profiles!.isNotEmpty) {
+      profile = log.profiles!.first;
+    } else if (log.profileId != null) {
+      for (final p in ref.watch(profilesProvider).valueOrNull ?? const []) {
+        if (p.id == log.profileId) {
+          profile = p;
+          break;
+        }
+      }
+    }
+    final companyName = profile == null
+        ? null
+        : ((profile.companyName ?? '').trim().isNotEmpty
+            ? profile.companyName!.trim()
+            : companyOrDefault(profile.company).name);
+    final attemptN = (profile?.attemptsCount ?? 0) > 0
+        ? profile!.attemptsCount
+        : 1;
+    final attemptMax = attemptCapForProfile(profile);
 
     return GestureDetector(
       onTap: _selectionMode
@@ -1380,6 +1446,8 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                         child: _selectCircle(selected),
                       ),
                     // ── Thumbnail ──────────────────────────────────────
+                    Column(
+                      children: [
                     ClipRRect(
                       borderRadius: BorderRadius.circular(12),
                       child: CachedNetworkImage(
@@ -1408,6 +1476,17 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                         ),
                       ),
                     ),
+                        const SizedBox(height: 6),
+                        Text(
+                          '$attemptN of $attemptMax',
+                          style: const TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: _inkMuted,
+                          ),
+                        ),
+                      ],
+                    ),
                     const SizedBox(width: 12),
                     // ── Info ───────────────────────────────────────────
                     Expanded(
@@ -1431,6 +1510,23 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
+                              if (companyName != null &&
+                                  companyName.isNotEmpty) ...[
+                                const SizedBox(width: 8),
+                                Flexible(
+                                  child: Text(
+                                    companyName,
+                                    textAlign: TextAlign.right,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: _inkMuted,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ],
                           ),
                           const SizedBox(height: 6),

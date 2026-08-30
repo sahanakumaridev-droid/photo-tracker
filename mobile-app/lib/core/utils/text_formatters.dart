@@ -77,6 +77,46 @@ class SentenceCaseInputFormatter extends TextInputFormatter {
   }
 }
 
+/// Sentence case plus a closing period for talk-to-text notes.
+String formatProfessionalNotes(String raw, {bool closingPeriod = true}) {
+  var text = raw.trim();
+  if (text.isEmpty) return text;
+  final buf = StringBuffer();
+  var capNext = true;
+  var pendingPunct = false;
+  for (var i = 0; i < text.length; i++) {
+    final ch = text[i];
+    if (ch == '\n') {
+      buf.write(ch);
+      capNext = true;
+      pendingPunct = false;
+    } else if (ch == ' ' || ch == '\t') {
+      buf.write(ch);
+      if (pendingPunct) {
+        capNext = true;
+        pendingPunct = false;
+      }
+    } else if (ch == '.' || ch == '!' || ch == '?') {
+      buf.write(ch);
+      pendingPunct = true;
+    } else if (_letter.hasMatch(ch)) {
+      buf.write(capNext ? ch.toUpperCase() : ch);
+      capNext = false;
+      pendingPunct = false;
+    } else {
+      buf.write(ch);
+      pendingPunct = false;
+    }
+  }
+  text = buf.toString().trim();
+  if (closingPeriod &&
+      text.isNotEmpty &&
+      !RegExp(r'[.!?]$').hasMatch(text)) {
+    text = '$text.';
+  }
+  return text;
+}
+
 /// Capitalises the first letter of every word — for names. Word boundaries are
 /// whitespace plus `-` and `/` (so "mary-jane" → "Mary-Jane"). Mirrors
 /// `TextCapitalization.words`, but actually applied.

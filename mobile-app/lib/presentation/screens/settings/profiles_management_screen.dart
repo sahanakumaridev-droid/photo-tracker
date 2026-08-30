@@ -5,8 +5,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../../../config/map_tiles.dart';
 import '../../../core/ai/spoken_parser.dart';
 import '../../../core/utils/location_service.dart';
+import '../../../core/utils/profile_lifecycle.dart';
 import '../../../core/utils/text_formatters.dart';
 import '../../../data/models/company.dart';
 import '../../../data/models/delivery_style.dart';
@@ -211,10 +213,16 @@ class _ProfilesManagementScreenState
   }
 
   String get _statusHelper {
-    if (_status == 'awaiting_attempt') {
-      return 'Created, but field work has not started yet.';
+    switch (normalizeProfileStatus(_status)) {
+      case kProfileInProgress:
+        return 'At least one attempt is logged. Diligence is not met yet.';
+      case kProfileCompleted:
+        return 'Successful attempt or diligence is complete. Archive after payment.';
+      case kProfileArchived:
+        return 'Paid in full. Export only.';
+      default:
+        return 'Created, but no attempt has been made yet.';
     }
-    return 'Open and ready for field work.';
   }
 
   void _applyPickedLocation(
@@ -325,7 +333,7 @@ class _ProfilesManagementScreenState
           note: _noteController.text.isEmpty ? null : _noteController.text,
           payRate: payRate,
           deliveryStyle: _deliveryStyle,
-          status: _status,
+          status: null,
           address: orNull(_addressController),
           city: orNull(_cityController),
           state: orNull(_stateController),
@@ -347,7 +355,8 @@ class _ProfilesManagementScreenState
           company: _companyId,
           payRate: payRate,
           deliveryStyle: _deliveryStyle,
-          status: _status,
+          fileNumber: null,
+          status: 'pending',
           address: orNull(_addressController),
           city: orNull(_cityController),
           state: orNull(_stateController),
@@ -669,28 +678,18 @@ class _ProfilesManagementScreenState
             _divider(),
             _fieldLabel('Status'),
             const SizedBox(height: 6),
-            _helper(_statusHelper),
-            const SizedBox(height: 10),
-            _dropdownShell(
-              child: DropdownButtonFormField<String?>(
-                initialValue: _status,
-                decoration: const InputDecoration(
-                  border: InputBorder.none,
-                  contentPadding:
-                      EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-                ),
-                style: _fieldStyle,
-                icon: const Icon(Icons.expand_more_rounded, color: _inkSubtle),
-                items: const [
-                  DropdownMenuItem(value: null, child: Text('Active')),
-                  DropdownMenuItem(
-                    value: 'awaiting_attempt',
-                    child: Text('Awaiting Attempt'),
-                  ),
-                ],
-                onChanged: (v) => setState(() => _status = v),
+            Text(
+              _isEditing
+                  ? profileStatusLabel(_status)
+                  : 'Pending',
+              style: const TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+                color: _ink,
               ),
             ),
+            const SizedBox(height: 6),
+            _helper(_statusHelper),
           ],
         ),
       );
@@ -819,14 +818,7 @@ class _ProfilesManagementScreenState
                       ),
                     ),
                     children: [
-                      TileLayer(
-                        urlTemplate:
-                            'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-                        subdomains: const ['a', 'b', 'c', 'd'],
-                        retinaMode: false,
-                        tileSize: 256,
-                        userAgentPackageName: 'com.example.photo_tracker',
-                      ),
+                      AppMapTiles.layer(),
                       MarkerLayer(
                         markers: [
                           Marker(

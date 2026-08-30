@@ -603,8 +603,8 @@ function AddPinModal({ profileId, profileName, onClose, onSaved }) {
               </div>
               <MapContainer center={[location.lat, location.lng]} zoom={15} style={{height:'calc(100% - 28px)', width:'100%'}}>
                 <TileLayer
-                  url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
-                  attribution='&copy; OpenStreetMap &copy; CARTO'
+                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  attribution='&copy; OpenStreetMap contributors'
                 />
                 <MapPicker location={location} onPick={(lat, lng) => setLocation({ lat, lng })} />
               </MapContainer>

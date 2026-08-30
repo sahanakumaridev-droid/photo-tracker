@@ -74,10 +74,21 @@ String formatStampFriendly(String? iso) {
   }
 }
 
-/// Street number + name, plus ZIP — same formatting as the profile export
-/// address column. Takes the first comma-segment of [address] as the street
-/// line and appends [zipCode] (or the first 5-digit token in the address).
+/// Street number + name, plus ZIP only — used in email body fields.
 String formatStreetZip({String? address, String? zipCode}) {
+  var full = (address ?? '').trim().replaceAll(RegExp(r'\s+'), ' ');
+  var zip = (zipCode ?? '').trim();
+  if (zip.isEmpty) {
+    zip = RegExp(r'\b\d{5}(?:-\d{4})?\b').firstMatch(full)?.group(0) ?? '';
+  }
+  if (full.isEmpty) return zip;
+  if (zip.isEmpty) return full;
+  if (RegExp('\\b${RegExp.escape(zip)}\\b').hasMatch(full)) return full;
+  return '$full, $zip';
+}
+
+/// Email body address: street line + ZIP only (no city/state).
+String formatStreetNameAndZip({String? address, String? zipCode}) {
   final full = (address ?? '').trim();
   final street = full.isEmpty ? '' : full.split(',').first.trim();
   var zip = (zipCode ?? '').trim();
@@ -87,10 +98,17 @@ String formatStreetZip({String? address, String? zipCode}) {
   return [street, zip].where((s) => s.isNotEmpty).join(', ');
 }
 
+/// GPS line for watermarks: `32.779797, -117.132820`
+String formatCoordinates(double? latitude, double? longitude) {
+  if (latitude == null || longitude == null) return '';
+  if (latitude.abs() < 0.0001 && longitude.abs() < 0.0001) return '';
+  return '${latitude.toStringAsFixed(6)}, ${longitude.toStringAsFixed(6)}';
+}
+
 /// Builds the multi-line overlay caption burned into / overlaid on every photo:
 ///   FILE-123              (file number, or profile name when no file #)
 ///   06/22/2026 08:28 AM
-///   4822 Reno Drive, 92101
+///   4822 Reno Drive, San Diego, CA 92101
 ///   32.690861, -117.113289
 /// Empty fields are dropped so the bar only shows what's known. Priority /
 /// service level is intentionally omitted from watermarks.
@@ -115,12 +133,10 @@ List<String> buildStampLines({
   if (heading.isNotEmpty) lines.add(heading);
   final ts = formatStampFriendly(takenAtIso);
   if (ts.isNotEmpty) lines.add(ts);
-  final streetZip = formatStreetZip(address: address, zipCode: zipCode);
-  if (streetZip.isNotEmpty) lines.add(streetZip);
-  if (latitude != null && longitude != null) {
-    lines.add('${latitude.toStringAsFixed(6)}, '
-        '${longitude.toStringAsFixed(6)}');
-  }
+  final location = formatStreetZip(address: address, zipCode: zipCode);
+  if (location.isNotEmpty) lines.add(location);
+  final coords = formatCoordinates(latitude, longitude);
+  if (coords.isNotEmpty) lines.add(coords);
   final meta = <String>[
     if (attemptNumber != null) 'Attempt #$attemptNumber',
     if (agentName != null && agentName.trim().isNotEmpty)
@@ -461,6 +477,7 @@ class WatermarkCaption extends StatelessWidget {
     this.attemptNumber,
     this.agentName,
     this.compact = false,
+    this.below,
     @Deprecated('Priority is no longer shown on watermarks')
     this.serviceLabel,
     super.key,
@@ -478,6 +495,9 @@ class WatermarkCaption extends StatelessWidget {
 
   /// Compact = smaller text for feed cards; full = larger for the detail view.
   final bool compact;
+
+  /// Drawn under the caption lines (e.g. photo-page dots).
+  final Widget? below;
 
   @Deprecated('Priority is no longer shown on watermarks')
   final String? serviceLabel;
@@ -537,6 +557,10 @@ class WatermarkCaption extends StatelessWidget {
                     ],
                   ),
                 ),
+              if (below != null) ...[
+                const SizedBox(height: 8),
+                below!,
+              ],
             ],
           ),
         ),

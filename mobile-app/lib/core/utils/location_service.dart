@@ -415,6 +415,24 @@ class LocationService {
 
   // ── Distance ──────────────────────────────────────────────────────────────
 
+  static const double kAttemptProximityFt = 200;
+
+  static bool usableCoordinates(double? lat, double? lng) =>
+      lat != null &&
+      lng != null &&
+      lat.abs() <= 90 &&
+      lng.abs() <= 180 &&
+      (lat.abs() > 0.0001 || lng.abs() > 0.0001);
+
+  /// Haversine distance in feet.
+  static double distanceFeet(
+    double lat1,
+    double lon1,
+    double lat2,
+    double lon2,
+  ) =>
+      calculateDistance(lat1, lon1, lat2, lon2) * 3280.84;
+
   /// Haversine distance between two points in kilometres.
   static double calculateDistance(
     double lat1,

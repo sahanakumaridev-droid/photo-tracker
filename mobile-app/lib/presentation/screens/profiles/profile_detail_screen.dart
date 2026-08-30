@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../config/theme.dart';
+import '../../../core/utils/file_number.dart';
+import '../../../core/utils/profile_lifecycle.dart';
 import '../../../data/models/attempt.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/profile_provider.dart';
@@ -48,7 +50,20 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
       knownCount: known,
     );
     if (!ok || !context.mounted) return;
-    await context.push('/upload?profileId=${widget.profileId}');
+    ProfileModel? extra;
+    final list = ref.read(profilesProvider).valueOrNull;
+    if (list != null) {
+      for (final p in list) {
+        if (p.id == widget.profileId) {
+          extra = p;
+          break;
+        }
+      }
+    }
+    await context.push(
+      '/new-attempt?profileId=${widget.profileId}',
+      extra: extra,
+    );
     if (!mounted) return;
     refreshProfileWork(ref, profileId: widget.profileId);
   }
@@ -115,12 +130,12 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
               slivers: [
               // ── Profile-specific information (above attempts) ───────────
               SliverToBoxAdapter(
-                child: _buildProfileInfo(profile, attempts.length),
+                child: _buildProfileInfo(profile, attempts),
               ),
               SliverToBoxAdapter(
                 child: _buildAttemptActions(
-                  atCap: attempts.length >=
-                      AttemptDraftController.kMaxAttemptsPerJob,
+                  profile: profile,
+                  attemptCount: attempts.length,
                 ),
               ),
               SliverToBoxAdapter(
@@ -128,13 +143,13 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
               ),
               // ── Service Attempts ───────────────────────────────────────
               SliverToBoxAdapter(
-                child: _buildAttemptsHeader(attempts.length),
+                child: _buildAttemptsHeader(attempts.length, profile),
               ),
               if (attempts.isEmpty)
                 SliverToBoxAdapter(child: _buildEmptyAttempts())
               else
                 SliverToBoxAdapter(
-                  child: _buildAttemptsList(attempts),
+                  child: _buildAttemptsList(attempts, profile),
                 ),
               const SliverToBoxAdapter(child: SizedBox(height: 40)),
             ],
@@ -145,60 +160,134 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
     );
   }
 
-  Widget _buildAttemptActions({required bool atCap}) {
+  Widget _buildAttemptActions({
+    required ProfileModel? profile,
+    required int attemptCount,
+  }) {
+    final cap = attemptCapForProfile(profile);
+    final blocked = profile != null && !profile.canAddAttempts;
+    final atCap = blocked || attemptCount >= cap;
+    String label = 'Add Attempt';
+    if (blocked) {
+      label = profileCanArchive(profile.status)
+          ? 'Completed'
+          : 'Archived';
+    } else if (attemptCount >= cap) {
+      label = 'Max attempts';
+    }
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
-      child: Align(
-        alignment: Alignment.centerRight,
-        child: IntrinsicWidth(
-          child: GestureDetector(
-            onTap: atCap ? null : _startAttempt,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
-              decoration: BoxDecoration(
-                color: atCap ? const Color(0xFFE3E7EE) : _accent,
-                borderRadius: BorderRadius.circular(24),
-              ),
-              alignment: Alignment.center,
-              child: Text(
-                atCap ? 'Max attempts' : 'Add Attempt',
+      child: Row(
+        children: [
+          if (profile != null && profile.canArchive)
+            TextButton(
+              onPressed: () => _archiveProfile(profile),
+              child: const Text(
+                'Mark archived',
                 style: TextStyle(
-                  fontSize: 14,
                   fontWeight: FontWeight.w700,
-                  color: atCap ? _muted : Colors.white,
+                  color: _muted,
+                ),
+              ),
+            ),
+          const Spacer(),
+          IntrinsicWidth(
+            child: GestureDetector(
+              onTap: atCap ? null : _startAttempt,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
+                decoration: BoxDecoration(
+                  color: atCap ? const Color(0xFFE3E7EE) : _accent,
+                  borderRadius: BorderRadius.circular(24),
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: atCap ? _muted : Colors.white,
+                  ),
                 ),
               ),
             ),
           ),
-        ),
+        ],
       ),
     );
   }
 
-  Widget _buildProfileInfo(ProfileModel? profile, int attemptCount) {
+  Future<void> _archiveProfile(ProfileModel profile) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Archive this profile?'),
+        content: const Text(
+          'Use archive after you have independently verified payment. '
+          'This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Archive'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      await ref.read(setProfileStatusProvider((
+        profileId: profile.id,
+        status: kProfileArchived,
+      )).future);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Profile archived')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$e')),
+      );
+    }
+  }
+
+  Widget _buildProfileInfo(ProfileModel? profile, List<Attempt> attempts) {
     if (profile == null) return const SizedBox.shrink();
+    String? fileNumber;
+    for (final a in attempts) {
+      final fn = (a.fileNumber ?? '').trim();
+      if (fn.isNotEmpty && fn.toUpperCase() != 'N/A') {
+        fileNumber = fn;
+        break;
+      }
+    }
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          ProfileFactsCard(profile: profile),
-          if (profile.isAwaitingAttempt) ...[
-            const SizedBox(height: 10),
-            Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              decoration: BoxDecoration(
-                color: AppTheme.warning.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Text('Awaiting Attempt',
-                  style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.warning)),
+          ProfileFactsCard(profile: profile, fileNumber: fileNumber),
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: profileStatusColor(profile.status).withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(8),
             ),
-          ],
+            child: Text(
+              profileStatusLabel(profile.status),
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: profileStatusColor(profile.status),
+              ),
+            ),
+          ),
           if (profile.note?.isNotEmpty == true) ...[
             const SizedBox(height: 10),
             Text(profile.note!,
@@ -299,7 +388,8 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
     );
   }
 
-  Widget _buildAttemptsHeader(int count) {
+  Widget _buildAttemptsHeader(int count, ProfileModel? profile) {
+    final cap = attemptCapForProfile(profile);
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
       child: Row(
@@ -309,7 +399,7 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                   fontSize: 15, fontWeight: FontWeight.w700, color: _ink)),
           const Spacer(),
           Text(
-            '$count of ${AttemptDraftController.kMaxAttemptsPerJob} attempts',
+            '$count of $cap attempts',
             style: const TextStyle(fontSize: 13, color: _muted),
           ),
         ],
@@ -344,7 +434,7 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
     );
   }
 
-  Widget _buildAttemptsList(List<Attempt> attempts) {
+  Widget _buildAttemptsList(List<Attempt> attempts, ProfileModel? profile) {
     final visibleCount = _showAllAttempts
         ? attempts.length
         : attempts.length.clamp(0, _kInitialVisible);
@@ -363,6 +453,7 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
             if (i > 0) const Divider(height: 1, color: _hair),
             _AttemptRow(
               attempt: attempts[i],
+              profileFileNumber: profile?.fileNumber,
               onTap: () => context.push('/photo/${attempts[i].photoId}'),
             ),
           ],
@@ -413,10 +504,15 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
 }
 
 class _AttemptRow extends StatelessWidget {
-  const _AttemptRow({required this.attempt, required this.onTap});
+  const _AttemptRow({
+    required this.attempt,
+    required this.onTap,
+    this.profileFileNumber,
+  });
 
   final Attempt attempt;
   final VoidCallback onTap;
+  final String? profileFileNumber;
 
   static const Color _ink = Color(0xFF1A2130);
   static const Color _muted = Color(0xFF5C6778);
@@ -426,7 +522,10 @@ class _AttemptRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final outcome = attempt.statusOption;
-    final fileNo = (attempt.fileNumber ?? '').trim();
+    final fileNo = inheritedFileNumber(
+      profileFileNumber: profileFileNumber,
+      attemptFileNumber: attempt.fileNumber,
+    );
     final notes = (attempt.note ?? '').trim();
     final thumb = attempt.primaryPhoto?.imageUrl.trim() ?? '';
 

@@ -18,6 +18,7 @@ import '../../../core/storage/local_storage.dart';
 import '../../../core/storage/upload_queue.dart';
 import '../../../core/utils/attempt_status.dart';
 import '../../../core/utils/category.dart';
+import '../../../core/utils/file_number.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../core/utils/photo_stamp.dart';
 import '../../../data/models/attempt.dart';
@@ -40,7 +41,7 @@ enum AttemptUploadState { idle, uploading, processing, success, failed }
 /// that need them (dialogs, provider reads) take them as parameters, passed
 /// in by whichever screen is presenting at the time.
 class AttemptDraftController extends ChangeNotifier {
-  AttemptDraftController({this.initialProfileId}) {
+  AttemptDraftController({this.initialProfileId, this.seedProfile}) {
     poorNetwork = NetworkQualityService.instance.isPoor;
     // F5: auto-save the draft whenever a text field changes. Also forces a
     // rebuild via notifyListeners so hub/checklist "done" captions and the
@@ -65,7 +66,7 @@ class AttemptDraftController extends ChangeNotifier {
   // and to find candidates for the post-upload "Duplicate Attempt?" offer.
   static const double kProfileProximityFt = 200;
 
-  static const int kMaxAttemptsPerJob = 5;
+  static const int kMaxAttemptsPerJob = 6;
 
   static const List<String> kServedToPresets = [
     'Same as profile',
@@ -78,6 +79,10 @@ class AttemptDraftController extends ChangeNotifier {
   /// Profile's stored location is never copied into the attempt; GPS is
   /// still captured fresh (see [fetchLocation]).
   final int? initialProfileId;
+
+  /// Profile object from the screen that opened Add Attempt (create flow /
+  /// map pin). Used when the list API omits file_number.
+  final ProfileModel? seedProfile;
 
   /// True when opened via "Add to Existing Profile" (`?profileId=`).
   bool get isExistingProfileAttempt => initialProfileId != null;
@@ -117,6 +122,9 @@ class AttemptDraftController extends ChangeNotifier {
   final List<File> selectedImages = [];
   final List<String?> takenAts = [];
   ProfileModel? selectedProfile;
+
+  /// Other profiles this attempt should be duplicated onto after upload.
+  final Set<int> linkProfileIds = {};
   String companyId = kDefaultCompanyId;
   double? latitude;
   double? longitude;
@@ -313,7 +321,6 @@ class AttemptDraftController extends ChangeNotifier {
       hasPhoto &&
       selectedProfile != null &&
       latitude != null &&
-      fileNumberController.text.trim().isNotEmpty &&
       uploadState == AttemptUploadState.idle;
 
   /// Returns a hint about what's still needed before Complete Attempt is
@@ -322,7 +329,6 @@ class AttemptDraftController extends ChangeNotifier {
     final missing = <String>[];
     if (!hasPhoto) missing.add('photo');
     if (selectedProfile == null) missing.add('profile');
-    if (fileNumberController.text.trim().isEmpty) missing.add('file number');
     if (latitude == null && !isLoadingLocation) missing.add('location');
     if (isLoadingLocation) return 'Waiting for GPS…';
     if (missing.isEmpty) return '';
@@ -692,25 +698,38 @@ class AttemptDraftController extends ChangeNotifier {
   Future<void> maybeApplyInitialProfile(WidgetRef ref) async {
     final id = initialProfileId;
     if (id == null) return;
+    ProfileModel? found =
+        seedProfile != null && seedProfile!.id == id ? seedProfile : null;
     try {
       final profiles = await ref.read(profilesProvider.future);
       if (_disposed) return;
       for (final p in profiles) {
-        if (p.id == id) {
-          selectedProfile = p;
-          companyId = companyOrDefault(p.company).id;
-          if (companyOrDefault(companyId).allowsPriority(p.serviceType)) {
-            selectedCategory = p.serviceType;
-          } else {
-            selectedCategory = defaultPriorityForCompany(companyId);
-          }
-          notifyListeners();
-          saveDraft();
-          unawaited(_prefillLockedProfile(p, ref));
-          break;
-        }
+        if (p.id != id) continue;
+        final seedFn = (found?.fileNumber ?? '').trim();
+        final listFn = (p.fileNumber ?? '').trim();
+        found = listFn.isNotEmpty
+            ? p
+            : (seedFn.isNotEmpty ? p.copyWith(fileNumber: seedFn) : p);
+        break;
       }
-    } catch (_) {/* keep going without a pre-selected profile */}
+    } catch (_) {/* keep seed */}
+    if (_disposed || found == null) return;
+    final localFn = LocalStorage.fileNumberForProfile(found.id);
+    if ((found.fileNumber ?? '').trim().isEmpty &&
+        localFn != null &&
+        localFn.trim().isNotEmpty) {
+      found = found.copyWith(fileNumber: localFn.trim());
+    }
+    selectedProfile = found;
+    companyId = companyOrDefault(found.company).id;
+    if (companyOrDefault(companyId).allowsPriority(found.serviceType)) {
+      selectedCategory = found.serviceType;
+    } else {
+      selectedCategory = defaultPriorityForCompany(companyId);
+    }
+    notifyListeners();
+    saveDraft();
+    unawaited(_prefillLockedProfile(found, ref));
   }
 
   void _prefillProfileStandingFields(ProfileModel p, {bool force = false}) {
@@ -730,6 +749,11 @@ class AttemptDraftController extends ChangeNotifier {
     if (p.payRate != null &&
         (force || payRateController.text.trim().isEmpty)) {
       payRateController.text = '${p.payRate}';
+    }
+    final standingFn = (p.fileNumber ?? '').trim();
+    if (standingFn.isNotEmpty &&
+        (force || fileNumberController.text.trim().isEmpty)) {
+      fileNumberController.text = standingFn;
     }
     if (addressController.text.trim().isEmpty) {
       final parts = [
@@ -1158,6 +1182,7 @@ class AttemptDraftController extends ChangeNotifier {
 
   void setSelectedProfile(ProfileModel p, {WidgetRef? ref}) {
     selectedProfile = p;
+    linkProfileIds.clear();
     companyId = companyOrDefault(p.company).id;
     if (!companyOrDefault(companyId).allowsPriority(selectedCategory)) {
       selectedCategory = defaultPriorityForCompany(companyId);
@@ -1186,27 +1211,28 @@ class AttemptDraftController extends ChangeNotifier {
   Future<void> _prefillFromLatestAttempt(int profileId, WidgetRef ref) async {
     try {
       final attempts = await ref.read(profileAttemptsProvider(profileId).future);
-      if (_disposed || attempts.isEmpty) return;
-      // Selecting a different profile mid-picker before this resolves must
-      // not stomp on it — only apply if this is still the active selection.
-      if (selectedProfile?.id != profileId) return;
-      final latest = attempts.first;
+      if (_disposed || selectedProfile?.id != profileId) return;
       var changed = false;
-      if (!isExistingProfileAttempt &&
-          deliveryStyle == null &&
-          kDeliveryStyles.contains(latest.completionType)) {
-        deliveryStyle = latest.completionType;
-        changed = true;
+      if (fileNumberController.text.trim().isEmpty) {
+        final fromProfile = _fileNumberFromAttempts(attempts) ??
+            _fileNumberFromPhotos(profileId, ref);
+        if (fromProfile != null) {
+          fileNumberController.text = fromProfile;
+          changed = true;
+        }
       }
+      if (attempts.isEmpty) {
+        if (changed) {
+          notifyListeners();
+          saveDraft();
+        }
+        return;
+      }
+      final latest = attempts.first;
       if (!isExistingProfileAttempt &&
           payRateController.text.trim().isEmpty &&
           latest.payRate != null) {
         payRateController.text = latest.payRate.toString();
-        changed = true;
-      }
-      if (fileNumberController.text.trim().isEmpty &&
-          (latest.fileNumber ?? '').trim().isNotEmpty) {
-        fileNumberController.text = latest.fileNumber!.trim();
         changed = true;
       }
       if (servedToController.text.trim().isEmpty &&
@@ -1228,6 +1254,29 @@ class AttemptDraftController extends ChangeNotifier {
     }
   }
 
+  String? _fileNumberFromAttempts(List<Attempt> attempts) {
+    for (final a in attempts) {
+      final fn = (a.fileNumber ?? '').trim();
+      if (fn.isNotEmpty) return fn;
+      for (final p in a.photos) {
+        final pfn = (p.fileNumber ?? '').trim();
+        if (pfn.isNotEmpty) return pfn;
+      }
+    }
+    return null;
+  }
+
+  String? _fileNumberFromPhotos(int profileId, WidgetRef ref) {
+    final photos = ref.read(photosProvider).valueOrNull;
+    if (photos == null) return null;
+    for (final p in photos) {
+      if (p.profileId != profileId) continue;
+      final fn = (p.fileNumber ?? '').trim();
+      if (fn.isNotEmpty) return fn;
+    }
+    return null;
+  }
+
   void setSelectedCategory(String value) {
     if (isExistingProfileAttempt) return;
     selectedCategory = value;
@@ -1236,7 +1285,7 @@ class AttemptDraftController extends ChangeNotifier {
   }
 
   void setDeliveryStyle(String? value) {
-    if (isExistingProfileAttempt) return;
+    if (selectedProfile != null) return;
     deliveryStyle = value;
     notifyListeners();
     saveDraft();
@@ -1304,15 +1353,13 @@ class AttemptDraftController extends ChangeNotifier {
       showSnack(context, 'Please select a profile', isError: true);
       return;
     }
-    if (fileNumberController.text.trim().isEmpty) {
-      showSnack(context, 'Please enter a file number', isError: true);
-      return;
-    }
     if (latitude == null || longitude == null) {
       showSnack(context, 'Location required. Tap Refresh to retry.',
           isError: true);
       return;
     }
+    if (!await confirmAttemptNearProfile(context)) return;
+
     final servedToValue = servedToController.text.trim();
     if (isSuccessfulAttempt &&
         servedToValue.isNotEmpty &&
@@ -1348,10 +1395,19 @@ class AttemptDraftController extends ChangeNotifier {
             relationToController.text.trim().isNotEmpty)
         ? relationToController.text.trim()
         : null;
-    final fileNumber = fileNumberController.text.trim().isEmpty
-        ? null
-        : fileNumberController.text.trim();
-    final completionType = deliveryStyle;
+    final fromProfile = inheritedFileNumber(
+      profileFileNumber: (selectedProfile?.fileNumber ?? '').trim().isNotEmpty
+          ? selectedProfile!.fileNumber
+          : (selectedProfile != null
+              ? LocalStorage.fileNumberForProfile(selectedProfile!.id)
+              : null),
+      attemptFileNumber: fileNumberController.text,
+    );
+    final fileNumber = fromProfile.isNotEmpty ? fromProfile : kFileNumberNA;
+    final profileStyle = (selectedProfile?.deliveryStyle ?? '').trim();
+    final completionType = kDeliveryStyles.contains(profileStyle)
+        ? profileStyle
+        : null;
 
     // The watermark caption is now drawn as a live display overlay
     // (WatermarkCaption) in the feed + detail screens — from each photo's
@@ -1457,7 +1513,7 @@ class AttemptDraftController extends ChangeNotifier {
       notifyListeners();
       refreshProfileWork(ref, profileId: selectedProfile?.id);
       if (attemptId != null) {
-        unawaited(offerDuplicateAttempt(context, ref, attemptId));
+        unawaited(_duplicateToLinkedProfiles(context, ref, attemptId));
       }
     } catch (e) {
       debugPrint('[UPLOAD ERROR] $e');
@@ -1486,112 +1542,108 @@ class AttemptDraftController extends ChangeNotifier {
     }
   }
 
-  /// After a successful attempt, offer to duplicate it onto nearby profiles.
-  Future<void> offerDuplicateAttempt(
+  void toggleLinkProfile(int id) {
+    if (!linkProfileIds.add(id)) linkProfileIds.remove(id);
+    notifyListeners();
+  }
+
+  /// Blocks logging an attempt unless GPS is within 200 ft of the profile pin.
+  /// Creating a profile at a remote pin is allowed; doing the work is not.
+  Future<bool> confirmAttemptNearProfile(BuildContext context) async {
+    final p = selectedProfile;
+    if (p == null || latitude == null || longitude == null) return true;
+    if (!LocationService.usableCoordinates(p.latitude, p.longitude)) {
+      return true;
+    }
+    final ft = LocationService.distanceFeet(
+      latitude!,
+      longitude!,
+      p.latitude!,
+      p.longitude!,
+    );
+    if (ft <= kProfileProximityFt) return true;
+    if (!context.mounted) return false;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFFFFFFFF),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: const Text(
+          'Too far from this job',
+          style: TextStyle(
+            fontSize: 17,
+            fontWeight: FontWeight.w700,
+            color: Color(0xFF1A2130),
+          ),
+        ),
+        content: Text(
+          'You are ${ft >= 5280 ? '${(ft / 5280).toStringAsFixed(1)} mi' : '${ft.round()} ft'} '
+          'from this profile’s location. Log an attempt only when you are within '
+          '${kProfileProximityFt.toInt()} feet of the job.',
+          style: const TextStyle(
+            fontSize: 14,
+            color: Color(0xFF5C6778),
+            height: 1.4,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text(
+              'OK',
+              style: TextStyle(
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF4A90E2),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    return false;
+  }
+
+  List<ProfileModel> nearbyLinkProfiles(WidgetRef ref) {
+    final selectedId = selectedProfile?.id;
+    if (latitude == null || longitude == null) return const [];
+    final profiles = ref.read(profilesProvider).valueOrNull ?? const [];
+    return [
+      for (final p in profiles)
+        if (p.id != selectedId &&
+            p.latitude != null &&
+            p.longitude != null &&
+            p.canAddAttempts &&
+            const Distance().as(
+                  LengthUnit.Meter,
+                  LatLng(latitude!, longitude!),
+                  LatLng(p.latitude!, p.longitude!),
+                ) *
+                    3.28084 <=
+                kProfileProximityFt)
+          p,
+    ];
+  }
+
+  Future<void> _duplicateToLinkedProfiles(
     BuildContext context,
     WidgetRef ref,
     int attemptId,
   ) async {
-    if (_disposed || latitude == null || longitude == null) return;
-    final selectedId = selectedProfile?.id;
-    if (selectedId == null) return;
-
-    List<ProfileModel> nearby = [];
-    try {
-      final profiles = await ref.read(profilesProvider.future);
-      nearby = profiles.where((p) {
-        if (p.id == selectedId) return false;
-        if (p.latitude == null || p.longitude == null) return false;
-        final meters = const Distance().as(
-          LengthUnit.Meter,
-          LatLng(latitude!, longitude!),
-          LatLng(p.latitude!, p.longitude!),
-        );
-        return meters * 3.28084 <= kProfileProximityFt;
-      }).toList();
-    } catch (_) {
-      return;
-    }
-    if (_disposed || nearby.isEmpty || !context.mounted) return;
-
-    final selected = <int>{};
-    final go = await showDialog<bool>(
-      context: context,
-      useRootNavigator: true,
-      builder: (dialogCtx) => StatefulBuilder(
-        builder: (ctx, setSheet) => AlertDialog(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Text('Duplicate Attempt?'),
-          content: SizedBox(
-            width: double.maxFinite,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Other profiles within ${kProfileProximityFt.toInt()} ft. '
-                  'Duplicate this attempt onto selected profiles as independent copies.',
-                  style: const TextStyle(fontSize: 13, color: Color(0xFF6B7280)),
-                ),
-                const SizedBox(height: 12),
-                Flexible(
-                  child: ListView(
-                    shrinkWrap: true,
-                    children: [
-                      for (final p in nearby)
-                        CheckboxListTile(
-                          dense: true,
-                          value: selected.contains(p.id),
-                          title: Text(p.name,
-                              style: const TextStyle(
-                                  fontSize: 14, fontWeight: FontWeight.w600)),
-                          onChanged: (v) {
-                            setSheet(() {
-                              if (v == true) {
-                                selected.add(p.id);
-                              } else {
-                                selected.remove(p.id);
-                              }
-                            });
-                          },
-                        ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogCtx, false),
-              child: const Text('Skip'),
-            ),
-            ElevatedButton(
-              onPressed: selected.isEmpty
-                  ? null
-                  : () => Navigator.pop(dialogCtx, true),
-              child: const Text('Duplicate Attempt'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (_disposed || go != true || selected.isEmpty || !context.mounted) {
-      return;
-    }
+    if (_disposed || linkProfileIds.isEmpty) return;
     try {
       final n = await ref.read(profileRepositoryProvider).duplicateAttempt(
             attemptId: attemptId,
-            profileIds: selected.toList(),
+            profileIds: linkProfileIds.toList(),
           );
       if (_disposed || !context.mounted) return;
       refreshProfileWork(ref);
       showSnack(
-          context, 'Duplicated attempt to $n nearby profile${n == 1 ? '' : 's'}');
-    } catch (e) {
+        context,
+        'Linked attempt to $n profile${n == 1 ? '' : 's'}',
+      );
+    } catch (_) {
       if (!_disposed && context.mounted) {
-        showSnack(context, 'Could not duplicate attempt', isError: true);
+        showSnack(context, 'Could not link profiles', isError: true);
       }
     }
   }

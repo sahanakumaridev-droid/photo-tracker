@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/models/attempt.dart';
+import '../../../data/models/profile_model.dart';
 import 'attempt_composer_screen.dart';
 import 'attempt_draft_controller.dart';
 
@@ -14,6 +15,7 @@ class ResumeAttemptScreen extends ConsumerStatefulWidget {
   const ResumeAttemptScreen({
     super.key,
     this.initialProfileId,
+    this.initialProfile,
     this.resumeAttempt,
     this.localSnapshot,
   });
@@ -21,6 +23,8 @@ class ResumeAttemptScreen extends ConsumerStatefulWidget {
   /// "Add to Existing Profile" / Jobs New Attempt — pre-selects that profile
   /// and locks profile/company so attempt fields are editable in place.
   final int? initialProfileId;
+
+  final ProfileModel? initialProfile;
 
   /// A real, already-saved server Attempt to load for editing.
   final Attempt? resumeAttempt;
@@ -39,7 +43,10 @@ class _ResumeAttemptScreenState extends ConsumerState<ResumeAttemptScreen> {
   @override
   void initState() {
     super.initState();
-    controller = AttemptDraftController(initialProfileId: widget.initialProfileId);
+    controller = AttemptDraftController(
+      initialProfileId: widget.initialProfileId,
+      seedProfile: widget.initialProfile,
+    );
     controller.onNetworkImproved = () {
       if (!mounted) return;
       unawaited(controller.offerCachedAttemptReview(context, ref));

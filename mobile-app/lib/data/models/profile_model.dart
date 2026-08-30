@@ -1,5 +1,6 @@
 import 'package:json_annotation/json_annotation.dart';
 
+import '../../core/utils/profile_lifecycle.dart';
 import 'company.dart';
 
 part 'profile_model.g.dart';
@@ -15,6 +16,7 @@ class ProfileModel {
     this.company,
     this.companyName,
     this.deliveryStyle,
+    this.fileNumber,
     this.status,
     this.address,
     this.city,
@@ -50,6 +52,10 @@ class ProfileModel {
   @JsonKey(name: 'delivery_style')
   final String? deliveryStyle;
 
+  /// Standing dispatcher file number, copied onto new attempts.
+  @JsonKey(name: 'file_number')
+  final String? fileNumber;
+
   /// Profile-level lifecycle flag, e.g. "awaiting_attempt". Independent of
   /// any Attempt/Photo status — see Photo.status for that.
   final String? status;
@@ -74,11 +80,15 @@ class ProfileModel {
   /// Resolved [Company] config for this profile (falls back to default).
   Company get companyConfig => companyOrDefault(company);
 
-  /// True when this profile is still waiting on its first attempt — a
-  /// derived display state, not a raw status check, so it naturally clears
-  /// once an attempt exists without any server-side status mutation.
+  /// True when this profile is still waiting on its first attempt.
   bool get isAwaitingAttempt =>
-      status == 'awaiting_attempt' && attemptsCount == 0;
+      normalizeProfileStatus(status) == kProfilePending && attemptsCount == 0;
+
+  bool get canAddAttempts => profileCanAddAttempts(status);
+
+  bool get canArchive => profileCanArchive(status);
+
+  int get attemptCap => attemptCapForProfile(this);
 
   /// True when a Profile Location has been set.
   bool get hasLocation => latitude != null && longitude != null;
@@ -94,6 +104,7 @@ class ProfileModel {
     String? company,
     String? companyName,
     String? deliveryStyle,
+    String? fileNumber,
     String? status,
     String? address,
     String? city,
@@ -112,6 +123,7 @@ class ProfileModel {
         company: company ?? this.company,
         companyName: companyName ?? this.companyName,
         deliveryStyle: deliveryStyle ?? this.deliveryStyle,
+        fileNumber: fileNumber ?? this.fileNumber,
         status: status ?? this.status,
         address: address ?? this.address,
         city: city ?? this.city,

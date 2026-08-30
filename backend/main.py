@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, ForeignKey, Table, event
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, ForeignKey, Table, event, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime, timezone, timedelta
@@ -120,6 +120,7 @@ class Profile(Base):
     postal_code  = Column(String, nullable=True)
     latitude     = Column(Float, nullable=True)
     longitude    = Column(Float, nullable=True)
+    file_number     = Column(String, nullable=True)
     created_at   = Column(DateTime, default=datetime.utcnow)
     updated_at   = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -358,6 +359,7 @@ def _ensure_columns():
             "updated_at":   DT,
             "company":         "VARCHAR",
             "delivery_style":  "VARCHAR",
+            "file_number":     "VARCHAR",
         }
         for col, ddl in profile_new_cols.items():
             if col not in existing_profiles:
@@ -459,7 +461,10 @@ def _photo_dict(ph):
         "completion_type":    ph.completion_type,
         "served_to":          ph.served_to,
         "relation_to":        ph.relation_to,
-        "file_number":        ph.file_number,
+        "file_number":        _inherited_file_number(
+            (ph.profiles[0] if getattr(ph, "profiles", None) else None),
+            ph.file_number,
+        ),
         "successful":         _attempt_is_successful(ph),
         "attempt_status":     _normalize_attempt_status(ph),
         "pay_rate":           ph.pay_rate,
@@ -495,7 +500,7 @@ def _attempt_dict(att):
         "completion_type":    att.completion_type,
         "served_to":          att.served_to,
         "relation_to":        att.relation_to,
-        "file_number":        att.file_number,
+        "file_number":        _inherited_file_number(profile, att.file_number),
         "successful":         (att.attempt_status or "") == "successful",
         "attempt_status":     att.attempt_status or "pending",
         "pay_rate":           att.pay_rate,
@@ -547,8 +552,9 @@ def _profile_dict(p):
         "pay_rate": p.pay_rate,
         "company": company_id,
         "delivery_style": getattr(p, "delivery_style", None),
+        "file_number": getattr(p, "file_number", None),
         "company_name": company["name"] if company else None,
-        "status": p.status,
+        "status": _norm_profile_status(p.status),
         "address": p.address,
         "city": p.city,
         "state": p.state,
@@ -560,12 +566,124 @@ def _profile_dict(p):
     }
 
 
+def _is_absent_file_number(value):
+    v = (value or "").strip()
+    return not v or v.upper() == "N/A"
+
+
+def _inherited_file_number(profile, stored=None):
+    """File number is created on the profile; attempts and photos inherit it."""
+    pfn = (getattr(profile, "file_number", None) or "").strip() if profile else ""
+    if pfn and pfn.upper() != "N/A":
+        return pfn
+    s = (stored or "").strip()
+    if s:
+        return s
+    return pfn or None
+
+
+def _copy_file_number_to_attempts(db, profile):
+    """Keep attempt/photo rows in sync with the profile file number."""
+    fn = _inherited_file_number(profile)
+    if _is_absent_file_number(fn):
+        return
+    for att in db.query(Attempt).filter(Attempt.profile_id == profile.id).all():
+        att.file_number = fn
+    for ph in list(getattr(profile, "photos", None) or []):
+        ph.file_number = fn
+
+
+def _file_number_in_use(db, file_number, exclude_profile_id=None):
+    """True when another profile (or its attempts) already has this file number.
+    N/A and blank are not unique."""
+    fn = (file_number or "").strip()
+    if not fn or fn.upper() == "N/A":
+        return False
+    key = fn.lower()
+    q = db.query(Profile).filter(func.lower(Profile.file_number) == key)
+    if exclude_profile_id is not None:
+        q = q.filter(Profile.id != exclude_profile_id)
+    if q.first() is not None:
+        return True
+    aq = db.query(Attempt).filter(func.lower(Attempt.file_number) == key)
+    if exclude_profile_id is not None:
+        aq = aq.filter(Attempt.profile_id != exclude_profile_id)
+    return aq.first() is not None
+
+
+_PROFILE_STATUS_RANK = {
+    "pending": 0,
+    "in_progress": 1,
+    "completed": 2,
+    "archived": 3,
+}
+
+
+def _norm_profile_status(raw):
+    """Canonical profile lifecycle: pending | in_progress | completed | archived."""
+    s = (raw or "").strip().lower()
+    if s in ("awaiting_attempt", "open", ""):
+        return "pending"
+    if s == "in-progress":
+        return "in_progress"
+    if s in _PROFILE_STATUS_RANK:
+        return s
+    return "pending"
+
+
+def _attempt_outcome(att):
+    raw = (getattr(att, "attempt_status", None) or "").strip().lower()
+    if raw in ("pending", "successful", "unsuccessful"):
+        return raw
+    if getattr(att, "successful", 0):
+        return "successful"
+    return "pending"
+
+
+def _compute_profile_activity_status(db, profile):
+    """pending | in_progress | completed from attempts. Never returns archived."""
+    attempts = db.query(Attempt).filter(Attempt.profile_id == profile.id).all()
+    if not attempts:
+        return "pending"
+    if any(_attempt_outcome(a) == "successful" for a in attempts):
+        return "completed"
+    company = get_company(profile.company or DEFAULT_COMPANY_ID) or {}
+    diligence = int(company.get("attempts_for_diligence") or 5)
+    unsuccessful = sum(
+        1 for a in attempts if _attempt_outcome(a) == "unsuccessful"
+    )
+    if unsuccessful >= diligence:
+        return "completed"
+    return "in_progress"
+
+
+def _advance_profile_status(db, profile):
+    """One-way lifecycle. Archived is never changed automatically."""
+    current = _norm_profile_status(profile.status)
+    if current == "archived":
+        if (profile.status or "").strip().lower() != "archived":
+            profile.status = "archived"
+        return current
+    derived = _compute_profile_activity_status(db, profile)
+    target = derived
+    if _PROFILE_STATUS_RANK[derived] < _PROFILE_STATUS_RANK[current]:
+        target = current
+    if (profile.status or "") != target:
+        profile.status = target
+        profile.updated_at = datetime.utcnow()
+    return target
+
+
+def _profile_blocks_new_attempts(profile):
+    return _norm_profile_status(profile.status) in ("completed", "archived")
+
+
 def _parse_profile_location(data, profile):
     """Applies address/city/state/postal_code/lat/lng/status fields from
     `data` onto `profile` in place, when present. Independent of any Photo/
     Attempt — this is the ONLY place (besides create_profile) that ever
     writes Profile Location."""
-    for field in ("address", "city", "state", "postal_code", "status"):
+    for field in ("address", "city", "state", "postal_code"):
         if field in data:
             value = data[field]
             setattr(profile, field, value.strip() if isinstance(value, str) else value)
@@ -585,6 +703,18 @@ def _parse_profile_location(data, profile):
             if field == "longitude" and not (-180 <= value <= 180):
                 raise HTTPException(status_code=422, detail="longitude must be between -180 and 180")
             setattr(profile, field, value)
+
+
+try:
+    _lc_db = SessionLocal()
+    try:
+        for _p in _lc_db.query(Profile).all():
+            _advance_profile_status(_lc_db, _p)
+        _lc_db.commit()
+    finally:
+        _lc_db.close()
+except Exception as e:
+    print(f"[migrate] profile lifecycle backfill skipped: {e}")
 
 
 @app.get("/companies")
@@ -634,22 +764,32 @@ async def create_profile(data: dict = Body(...)):
             raise HTTPException(status_code=422, detail="pay_rate must be a whole dollar number")
 
     delivery_style = (data.get("delivery_style") or "").strip() or None
+    file_number = (data.get("file_number") or "").strip() or None
 
     db = SessionLocal()
+    if _file_number_in_use(db, file_number):
+        db.close()
+        raise HTTPException(
+            status_code=409,
+            detail="This file number already exists",
+        )
     profile = Profile(
         name=name,
         service_type=service_type,
         pay_rate=pay_rate,
         company=company_id,
         delivery_style=delivery_style,
+        file_number=file_number,
+        status="pending",
     )
-    # Profile Location + status are entirely optional here — creating a
+    # Profile Location is optional here — creating a
     # profile never requires an attempt, photo, upload, or GPS capture.
     try:
         _parse_profile_location(data, profile)
     except HTTPException:
         db.close()
         raise
+    profile.status = "pending"
     db.add(profile)
     db.commit()
     db.refresh(profile)
@@ -693,6 +833,35 @@ async def update_profile(profile_id: int, data: dict = Body(...)):
     if "delivery_style" in data:
         style = data["delivery_style"]
         profile.delivery_style = style.strip() if isinstance(style, str) and style.strip() else None
+    if "file_number" in data:
+        fn = data["file_number"]
+        next_fn = fn.strip() if isinstance(fn, str) and fn.strip() else None
+        if _file_number_in_use(db, next_fn, exclude_profile_id=profile.id):
+            db.close()
+            raise HTTPException(
+                status_code=409,
+                detail="This file number already exists",
+            )
+        profile.file_number = next_fn
+        _copy_file_number_to_attempts(db, profile)
+
+    if "status" in data:
+        requested = _norm_profile_status(data.get("status"))
+        current = _norm_profile_status(profile.status)
+        if requested == "archived":
+            if current not in ("completed", "archived"):
+                db.close()
+                raise HTTPException(
+                    status_code=422,
+                    detail="Archive is only allowed after the profile is completed",
+                )
+            profile.status = "archived"
+        elif requested != current:
+            db.close()
+            raise HTTPException(
+                status_code=422,
+                detail="Profile status is set automatically from attempts",
+            )
 
     # Profile Location can be changed independently of everything else — this
     # never touches Photo/Attempt rows, so historical Attempt GPS is untouched.
@@ -701,6 +870,9 @@ async def update_profile(profile_id: int, data: dict = Body(...)):
     except HTTPException:
         db.close()
         raise
+
+    if _norm_profile_status(profile.status) != "archived":
+        _advance_profile_status(db, profile)
 
     profile.updated_at = datetime.utcnow()
     db.commit()
@@ -861,6 +1033,9 @@ def duplicate_attempt(attempt_id: int, data: dict = Body(...)):
         profile = db.query(Profile).filter(Profile.id == pid).first()
         if not profile:
             continue
+        _advance_profile_status(db, profile)
+        if _profile_blocks_new_attempts(profile):
+            continue
         clone = Attempt(
             profile_id=pid,
             latitude=source.latitude,
@@ -872,7 +1047,7 @@ def duplicate_attempt(attempt_id: int, data: dict = Body(...)):
             completion_type=source.completion_type,
             served_to=source.served_to,
             relation_to=source.relation_to,
-            file_number=source.file_number,
+            file_number=_inherited_file_number(profile, source.file_number),
             successful=source.successful,
             attempt_status=source.attempt_status,
             pay_rate=source.pay_rate,
@@ -928,6 +1103,7 @@ def duplicate_attempt(attempt_id: int, data: dict = Body(...)):
             new_ph.profiles = [profile]
             db.add(new_ph)
         created.append(clone)
+        _advance_profile_status(db, profile)
     db.commit()
     out = []
     for a in created:
@@ -1030,8 +1206,6 @@ async def upload_photo(
         raise HTTPException(status_code=422, detail="Latitude must be between -90 and 90")
     if not (-180 <= longitude <= 180):
         raise HTTPException(status_code=422, detail="Longitude must be between -180 and 180")
-    if not file_number.strip():
-        raise HTTPException(status_code=422, detail="File number is required")
     ext      = os.path.splitext(file.filename)[1] or ".jpg"
     filename = f"{uuid.uuid4()}{ext}"
     filepath = os.path.join(UPLOAD_DIR, filename)
@@ -1043,6 +1217,10 @@ async def upload_photo(
     if not profile:
         db.close()
         raise HTTPException(status_code=404, detail="Profile not found")
+
+    resolved_file_number = _inherited_file_number(profile, file_number)
+    if _is_absent_file_number(resolved_file_number):
+        resolved_file_number = (file_number or "").strip() or "N/A"
 
     # F6: lock timestamp to device capture time when provided; the upload time
     # is no longer authoritative. original_timestamp is the immutable record.
@@ -1059,6 +1237,37 @@ async def upload_photo(
     uid = int(user_id) if user_id.strip().isdigit() else None
     grp = int(location_group_id) if location_group_id.strip().isdigit() else None
     existing_attempt_id = int(attempt_id) if attempt_id.strip().isdigit() else None
+
+    _advance_profile_status(db, profile)
+    if not existing_attempt_id and _profile_blocks_new_attempts(profile):
+        db.close()
+        try:
+            os.remove(filepath)
+        except OSError:
+            pass
+        raise HTTPException(
+            status_code=422,
+            detail="This profile is completed and cannot receive new attempts",
+        )
+
+    if not existing_attempt_id:
+        plat = getattr(profile, "latitude", None)
+        plng = getattr(profile, "longitude", None)
+        if plat is not None and plng is not None and (abs(plat) > 0.0001 or abs(plng) > 0.0001):
+            dist_ft = _haversine_ft(latitude, longitude, plat, plng)
+            if dist_ft > 200:
+                db.close()
+                try:
+                    os.remove(filepath)
+                except OSError:
+                    pass
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"You are {int(round(dist_ft))} ft from this job. "
+                        "Attempts must be logged within 200 feet of the profile location."
+                    ),
+                )
 
     # New pins always start as in_progress — status only changes to completed
     # or archived when the user explicitly closes them out.
@@ -1085,6 +1294,8 @@ async def upload_photo(
         if not attempt:
             db.close()
             raise HTTPException(status_code=404, detail="Attempt not found")
+        if _is_absent_file_number(attempt.file_number) and resolved_file_number:
+            attempt.file_number = resolved_file_number
     else:
         attempt = Attempt(
             profile_id=profile_id,
@@ -1094,10 +1305,10 @@ async def upload_photo(
             address=address.strip() or None,
             note=note.strip() or None,
             category=cat,
-            completion_type=completion_type.strip() or None,
+            completion_type=(getattr(profile, "delivery_style", None) or "").strip() or None,
             served_to=served_to.strip() or None,
             relation_to=relation_to.strip() or None,
-            file_number=file_number.strip() or None,
+            file_number=resolved_file_number,
             successful=1 if attempt_st == "successful" else 0,
             attempt_status=attempt_st,
             pay_rate=pay_val,
@@ -1129,7 +1340,7 @@ async def upload_photo(
         completion_type    = attempt.completion_type,
         served_to          = attempt.served_to,
         relation_to        = attempt.relation_to,
-        file_number        = attempt.file_number,
+        file_number        = _inherited_file_number(profile, attempt.file_number),
         successful         = attempt.successful,
         attempt_status     = attempt.attempt_status,
         pay_rate           = attempt.pay_rate,
@@ -1142,6 +1353,8 @@ async def upload_photo(
     )
     photo.profiles = [profile]
     db.add(photo)
+    db.flush()
+    _advance_profile_status(db, profile)
     db.commit()
     db.refresh(photo)
     db.refresh(attempt)
@@ -2340,16 +2553,18 @@ def _watermark_photo_png(image_path, caption_lines, max_w=300, max_h=400):
 
 
 def _street_zip(address, zip_code=None):
-    """Street number + name, plus ZIP — same formatting as the profile export
-    address column. Takes the first comma-segment of `address` as the street
-    line and appends `zip_code` (or the first 5-digit token in the address)."""
-    full = (address or "").strip()
-    street = full.split(",")[0].strip() if full else ""
+    """Full location for watermarks and email: street, city, state, ZIP.
+    Does not drop city/state after the first comma."""
+    full = re.sub(r"\s+", " ", (address or "").strip())
     zip_val = (zip_code or "").strip()
     if not zip_val:
         m = re.search(r"\b\d{5}(?:-\d{4})?\b", full)
         zip_val = m.group(0) if m else ""
-    return ", ".join(p for p in (street, zip_val) if p)
+    if not full:
+        return zip_val
+    if zip_val and not re.search(rf"\b{re.escape(zip_val)}\b", full):
+        return f"{full}, {zip_val}"
+    return full
 
 
 def _is_file_number_na(value):
@@ -2362,7 +2577,7 @@ def _photo_caption(ph):
     """Caption lines burned into an exported photo:
       FILE-123                 (file number, or profile name when N/A / empty)
       2025-07-03 14:30 PST
-      4822 Reno Drive, 92101
+      4822 Reno Drive, San Diego, CA 92101
       32.690861, -117.113289
     Priority / service level is intentionally omitted."""
     lines = []
@@ -2392,9 +2607,10 @@ def _photo_caption(ph):
         lines.append(ts.replace("T", " ")[:16] + " PST")
     street_zip = _street_zip(ph.address, ph.zip_code)
     if street_zip:
-        lines.append(street_zip[:64])
+        lines.append(street_zip)
     if ph.latitude is not None and ph.longitude is not None:
-        lines.append(f"{ph.latitude:.6f}, {ph.longitude:.6f}")
+        if abs(ph.latitude) > 0.0001 or abs(ph.longitude) > 0.0001:
+            lines.append(f"{ph.latitude:.6f}, {ph.longitude:.6f}")
     return lines
 
 
@@ -2860,15 +3076,9 @@ async def export_job(request: Request):
         records, data.get("header"), latest_only,
         photo_id=photo_ids[0] if photo_ids else None)
 
-    base_name = data.get("base_name") or "service-record"
     photo_payloads = _watermarked_photo_payloads(photo_ids)
     if not photo_payloads:
         photo_payloads = [a for a in attachments if a.get("content_b64")]
-
-    file_bytes, fname = _build_xlsx(
-        records, _EXPORT_COLUMNS_JOB, sheet_title="Service Record",
-        base_name=base_name)
-    xlsx_b64 = base64.b64encode(file_bytes).decode()
 
     smtp_host = os.environ.get("SMTP_HOST")
     smtp_user = os.environ.get("SMTP_USER")
@@ -2881,7 +3091,6 @@ async def export_job(request: Request):
         return {"ok": True,
                 "message": ("File generated" if not recipients
                             else "Email not configured — file returned"),
-                "filename": fname, "file_base64": xlsx_b64,
                 "photos": photo_payloads, "count": len(records)}
 
     inline_photo_ids = [photo_ids[0]] if photo_ids else []

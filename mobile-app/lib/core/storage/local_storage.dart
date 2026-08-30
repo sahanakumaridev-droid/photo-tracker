@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Local storage service using SharedPreferences
@@ -96,6 +98,34 @@ class LocalStorage {
   /// Mark the one-time permission batch as requested.
   static Future<bool> setPermissionsRequested() async =>
       _prefs.setBool(_permissionsRequestedKey, true);
+
+  // ─── Profile file numbers (survives if the API omits the field) ────────
+  static const String _profileFileNumbersKey = 'profile_file_numbers';
+
+  static String? fileNumberForProfile(int id) {
+    final raw = _prefs.getString(_profileFileNumbersKey);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final map = jsonDecode(raw) as Map<String, dynamic>;
+      final v = map['$id'];
+      if (v is String && v.trim().isNotEmpty) return v.trim();
+    } catch (_) {}
+    return null;
+  }
+
+  static Future<void> saveProfileFileNumber(int id, String fileNumber) async {
+    final fn = fileNumber.trim();
+    if (fn.isEmpty) return;
+    Map<String, dynamic> map = {};
+    final raw = _prefs.getString(_profileFileNumbersKey);
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        map = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+      } catch (_) {}
+    }
+    map['$id'] = fn;
+    await _prefs.setString(_profileFileNumbersKey, jsonEncode(map));
+  }
 
   // ─── General ────────────────────────────────────────────────────────────
 

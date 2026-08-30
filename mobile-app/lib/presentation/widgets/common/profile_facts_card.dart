@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/utils/category.dart';
+import '../../../core/utils/file_number.dart';
+import '../../../core/utils/profile_lifecycle.dart';
 import '../../../data/models/company.dart';
 import '../../../data/models/profile_model.dart';
 
@@ -10,11 +12,13 @@ class ProfileFactsCard extends StatelessWidget {
   const ProfileFactsCard({
     required this.profile,
     this.locked = false,
+    this.fileNumber,
     super.key,
   });
 
   final ProfileModel profile;
   final bool locked;
+  final String? fileNumber;
 
   static const Color _surface = Color(0xFFFFFFFF);
   static const Color _ink = Color(0xFF1A2130);
@@ -29,11 +33,17 @@ class ProfileFactsCard extends StatelessWidget {
     final company = companyOrDefault(profile.company);
     final payout = profile.payRate != null ? '\$${profile.payRate}' : '—';
     final delivery = (profile.deliveryStyle ?? '').trim();
+    final fn = inheritedFileNumber(
+      profileFileNumber: profile.fileNumber,
+      attemptFileNumber: fileNumber,
+    );
     final rows = <(String, String)>[
       ('Profile Name', profile.name),
+      ('File Number', fn.isEmpty ? '—' : fn),
       ('Company', company.name),
       ('Priority Level', categoryLabel(profile.serviceType)),
       ('Delivery Style', delivery.isEmpty ? '—' : delivery),
+      ('Status', profileStatusLabel(profile.status)),
       ('Payout', payout),
     ];
 
@@ -136,7 +146,7 @@ class _FactRow extends StatelessWidget {
             style: const TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.w700,
-              color: Color(0xFF1A2130),
+              color: ProfileFactsCard._ink,
               height: 1.3,
             ),
           ),

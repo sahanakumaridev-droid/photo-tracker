@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../core/ai/speech_dictation.dart';
+import '../../../core/utils/text_formatters.dart';
 
 enum VoiceFillMode { replace, append }
 
@@ -53,16 +54,21 @@ class _VoiceMicButtonState extends State<VoiceMicButton> {
     HapticFeedback.selectionClick();
     if (_speech.isActive(_id)) {
       await _speech.stop();
+      _applyFormatted(widget.controller.text, closingPeriod: true);
       return;
     }
     _base = widget.controller.text;
     await _speech.start(
       fieldId: _id,
-      onWords: (words, _) {
+      onWords: (words, isFinal) {
         if (!mounted || words.trim().isEmpty) return;
+        final spoken = formatProfessionalNotes(
+          words,
+          closingPeriod: isFinal,
+        );
         final next = widget.mode == VoiceFillMode.replace
-            ? words.trim()
-            : _join(_base, words);
+            ? spoken
+            : _join(_base, spoken);
         widget.controller.value = TextEditingValue(
           text: next,
           selection: TextSelection.collapsed(offset: next.length),
@@ -75,6 +81,16 @@ class _VoiceMicButtonState extends State<VoiceMicButton> {
         SnackBar(content: Text(_speech.error!)),
       );
     }
+  }
+
+  void _applyFormatted(String text, {required bool closingPeriod}) {
+    if (!mounted || text.trim().isEmpty) return;
+    final next = formatProfessionalNotes(text, closingPeriod: closingPeriod);
+    widget.controller.value = TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(offset: next.length),
+    );
+    widget.onChanged?.call(next);
   }
 
   String _join(String base, String words) {

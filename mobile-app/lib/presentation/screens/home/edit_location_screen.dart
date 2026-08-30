@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../../../config/map_tiles.dart';
 import '../../../data/models/photo_model.dart';
 import '../../providers/photo_provider.dart';
 
@@ -170,14 +171,7 @@ class _EditLocationScreenState extends ConsumerState<EditLocationScreen> {
                 onTap: _onMapTap,
               ),
               children: [
-                TileLayer(
-                  urlTemplate:
-                      'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-                  subdomains: const ['a', 'b', 'c', 'd'],
-                  retinaMode: false,
-                  tileSize: 256,
-                  userAgentPackageName: 'com.example.photo_tracker',
-                ),
+                AppMapTiles.layer(),
                 MarkerLayer(
                   markers: [
                     Marker(

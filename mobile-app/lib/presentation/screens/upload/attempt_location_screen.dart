@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:shimmer/shimmer.dart';
 
+import '../../../config/map_tiles.dart';
 import 'attempt_draft_controller.dart';
 import 'location_picker_map.dart';
 import '../../widgets/ai/voice_mic_button.dart';
@@ -361,15 +362,7 @@ class AttemptLocationScreen extends ConsumerWidget {
                               ),
                             ),
                             children: [
-                              TileLayer(
-                                urlTemplate:
-                                    'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-                                subdomains: const ['a', 'b', 'c', 'd'],
-                                retinaMode: false,
-                                tileSize: 256,
-                                userAgentPackageName:
-                                    'com.example.photo_tracker',
-                              ),
+                              AppMapTiles.layer(),
                               MarkerLayer(markers: [
                                 Marker(
                                   point: LatLng(

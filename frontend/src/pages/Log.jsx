@@ -47,15 +47,19 @@ function exportIdCtrl(r) {
   const name = (r.profiles?.length > 0 ? r.profiles[0].name : r.profile_name) ?? ''
   return pid && name ? `${pid} / ${name}` : String(pid || name || '')
 }
-// Address for the profile export: street number + name, plus ZIP. The stored
-// address is "street, city, state, zip" — take the street line and append the
-// ZIP (from zip_code, else the first 5-digit token in the address).
+// Full location for email / watermarks: street, city, state, ZIP.
 function exportStreetZip(r) {
-  const full   = (r.address || '').trim()
-  const street = full ? full.split(',')[0].trim() : ''
+  let full = (r.address || '').trim().replace(/\s+/g, ' ')
   let zip = (r.zip_code || '').trim()
-  if (!zip) { const m = full.match(/\b\d{5}(?:-\d{4})?\b/); zip = m ? m[0] : '' }
-  return [street, zip].filter(Boolean).join(', ')
+  if (!zip) {
+    const m = full.match(/\b\d{5}(?:-\d{4})?\b/)
+    zip = m ? m[0] : ''
+  }
+  if (!full) return zip
+  if (zip && !new RegExp('\\b' + zip.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(full)) {
+    return `${full}, ${zip}`
+  }
+  return full
 }
 
 const STATUS_LABEL = { open: 'Open', completed: 'Completed', archived: 'Archived' }
