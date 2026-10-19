@@ -3,10 +3,8 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../core/utils/text_formatters.dart';
-import '../../../data/models/company.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/location_provider.dart';
 import '../../providers/photo_provider.dart';
@@ -262,7 +260,7 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
                   // This dialog only edits name/note/pay rate — preserve
                   // whatever Status/Profile Location was already stored so
                   // saving here can't silently wipe them.
-                  status: profile.status,
+                  status: null,
                   address: profile.address,
                   city: profile.city,
                   state: profile.state,

@@ -193,13 +193,13 @@ class _ShellScaffold extends ConsumerStatefulWidget {
 }
 
 class _ShellScaffoldState extends ConsumerState<_ShellScaffold> {
-  // Index map: 0 Home · 1 Upload · 2 Profiles · 3 Earnings
+  // Index map: 0 Home · 1 Payouts · 2 Profiles · 3 Settings
   int _indexForLocation(String loc) {
     if (loc.startsWith('/map')) return 0;
     if (loc.startsWith('/home')) return 0;
-    if (loc.startsWith('/upload')) return 1;
+    if (loc.startsWith('/earnings')) return 1;
     if (loc.startsWith('/log')) return 2;
-    if (loc.startsWith('/earnings')) return 3;
+    if (loc.startsWith('/settings')) return 3;
     return -1;
   }
 
@@ -212,6 +212,7 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold> {
     final onMap = _onMapTab(location);
 
     return Scaffold(
+      backgroundColor: const Color(0xFFF3F6FB),
       body: Stack(
         fit: StackFit.expand,
         children: [
@@ -227,7 +228,7 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold> {
         ],
       ),
       bottomNavigationBar: BottomNav(
-        currentIndex: currentIndex,
+        currentIndex: currentIndex < 0 ? 0 : currentIndex,
         onTap: (index) => _onTabTap(index, currentIndex),
       ),
     );
@@ -241,9 +242,9 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold> {
     }
     switch (index) {
       case 0: context.go('/map'); break;
-      case 1: context.go('/upload'); break;
+      case 1: context.go('/earnings'); break;
       case 2: context.go('/log'); break;
-      case 3: context.go('/earnings'); break;
+      case 3: context.go('/settings'); break;
     }
   }
 }

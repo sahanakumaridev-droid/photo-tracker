@@ -577,13 +577,6 @@ export default function Upload({ showToast }) {
             <div className="step-head">
               <div className="step-num">3</div>
               <div className="step-title">Location & timestamp</div>
-              <button
-                className="btn btn-outline"
-                style={{fontSize:12, padding:'5px 12px', marginLeft:'auto'}}
-                onClick={() => setEditMode(v => !v)}
-              >
-                {editMode ? '✕ Close map' : '✏️ Edit location'}
-              </button>
             </div>
 
             {locBusy && !location && (

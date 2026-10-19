@@ -9,14 +9,12 @@ import '../../../core/storage/attempt_snapshot_store.dart';
 import '../../../core/utils/attempt_status.dart';
 import '../../../core/utils/category.dart';
 import '../../../data/models/attempt.dart';
-import '../../../data/models/company.dart';
 import '../../../data/models/log_entry_model.dart';
 import '../../../data/models/photo_model.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/log_provider.dart';
 import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
-import '../settings/ai_assistant_sheet.dart';
 import '../../widgets/common/create_profile_dialog.dart';
 import '../../widgets/common/pill_chip.dart';
 import 'attempt_draft_controller.dart';
@@ -534,9 +532,7 @@ class _ProfileDashCard extends StatelessWidget {
     final p = row.profile;
     final cat = row.category;
     final n = row.attemptCount;
-    final company = (p.companyName?.trim().isNotEmpty == true)
-        ? p.companyName!
-        : companyOrDefault(p.company).name;
+    final company = p.displayCompanyName ?? '';
 
     return Material(
       color: AttemptsDashboardScreen._surface,
@@ -792,8 +788,7 @@ class _AttemptListCardState extends ConsumerState<_AttemptListCard> {
         break;
       }
     }
-    final companyName =
-        profile?.companyName ?? companyOrDefault(profile?.company).name;
+    final companyName = profile?.displayCompanyName ?? '';
     final status = _status;
     final subtitle = (log.fileNumber?.trim().isNotEmpty ?? false)
         ? 'File #${log.fileNumber} · $companyName'

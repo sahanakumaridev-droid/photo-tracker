@@ -5,5 +5,4 @@ const List<String> kDeliveryStyles = [
   'Sub on 1st',
   'Sub on 3rd',
   'Posting',
-  'Stake Out',
 ];

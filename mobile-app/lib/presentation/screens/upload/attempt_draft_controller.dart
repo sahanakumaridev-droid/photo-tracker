@@ -19,6 +19,7 @@ import '../../../core/storage/upload_queue.dart';
 import '../../../core/utils/attempt_status.dart';
 import '../../../core/utils/category.dart';
 import '../../../core/utils/file_number.dart';
+import '../../../core/utils/note_phrases.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../core/utils/photo_stamp.dart';
 import '../../../data/models/attempt.dart';
@@ -64,15 +65,27 @@ class AttemptDraftController extends ChangeNotifier {
 
   // Radius used to surface "Nearby" profiles first in the profile picker,
   // and to find candidates for the post-upload "Duplicate Attempt?" offer.
-  static const double kProfileProximityFt = 200;
+  static const double kProfileProximityFt = 500;
+
+  /// Profile picker: every profile whose saved address is within this distance.
+  static const double kProfileFilterFt = 300;
 
   static const int kMaxAttemptsPerJob = 6;
 
   static const List<String> kServedToPresets = [
-    'Same as profile',
+    'Same as Profile',
     'John Doe',
     'Jane Doe',
+    'Posted to Door',
   ];
+
+  /// These choices are not a person's name, so Relation To stays hidden.
+  static bool servedToNeedsRelation(String value) {
+    final v = value.trim().toLowerCase();
+    return v.isNotEmpty &&
+        v != 'same as profile' &&
+        v != 'posted to door';
+  }
 
   /// "Add to Existing Profile" — pre-selects that profile and locks
   /// profile/company fields so only attempt-specific data is editable. The
@@ -150,6 +163,7 @@ class AttemptDraftController extends ChangeNotifier {
   // Served To / Relation To fields don't apply and are hidden.
   String attemptStatus = kDefaultAttemptStatus;
   bool get isSuccessfulAttempt => attemptStatus == kAttemptStatusSuccessful;
+  final subjectDescription = SubjectDescription();
 
   // Names the user has typed via "New name" — remembered across uploads so
   // they show up as quick-select options next time, not just a one-off entry.
@@ -431,7 +445,7 @@ class AttemptDraftController extends ChangeNotifier {
   ) async {
     if (_disposed || uploadState != AttemptUploadState.idle) return;
     final snapshot = await AttemptSnapshotStore.read(snapshotId);
-    if (_disposed || snapshot == null) return;
+    if (_disposed || snapshot == null || !_mapHasWork(snapshot)) return;
     final at = snapshot['snapshotAt'] as String?;
     if (at != null && at == _offeredSnapshotAt) return;
     if (!context.mounted) return;
@@ -645,7 +659,10 @@ class AttemptDraftController extends ChangeNotifier {
   // editing a known existing attempt.
   void saveDraft() {
     if (existingAttemptId != null) return;
-    if (selectedImages.isEmpty && selectedProfile == null) return;
+    if (!_draftHasWork) {
+      unawaited(LocalStorage.clearPinDraft());
+      return;
+    }
     LocalStorage.savePinDraft(jsonEncode({
       ...attemptPayload(source: 'draft'),
       'photoPaths': selectedImages.map((f) => f.path).toList(),
@@ -656,6 +673,19 @@ class AttemptDraftController extends ChangeNotifier {
     }
   }
 
+  bool get _draftHasWork =>
+      selectedImages.isNotEmpty ||
+      noteController.text.trim().isNotEmpty ||
+      servedToController.text.trim().isNotEmpty;
+
+  bool _mapHasWork(Map<String, dynamic> draft) {
+    final photos = draft['photoPaths'];
+    final photoCount = photos is List ? photos.length : 0;
+    final note = (draft['note'] as String?)?.trim() ?? '';
+    final served = (draft['servedTo'] as String?)?.trim() ?? '';
+    return photoCount > 0 || note.isNotEmpty || served.isNotEmpty;
+  }
+
   Future<void> maybeRestoreDraft(BuildContext context, WidgetRef ref) async {
     final raw = LocalStorage.getPinDraft();
     if (raw == null || _disposed || !context.mounted) return;
@@ -663,8 +693,16 @@ class AttemptDraftController extends ChangeNotifier {
     try {
       draft = jsonDecode(raw) as Map<String, dynamic>;
     } catch (_) {
+      await LocalStorage.clearPinDraft();
       return;
     }
+    if (!_mapHasWork(draft)) {
+      await LocalStorage.clearPinDraft();
+      return;
+    }
+    // A new or chosen profile starts a fresh attempt. An older draft
+    // belongs to other work and must not interrupt this one.
+    if (initialProfileId != null) return;
     final resume = await showDialog<bool>(
       context: context,
       useRootNavigator: true,
@@ -728,7 +766,6 @@ class AttemptDraftController extends ChangeNotifier {
       selectedCategory = defaultPriorityForCompany(companyId);
     }
     notifyListeners();
-    saveDraft();
     unawaited(_prefillLockedProfile(found, ref));
   }
 
@@ -755,15 +792,8 @@ class AttemptDraftController extends ChangeNotifier {
         (force || fileNumberController.text.trim().isEmpty)) {
       fileNumberController.text = standingFn;
     }
-    if (addressController.text.trim().isEmpty) {
-      final parts = [
-        p.address,
-        p.city,
-        p.state,
-        p.postalCode,
-      ].where((s) => s != null && s.trim().isNotEmpty).map((s) => s!.trim());
-      if (parts.isNotEmpty) addressController.text = parts.join(', ');
-    }
+    // The profile address is only free-typed on a hot route. An attempt
+    // never inherits it — the attempt address is the user's GPS geotag.
   }
 
   /// Records GPS at the moment a photo is captured so the attempt tag
@@ -771,8 +801,7 @@ class AttemptDraftController extends ChangeNotifier {
   Future<void> _stampGeotagAtCapture() async {
     if (locationFrozenFromCache && latitude != null) return;
     try {
-      Position? pos = await Geolocator.getLastKnownPosition();
-      pos ??= await LocationService.getCurrentLocation();
+      final pos = await LocationService.getFreshFix();
       if (pos == null || _disposed) return;
       latitude = pos.latitude;
       longitude = pos.longitude;
@@ -785,10 +814,7 @@ class AttemptDraftController extends ChangeNotifier {
         pos.latitude,
         pos.longitude,
       );
-      if (!_disposed &&
-          address != null &&
-          address.isNotEmpty &&
-          addressController.text.trim().isEmpty) {
+      if (!_disposed && address != null && address.isNotEmpty) {
         addressController.text = address;
       }
     } catch (_) {}
@@ -899,51 +925,12 @@ class AttemptDraftController extends ChangeNotifier {
     BuildContext context,
     WidgetRef ref,
   ) async {
-    if (locationFrozenFromCache) {
-      if (context.mounted) {
-        showSnack(
-          context,
-          'Location is locked from cache. Unlock from the banner to change it.',
-          isError: true,
-        );
-      }
-      return;
-    }
-    latitude = picked.latLng.latitude;
-    longitude = picked.latLng.longitude;
-    locationError = false;
-    nearbyCheckDone = false; // new location — re-arm the nearby check
-    notifyListeners();
-    // F5: persist the picked location into the draft right away.
-    saveDraft();
-    // F1: re-run proactive nearby check for the newly picked location.
-    unawaited(checkNearbyAndMaybeReuse(context, ref));
-
-    // Prefer the address the picker already resolved (matches the pin
-    // exactly); only reverse-geocode as a fallback if it didn't have one.
-    if (picked.address != null && picked.address!.isNotEmpty) {
-      addressController.text = picked.address!;
-      isLoadingLocation = false;
-      notifyListeners();
-      return;
-    }
-    isLoadingLocation = true;
-    notifyListeners();
-    try {
-      final address = await LocationService.reverseGeocode(
-        picked.latLng.latitude,
-        picked.latLng.longitude,
+    if (context.mounted) {
+      showSnack(
+        context,
+        'Attempt location is locked to your GPS geotag and cannot be changed.',
+        isError: true,
       );
-      if (!_disposed && address != null && address.isNotEmpty) {
-        addressController.text = address;
-      }
-    } catch (e) {
-      debugPrint('[MapPicker] reverse geocode error: $e');
-    } finally {
-      if (!_disposed) {
-        isLoadingLocation = false;
-        notifyListeners();
-      }
     }
   }
 
@@ -958,9 +945,9 @@ class AttemptDraftController extends ChangeNotifier {
   }
 
   Future<void> pickFromCamera(BuildContext context) async {
-    // Check camera permission explicitly on both iOS and Android
+    // Do not call Permission.camera.request(). ImagePicker shows the system
+    // prompt once. Asking again here is what feels like continual access.
     final status = await Permission.camera.status;
-
     if (status.isPermanentlyDenied) {
       if (context.mounted) {
         showSnack(
@@ -972,22 +959,6 @@ class AttemptDraftController extends ChangeNotifier {
       }
       return;
     }
-
-    if (status.isDenied || status.isRestricted) {
-      final result = await Permission.camera.request();
-      if (!result.isGranted) {
-        if (context.mounted) {
-          showSnack(
-            context,
-            'Camera permission is required to take photos.',
-            isError: true,
-            settingsAction: result.isPermanentlyDenied,
-          );
-        }
-        return;
-      }
-    }
-
     await openPicker(context, ImageSource.camera);
   }
 
@@ -1166,6 +1137,8 @@ class AttemptDraftController extends ChangeNotifier {
   }
 
   // ── Field setters (plain data callbacks from screen-owned UI) ──────────────
+  void bump() => notifyListeners();
+
   void setCompany(String id) {
     companyId = id;
     // Drop a selected profile that belongs to another company.
@@ -1183,7 +1156,7 @@ class AttemptDraftController extends ChangeNotifier {
   void setSelectedProfile(ProfileModel p, {WidgetRef? ref}) {
     selectedProfile = p;
     linkProfileIds.clear();
-    companyId = companyOrDefault(p.company).id;
+    companyId = companyById(p.company)?.id ?? companyId;
     if (!companyOrDefault(companyId).allowsPriority(selectedCategory)) {
       selectedCategory = defaultPriorityForCompany(companyId);
     }
@@ -1301,11 +1274,11 @@ class AttemptDraftController extends ChangeNotifier {
     // Assigning .text below notifies noteController-style listeners
     // (_onFieldChanged), which already calls notifyListeners()+saveDraft().
     servedToController.text = value;
-    if (value == 'Same as profile') relationToController.clear();
+    if (!servedToNeedsRelation(value)) relationToController.clear();
   }
 
-  Future<void> addCustomServedToName(String name) async {
-    await LocalStorage.addServedToCustomName(name);
+  Future<void> addCustomServedToName(String name, {String? gender}) async {
+    await LocalStorage.addServedToCustomName(name, gender: gender);
     customServedToNames = LocalStorage.getServedToCustomNames();
     notifyListeners();
   }
@@ -1321,49 +1294,91 @@ class AttemptDraftController extends ChangeNotifier {
     notifyListeners();
   }
 
-  // Profile IDs with a photo within kProfileProximityFt of the current
-  // upload location — surfaced first in the picker so the right profile is
-  // easy to find without scrolling/searching a long roster.
+  /// Profiles whose saved address is within [kProfileFilterFt] of this job.
+  /// The selected profile's address is the anchor. The phone GPS is used
+  /// only before a profile is chosen.
   Set<int> nearbyProfileIds(WidgetRef ref) {
-    if (latitude == null || longitude == null) return {};
-    final photos = ref.read(photosProvider).valueOrNull ?? const [];
+    final originLat = selectedProfile?.latitude ?? latitude;
+    final originLng = selectedProfile?.longitude ?? longitude;
+    if (originLat == null || originLng == null) return {};
+    final profiles = ref.read(profilesProvider).valueOrNull ?? const [];
     final ids = <int>{};
-    for (final p in photos) {
-      if (p.profileId == null) continue;
+    for (final p in profiles) {
+      if (p.latitude == null || p.longitude == null) continue;
       final km = LocationService.calculateDistance(
-          latitude!, longitude!, p.latitude, p.longitude);
-      if (km * 3280.84 <= kProfileProximityFt) ids.add(p.profileId!);
+          originLat, originLng, p.latitude!, p.longitude!);
+      if (km * 3280.84 <= kProfileFilterFt) ids.add(p.id);
     }
     return ids;
   }
 
+  /// Served To choices: the fixed presets, then names of other profiles
+  /// whose address is within [kProfileFilterFt]. Old custom names saved on
+  /// the phone are not listed.
+  List<String> servedToChoices(WidgetRef ref) {
+    final names = <String>[...kServedToPresets];
+    final nearby = nearbyProfileIds(ref);
+    final profiles = ref.read(profilesProvider).valueOrNull ?? const [];
+    for (final p in profiles) {
+      if (!nearby.contains(p.id)) continue;
+      if (p.id == selectedProfile?.id) continue;
+      final name = p.name.trim();
+      if (name.isEmpty || names.contains(name)) continue;
+      names.add(name);
+    }
+    return names;
+  }
+
   // ── Upload ──────────────────────────────────────────────────────────────
   Future<void> upload(BuildContext context, WidgetRef ref) async {
-    // Guard: prevent duplicate submissions
+    // Guard: prevent duplicate submissions. Set this before any await so a
+    // second tap cannot start another attempt while GPS or upload is running.
     if (uploadState == AttemptUploadState.uploading ||
         uploadState == AttemptUploadState.processing) {
       return;
     }
+    uploadState = AttemptUploadState.uploading;
+    notifyListeners();
 
     if (selectedImages.isEmpty) {
+      uploadState = AttemptUploadState.idle;
+      notifyListeners();
       showSnack(context, 'Please select at least one photo', isError: true);
       return;
     }
     if (selectedProfile == null) {
+      uploadState = AttemptUploadState.idle;
+      notifyListeners();
       showSnack(context, 'Please select a profile', isError: true);
       return;
     }
+    if (!selectedProfile!.canAddAttempts) {
+      uploadState = AttemptUploadState.idle;
+      notifyListeners();
+      showSnack(
+        context,
+        'This profile is completed and cannot receive new attempts.',
+        isError: true,
+      );
+      return;
+    }
     if (latitude == null || longitude == null) {
+      uploadState = AttemptUploadState.idle;
+      notifyListeners();
       showSnack(context, 'Location required. Tap Refresh to retry.',
           isError: true);
       return;
     }
-    if (!await confirmAttemptNearProfile(context)) return;
+    if (!await confirmAttemptNearProfile(context, ref)) {
+      uploadState = AttemptUploadState.idle;
+      notifyListeners();
+      return;
+    }
 
     final servedToValue = servedToController.text.trim();
     if (isSuccessfulAttempt &&
         servedToValue.isNotEmpty &&
-        servedToValue != 'Same as profile' &&
+        servedToNeedsRelation(servedToValue) &&
         relationToController.text.trim().isEmpty) {
       showSnack(context, 'Please enter a relation for the person served',
           isError: true);
@@ -1376,7 +1391,6 @@ class AttemptDraftController extends ChangeNotifier {
     }
 
     HapticFeedback.mediumImpact();
-    uploadState = AttemptUploadState.uploading;
     uploadedCount = 0;
     notifyListeners();
 
@@ -1384,9 +1398,15 @@ class AttemptDraftController extends ChangeNotifier {
     final address = addressController.text.trim().isEmpty
         ? null
         : addressController.text.trim();
-    final note = noteController.text.trim().isEmpty
-        ? null
-        : noteController.text.trim();
+    final noteBody = noteController.text.trim();
+    final desc = isSuccessfulAttempt && !subjectDescription.isEmpty
+        ? subjectDescription.toNoteBlock()
+        : '';
+    final note = [
+      if (noteBody.isNotEmpty) noteBody,
+      if (desc.isNotEmpty) desc,
+    ].join('\n');
+    final noteOrNull = note.isEmpty ? null : note;
     // Served To / Relation To only apply to successful attempts.
     final servedTo = (isSuccessfulAttempt && servedToValue.isNotEmpty)
         ? servedToValue
@@ -1423,6 +1443,7 @@ class AttemptDraftController extends ChangeNotifier {
     // is paused so it can't race the in-order upload below and double-send.
     UploadQueueService.instance.pauseAutoProcess();
     final queueIds = <String>[];
+    final batchId = 'batch-${DateTime.now().microsecondsSinceEpoch}';
     for (var i = 0; i < watermarked.length; i++) {
       final q = await UploadQueueService.instance.enqueue(
         sourceFile: watermarked[i],
@@ -1431,8 +1452,8 @@ class AttemptDraftController extends ChangeNotifier {
         longitude: longitude!,
         takenAt: takenAts[i] ?? DateTime.now().toUtc().toIso8601String(),
         address: address,
-        note: note,
-        category: selectedCategory,
+        note: noteOrNull,
+        category: selectedProfile?.serviceType ?? selectedCategory,
         completionType: completionType,
         servedTo: servedTo,
         relationTo: relationTo,
@@ -1442,6 +1463,9 @@ class AttemptDraftController extends ChangeNotifier {
         payRate: payRate,
         locationGroupId: locationGroupId,
         profileName: selectedProfile!.name,
+        batchId: batchId,
+        serverAttemptId: existingAttemptId,
+        drain: false,
       );
       queueIds.add(q.id);
     }
@@ -1470,9 +1494,10 @@ class AttemptDraftController extends ChangeNotifier {
           'successful': isSuccessfulAttempt,
           'attemptStatus': attemptStatus,
           'attemptId': attemptId,
+          'clientBatchId': batchId,
           'completionType': completionType,
           'note': note,
-          'category': selectedCategory,
+          'category': selectedProfile?.serviceType ?? selectedCategory,
           'payRate': payRate,
           'takenAt': takenAts[i],
           'locationGroupId': groupId,
@@ -1481,6 +1506,10 @@ class AttemptDraftController extends ChangeNotifier {
         await UploadQueueService.instance.remove(queueIds[i]);
         lastId = uploaded.id;
         attemptId ??= uploaded.attemptId;
+        if (attemptId != null) {
+          await UploadQueueService.instance
+              .attachAttemptToBatch(batchId, attemptId);
+        }
         groupId ??= uploaded.locationGroupId ?? uploaded.id;
         if (_disposed) return;
         uploadedCount = i + 1;
@@ -1488,21 +1517,6 @@ class AttemptDraftController extends ChangeNotifier {
       }
 
       if (_disposed) return;
-
-      // Every photo uploaded — mark the whole attempt completed so it's
-      // visible in Earnings. Best-effort: photos are already durably
-      // persisted at this point, so a transient failure here must not block
-      // the success screen (the manual per-photo stepper remains a fallback).
-      // Quick Save never reaches this path — it returns before upload() runs.
-      if (attemptId != null) {
-        try {
-          final statusFuture =
-              updateAttemptStatusProvider((attemptId, 'completed')).future;
-          await ref.read(statusFuture);
-        } catch (e) {
-          debugPrint('[upload] failed to mark attempt completed: $e');
-        }
-      }
 
       await LocalStorage.clearPinDraft();
       await AttemptSnapshotStore.clear(snapshotId);
@@ -1518,6 +1532,26 @@ class AttemptDraftController extends ChangeNotifier {
     } catch (e) {
       debugPrint('[UPLOAD ERROR] $e');
       if (_disposed) return;
+      final msg = e.toString();
+      final blocked = msg.contains('United States') ||
+          msg.contains('500 feet') ||
+          msg.contains('within 500') ||
+          msg.contains('from this job');
+      if (blocked) {
+        for (final id in queueIds) {
+          await UploadQueueService.instance.remove(id);
+        }
+        uploadState = AttemptUploadState.idle;
+        notifyListeners();
+        if (context.mounted) {
+          showSnack(
+            context,
+            'Attempt not saved. You can only send from the United States.',
+            isError: true,
+          );
+        }
+        return;
+      }
       // Field signal dropped (or the server is unreachable). The un-sent
       // photos are already safe in the offline queue (enqueued above) and
       // will upload automatically when connectivity returns — nothing more
@@ -1547,21 +1581,78 @@ class AttemptDraftController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Blocks logging an attempt unless GPS is within 200 ft of the profile pin.
-  /// Creating a profile at a remote pin is allowed; doing the work is not.
-  Future<bool> confirmAttemptNearProfile(BuildContext context) async {
+  /// Blocks logging an attempt outside the United States.
+  Future<bool> confirmAttemptNearProfile(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
     final p = selectedProfile;
-    if (p == null || latitude == null || longitude == null) return true;
-    if (!LocationService.usableCoordinates(p.latitude, p.longitude)) {
+    if (p == null) return true;
+    Position? gps;
+    try {
+      gps = await LocationService.getFreshFix();
+    } catch (_) {}
+    if (gps == null) {
+      if (context.mounted) {
+        showSnack(
+          context,
+          'GPS is required to log an attempt. Enable location and try again.',
+          isError: true,
+        );
+      }
+      return false;
+    }
+    latitude = gps.latitude;
+    longitude = gps.longitude;
+    gpsAccuracy = gps.accuracy;
+    final here = await LocationService.reverseGeocode(
+      gps.latitude,
+      gps.longitude,
+    );
+    if (here != null && here.trim().isNotEmpty) {
+      addressController.text = here.trim();
+    }
+    notifyListeners();
+    final missingPin = p.latitude == null || p.longitude == null;
+    if (missingPin) {
+      try {
+        await ref.read(updateProfileProvider((
+          profileId: p.id,
+          name: p.name,
+          serviceType: p.serviceType,
+          company: p.company,
+          note: p.note,
+          payRate: p.payRate,
+          deliveryStyle: p.deliveryStyle,
+          status: p.status,
+          address: addressController.text.trim().isEmpty
+              ? p.address
+              : addressController.text.trim(),
+          city: p.city,
+          state: p.state,
+          postalCode: p.postalCode,
+          latitude: gps.latitude,
+          longitude: gps.longitude,
+        )).future);
+        selectedProfile = p.copyWith(
+          latitude: gps.latitude,
+          longitude: gps.longitude,
+          address: addressController.text.trim().isEmpty
+              ? p.address
+              : addressController.text.trim(),
+        );
+        refreshProfileWork(ref, profileId: p.id);
+      } catch (_) {}
       return true;
     }
-    final ft = LocationService.distanceFeet(
-      latitude!,
-      longitude!,
-      p.latitude!,
-      p.longitude!,
+    final tooFar = LocationService.attemptTooFarMessage(
+      gpsLat: gps.latitude,
+      gpsLng: gps.longitude,
+      jobLat: p.latitude,
+      jobLng: p.longitude,
+      gpsAccuracyMeters: gps.accuracy,
     );
-    if (ft <= kProfileProximityFt) return true;
+    if (tooFar == null) return true;
     if (!context.mounted) return false;
     await showDialog<void>(
       context: context,
@@ -1569,7 +1660,7 @@ class AttemptDraftController extends ChangeNotifier {
         backgroundColor: const Color(0xFFFFFFFF),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
         title: const Text(
-          'Too far from this job',
+          'Can’t log this attempt',
           style: TextStyle(
             fontSize: 17,
             fontWeight: FontWeight.w700,
@@ -1577,9 +1668,7 @@ class AttemptDraftController extends ChangeNotifier {
           ),
         ),
         content: Text(
-          'You are ${ft >= 5280 ? '${(ft / 5280).toStringAsFixed(1)} mi' : '${ft.round()} ft'} '
-          'from this profile’s location. Log an attempt only when you are within '
-          '${kProfileProximityFt.toInt()} feet of the job.',
+          tooFar,
           style: const TextStyle(
             fontSize: 14,
             color: Color(0xFF5C6778),
@@ -1654,6 +1743,12 @@ class AttemptDraftController extends ChangeNotifier {
     WidgetRef ref,
   ) async {
     if (nearbyCheckDone || latitude == null || longitude == null) return;
+    // The profile was already chosen from the map. Do not ask to attach
+    // the attempt to a nearby pin.
+    if (initialProfileId != null || selectedProfile != null) {
+      nearbyCheckDone = true;
+      return;
+    }
     try {
       final nearby = await ref.read(apiServiceProvider).getNearby(
             latitude: latitude!,

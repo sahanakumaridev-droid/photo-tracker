@@ -11,6 +11,7 @@ import Log from './pages/Log'
 import Schedule from './pages/Schedule'
 import Earnings from './pages/Earnings'
 import Archive from './pages/Archive'
+import './mileage'
 import { ThemeProvider } from './context/ThemeContext'
 import { GeoContext } from './context/GeoContext'
 

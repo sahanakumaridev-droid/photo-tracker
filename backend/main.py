@@ -98,7 +98,7 @@ class Profile(Base):
     service_type = Column(String, default="standard")
     note         = Column(Text, nullable=True)
     # Standing pay rate (whole dollars) for this profile — summed across
-    # non-completed profiles (including brand-new ones) to produce
+    # in-progress profiles (not brand-new / pending, not completed) to produce
     # "Total Available Earnings" on the Earnings screen.
     pay_rate     = Column(Integer, nullable=True)
 
@@ -202,6 +202,19 @@ class User(Base):
     name       = Column(String, nullable=True)
     role       = Column(String, nullable=False, default="field")  # field | admin
     created_at = Column(DateTime, default=datetime.utcnow)
+    mileage_total_miles = Column(Float, nullable=False, default=0)
+    mileage_last_lat = Column(Float, nullable=True)
+    mileage_last_lng = Column(Float, nullable=True)
+    mileage_tracking = Column(Integer, nullable=False, default=0)
+
+
+class MileageDaily(Base):
+    """End-of-day (or first ping of next day) snapshot of running mileage."""
+    __tablename__ = "mileage_daily"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    day = Column(String, nullable=False, index=True)  # YYYY-MM-DD local/UTC date
+    total_miles = Column(Float, nullable=False, default=0)
 
 
 class EmailRecipient(Base):
@@ -370,6 +383,23 @@ def _ensure_columns():
                     conn.rollback()
                     print(f"[migrate] skip profiles.{col}: {e}")
 
+        if inspector.has_table("users"):
+            existing_users = {c["name"] for c in inspector.get_columns("users")}
+            user_new_cols = {
+                "mileage_total_miles": "FLOAT NOT NULL DEFAULT 0",
+                "mileage_last_lat": "FLOAT",
+                "mileage_last_lng": "FLOAT",
+                "mileage_tracking": "INTEGER NOT NULL DEFAULT 0",
+            }
+            for col, ddl in user_new_cols.items():
+                if col not in existing_users:
+                    try:
+                        conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {ddl}"))
+                        conn.commit()
+                    except Exception as e:
+                        conn.rollback()
+                        print(f"[migrate] skip users.{col}: {e}")
+
 
 _ensure_columns()
 # Create attempts table + backfill Profile→Attempt→Photo from legacy photos.
@@ -442,7 +472,18 @@ def _resolve_attempt_status_input(attempt_status, successful):
 
 
 def _photo_dict(ph):
-    profiles = [{"id": p.id, "name": p.name, "service_type": p.service_type} for p in ph.profiles]
+    profiles = []
+    for p in ph.profiles:
+        raw = (p.company or "").strip()
+        cid = normalize_company_id(raw, required=True) if raw else None
+        co = get_company(cid) if cid else None
+        profiles.append({
+            "id": p.id,
+            "name": p.name,
+            "service_type": p.service_type,
+            "company": cid or (raw or None),
+            "company_name": co["name"] if co else None,
+        })
     primary = profiles[0] if profiles else None
     return {
         "id":                 ph.id,
@@ -542,15 +583,16 @@ def _profile_dict(p):
     is the number of Photos (Attempts) logged against this profile — reused
     by the client to decide whether "Awaiting Attempt" still applies and
     whether to show Profile Location vs. the Attempts list."""
-    company_id = p.company or DEFAULT_COMPANY_ID
-    company = get_company(company_id)
+    raw_company = (p.company or "").strip()
+    company_id = normalize_company_id(raw_company, required=True) if raw_company else None
+    company = get_company(company_id) if company_id else None
     return {
         "id": p.id,
         "name": p.name,
         "service_type": p.service_type,
         "note": p.note,
         "pay_rate": p.pay_rate,
-        "company": company_id,
+        "company": company_id or (raw_company or None),
         "delivery_style": getattr(p, "delivery_style", None),
         "file_number": getattr(p, "file_number", None),
         "company_name": company["name"] if company else None,
@@ -563,6 +605,7 @@ def _profile_dict(p):
         "longitude": p.longitude,
         "attempts_count": len(p.attempts) if getattr(p, "attempts", None) is not None
             else len(p.photos),
+        "created_at": _to_pst_iso(getattr(p, "created_at", None)),
     }
 
 
@@ -591,6 +634,17 @@ def _copy_file_number_to_attempts(db, profile):
         att.file_number = fn
     for ph in list(getattr(profile, "photos", None) or []):
         ph.file_number = fn
+
+
+def _profile_name_in_use(db, name, exclude_profile_id=None):
+    """True when another profile already uses this name. Match ignores case."""
+    key = (name or "").strip().lower()
+    if not key:
+        return False
+    q = db.query(Profile).filter(func.lower(Profile.name) == key)
+    if exclude_profile_id is not None:
+        q = q.filter(Profile.id != exclude_profile_id)
+    return q.first() is not None
 
 
 def _file_number_in_use(db, file_number, exclude_profile_id=None):
@@ -632,50 +686,116 @@ def _norm_profile_status(raw):
 
 
 def _attempt_outcome(att):
-    raw = (getattr(att, "attempt_status", None) or "").strip().lower()
-    if raw in ("pending", "successful", "unsuccessful"):
-        return raw
-    if getattr(att, "successful", 0):
-        return "successful"
-    return "pending"
+    return _normalize_attempt_status(att)
+
+
+def _profile_attempt_outcomes(db, profile):
+    """One outcome per logged attempt (Attempt rows, else photo groups)."""
+    attempts = db.query(Attempt).filter(Attempt.profile_id == profile.id).all()
+    if attempts:
+        return [_attempt_outcome(a) for a in attempts]
+    photos = db.query(Photo).filter(Photo.profile_id == profile.id).all()
+    if not photos:
+        return []
+    grouped = {}
+    for ph in photos:
+        key = getattr(ph, "attempt_id", None) or getattr(ph, "location_group_id", None) or ph.id
+        grouped.setdefault(key, []).append(ph)
+    outcomes = []
+    for group in grouped.values():
+        if any(_normalize_attempt_status(p) == "successful" for p in group):
+            outcomes.append("successful")
+        elif any(_normalize_attempt_status(p) == "unsuccessful" for p in group):
+            outcomes.append("unsuccessful")
+        else:
+            outcomes.append("pending")
+    return outcomes
 
 
 def _compute_profile_activity_status(db, profile):
-    """pending | in_progress | completed from attempts. Never returns archived."""
-    attempts = db.query(Attempt).filter(Attempt.profile_id == profile.id).all()
-    if not attempts:
-        return "pending"
-    if any(_attempt_outcome(a) == "successful" for a in attempts):
+    """pending | in_progress | completed from attempt outcomes.
+
+    Pending: no attempts, or only attempts still marked pending.
+    In Progress: at least one unsuccessful attempt, and diligence is not met.
+    Completed: one successful attempt, or enough unsuccessful attempts
+    for this company's diligence count. Pending attempts do not count.
+    """
+    outcomes = _profile_attempt_outcomes(db, profile)
+    if any(o == "successful" for o in outcomes):
         return "completed"
+    unsuccessful = sum(1 for o in outcomes if o == "unsuccessful")
+    if unsuccessful == 0:
+        return "pending"
     company = get_company(profile.company or DEFAULT_COMPANY_ID) or {}
     diligence = int(company.get("attempts_for_diligence") or 5)
-    unsuccessful = sum(
-        1 for a in attempts if _attempt_outcome(a) == "unsuccessful"
-    )
     if unsuccessful >= diligence:
         return "completed"
     return "in_progress"
 
 
+def _sync_work_to_profile_status(db, profile, target):
+    """Keep attempt and photo job-status aligned with the profile rule.
+
+    Archived rows are left alone. A job is Completed only when [target]
+    is completed; otherwise a previously auto-closed row returns to
+    in progress.
+    """
+    if target not in ("pending", "in_progress", "completed"):
+        return
+    desired = "completed" if target == "completed" else "in_progress"
+    attempts = db.query(Attempt).filter(Attempt.profile_id == profile.id).all()
+    attempt_ids = [a.id for a in attempts]
+    photos = []
+    if attempt_ids:
+        photos.extend(
+            db.query(Photo).filter(Photo.attempt_id.in_(attempt_ids)).all()
+        )
+    photos.extend(
+        db.query(Photo).filter(Photo.profile_id == profile.id).all()
+    )
+    def _apply(row):
+        if (row.status or "") == "archived":
+            return
+        if desired == "completed":
+            row.status = "completed"
+            if not row.completed_at:
+                row.completed_at = datetime.utcnow()
+        elif (row.status or "") in ("completed", "open", "", None):
+            row.status = "in_progress"
+            row.completed_at = None
+
+    for att in attempts:
+        _apply(att)
+    seen_photos = set()
+    for ph in photos:
+        if ph.id in seen_photos:
+            continue
+        seen_photos.add(ph.id)
+        _apply(ph)
+
+
 def _advance_profile_status(db, profile):
-    """One-way lifecycle. Archived is never changed automatically."""
+    """Archived stays archived. Every other status follows attempt outcomes,
+    including moving a wrongly completed profile back to pending or in progress.
+    """
     current = _norm_profile_status(profile.status)
     if current == "archived":
         if (profile.status or "").strip().lower() != "archived":
             profile.status = "archived"
         return current
-    derived = _compute_profile_activity_status(db, profile)
-    target = derived
-    if _PROFILE_STATUS_RANK[derived] < _PROFILE_STATUS_RANK[current]:
-        target = current
+    target = _compute_profile_activity_status(db, profile)
     if (profile.status or "") != target:
         profile.status = target
         profile.updated_at = datetime.utcnow()
+    _sync_work_to_profile_status(db, profile, target)
     return target
 
 
-def _profile_blocks_new_attempts(profile):
-    return _norm_profile_status(profile.status) in ("completed", "archived")
+def _profile_blocks_new_attempts(db, profile):
+    st = _norm_profile_status(profile.status)
+    if st in ("completed", "archived"):
+        return True
+    return _compute_profile_activity_status(db, profile) == "completed"
 
 
 def _parse_profile_location(data, profile):
@@ -724,10 +844,154 @@ def list_companies():
     return COMPANIES
 
 
+def _in_united_states(lat, lng):
+    if lat is None or lng is None:
+        return False
+    try:
+        lat = float(lat)
+        lng = float(lng)
+    except (TypeError, ValueError):
+        return False
+    if 24.396 <= lat <= 49.384 and -124.849 <= lng <= -66.885:
+        return True
+    if 51.2 <= lat <= 71.5 and -179.2 <= lng <= -129.9:
+        return True
+    if 18.9 <= lat <= 22.4 and -160.4 <= lng <= -154.7:
+        return True
+    if 17.8 <= lat <= 18.6 and -67.3 <= lng <= -65.2:
+        return True
+    return False
+
+
+def _feet_between(lat1, lng1, lat2, lng2):
+    from math import asin, cos, radians, sin, sqrt
+    lat1, lng1, lat2, lng2 = map(
+        radians, (float(lat1), float(lng1), float(lat2), float(lng2)))
+    dlat = lat2 - lat1
+    dlng = lng2 - lng1
+    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlng / 2) ** 2
+    return 2 * 6371000 * asin(sqrt(min(1.0, a))) * 3.28084
+
+
+def _user_by_email(db, email):
+    email = (email or "").strip().lower()
+    if not email:
+        email = "field@local"
+    user = db.query(User).filter(User.email == email).first()
+    if user is None:
+        user = User(email=email, name=email.split("@")[0], role="field")
+        db.add(user)
+        db.flush()
+    return user
+
+
+def _mileage_payload(db, user, today=None):
+    total = float(user.mileage_total_miles or 0)
+    raw_today = (today or "").strip()
+    try:
+        today_dt = datetime.strptime(raw_today, "%Y-%m-%d") if len(raw_today) == 10 else datetime.utcnow()
+    except ValueError:
+        today_dt = datetime.utcnow()
+    today = today_dt.strftime("%Y-%m-%d")
+    week_start = (today_dt - timedelta(days=7)).strftime("%Y-%m-%d")
+    snaps = db.query(MileageDaily).filter(MileageDaily.user_id == user.id).all()
+    by_day = {s.day: float(s.total_miles or 0) for s in snaps}
+    # Each daily row is the running total. Today is the change since the
+    # last earlier day. With no earlier day, today is the whole total.
+    prior = None
+    for day in sorted(by_day):
+        if day < today:
+            prior = by_day[day]
+    today_miles = total - prior if prior is not None else total
+    if today_miles < 0:
+        today_miles = 0
+    week_prior = None
+    for day in sorted(by_day):
+        if day <= week_start:
+            week_prior = by_day[day]
+    week_miles = total - (week_prior if week_prior is not None else 0)
+    if week_miles < 0:
+        week_miles = 0
+    return {
+        "total_miles": round(total, 2),
+        "today_miles": round(today_miles, 2),
+        "week_miles": round(week_miles, 2),
+        "daily": [
+            {"day": s.day, "total_miles": float(s.total_miles or 0)}
+            for s in sorted(snaps, key=lambda x: x.day)
+        ],
+    }
+
+
+@app.get("/mileage")
+def get_mileage(email: str = "", day: str = ""):
+    db = SessionLocal()
+    try:
+        user = _user_by_email(db, email)
+        return _mileage_payload(db, user, today=day)
+    finally:
+        db.close()
+
+
+@app.post("/mileage/ping")
+def mileage_ping(data: dict = Body(...)):
+    db = SessionLocal()
+    try:
+        user = _user_by_email(db, data.get("email"))
+        tracking = bool(data.get("tracking", True))
+        user.mileage_tracking = 1 if tracking else 0
+        lat = data.get("latitude")
+        lng = data.get("longitude")
+        # Miles while the button is off must not be added on the next start.
+        if not tracking:
+            user.mileage_last_lat = None
+            user.mileage_last_lng = None
+        day = (data.get("day") or "").strip()
+        today = day if len(day) == 10 else datetime.utcnow().strftime("%Y-%m-%d")
+        existing_today = db.query(MileageDaily).filter(
+            MileageDaily.user_id == user.id,
+            MileageDaily.day == today,
+        ).first()
+        if existing_today is None:
+            existing_today = MileageDaily(
+                user_id=user.id,
+                day=today,
+                total_miles=float(user.mileage_total_miles or 0),
+            )
+            db.add(existing_today)
+        if tracking and lat is not None and lng is not None:
+            lat = float(lat)
+            lng = float(lng)
+            if user.mileage_last_lat is not None and user.mileage_last_lng is not None:
+                miles = _haversine_ft(
+                    user.mileage_last_lat, user.mileage_last_lng, lat, lng
+                ) / 5280.0
+                if 0.002 < miles < 80:
+                    user.mileage_total_miles = float(user.mileage_total_miles or 0) + miles
+            user.mileage_last_lat = lat
+            user.mileage_last_lng = lng
+        existing_today.total_miles = float(user.mileage_total_miles or 0)
+        db.commit()
+        db.refresh(user)
+        return _mileage_payload(db, user, today=today)
+    finally:
+        db.close()
+
+
 @app.get("/profiles")
 def get_profiles():
     db = SessionLocal()
     profiles = db.query(Profile).all()
+    changed = False
+    for p in profiles:
+        before = p.status
+        _advance_profile_status(db, p)
+        if p.status != before:
+            changed = True
+    if changed:
+        db.commit()
+        for p in profiles:
+            db.refresh(p)
     result = [_profile_dict(p) for p in profiles]
     db.close()
     return result
@@ -750,7 +1014,7 @@ async def create_profile(data: dict = Body(...)):
 
     # Priority categories (+ legacy rush/airport kept for backward compat)
     if service_type not in (
-        "standard", "special", "next_day", "asap", "rush", "airport"
+        "standard", "special", "next_day", "asap", "stake_out", "rush", "airport"
     ):
         service_type = "standard"
     if not company_allows_priority(company_id, service_type):
@@ -767,6 +1031,12 @@ async def create_profile(data: dict = Body(...)):
     file_number = (data.get("file_number") or "").strip() or None
 
     db = SessionLocal()
+    if _profile_name_in_use(db, name):
+        db.close()
+        raise HTTPException(
+            status_code=409,
+            detail="This name already exists. Use a new name.",
+        )
     if _file_number_in_use(db, file_number):
         db.close()
         raise HTTPException(
@@ -789,6 +1059,13 @@ async def create_profile(data: dict = Body(...)):
     except HTTPException:
         db.close()
         raise
+    if profile.latitude is not None and profile.longitude is not None:
+        if not _in_united_states(profile.latitude, profile.longitude):
+            db.close()
+            raise HTTPException(
+                status_code=422,
+                detail="Pins and hot routes can only be added in the United States.",
+            )
     profile.status = "pending"
     db.add(profile)
     db.commit()
@@ -807,7 +1084,17 @@ async def update_profile(profile_id: int, data: dict = Body(...)):
         raise HTTPException(status_code=404, detail="Profile not found")
 
     if "name" in data:
-        profile.name = data["name"]
+        next_name = (data["name"] or "").strip()
+        if not next_name:
+            db.close()
+            raise HTTPException(status_code=422, detail="Profile name is required")
+        if _profile_name_in_use(db, next_name, exclude_profile_id=profile.id):
+            db.close()
+            raise HTTPException(
+                status_code=409,
+                detail="This name already exists. Use a new name.",
+            )
+        profile.name = next_name
     if "service_type" in data:
         profile.service_type = data["service_type"]
     if "note" in data:
@@ -1034,7 +1321,7 @@ def duplicate_attempt(attempt_id: int, data: dict = Body(...)):
         if not profile:
             continue
         _advance_profile_status(db, profile)
-        if _profile_blocks_new_attempts(profile):
+        if _profile_blocks_new_attempts(db, profile):
             continue
         clone = Attempt(
             profile_id=pid,
@@ -1200,6 +1487,7 @@ async def upload_photo(
     user_id:           str        = Form(""),     # F8/F9: attribution
     location_group_id: str        = Form(""),     # F1: append to existing master pin
     attempt_id:        str        = Form(""),     # attach photo to existing Attempt
+    client_batch_id:   str        = Form(""),     # one id for every photo in a save
 ):
     # Validate coordinates
     if not (-90 <= latitude <= 90):
@@ -1237,9 +1525,22 @@ async def upload_photo(
     uid = int(user_id) if user_id.strip().isdigit() else None
     grp = int(location_group_id) if location_group_id.strip().isdigit() else None
     existing_attempt_id = int(attempt_id) if attempt_id.strip().isdigit() else None
+    batch_key = (client_batch_id or "").strip()[:80] or None
+    if not existing_attempt_id and batch_key:
+        prior = (
+            db.query(Attempt)
+            .filter(
+                Attempt.profile_id == profile_id,
+                Attempt.client_batch_id == batch_key,
+            )
+            .order_by(Attempt.id.asc())
+            .first()
+        )
+        if prior:
+            existing_attempt_id = prior.id
 
     _advance_profile_status(db, profile)
-    if not existing_attempt_id and _profile_blocks_new_attempts(profile):
+    if not existing_attempt_id and _profile_blocks_new_attempts(db, profile):
         db.close()
         try:
             os.remove(filepath)
@@ -1250,24 +1551,36 @@ async def upload_photo(
             detail="This profile is completed and cannot receive new attempts",
         )
 
-    if not existing_attempt_id:
-        plat = getattr(profile, "latitude", None)
-        plng = getattr(profile, "longitude", None)
-        if plat is not None and plng is not None and (abs(plat) > 0.0001 or abs(plng) > 0.0001):
-            dist_ft = _haversine_ft(latitude, longitude, plat, plng)
-            if dist_ft > 200:
-                db.close()
-                try:
-                    os.remove(filepath)
-                except OSError:
-                    pass
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"You are {int(round(dist_ft))} ft from this job. "
-                        "Attempts must be logged within 200 feet of the profile location."
-                    ),
-                )
+    if not _in_united_states(latitude, longitude):
+        db.close()
+        try:
+            os.remove(filepath)
+        except OSError:
+            pass
+        raise HTTPException(
+            status_code=422,
+            detail="Attempts can only be logged in the United States.",
+        )
+    if profile.latitude is None or profile.longitude is None:
+        db.close()
+        try:
+            os.remove(filepath)
+        except OSError:
+            pass
+        raise HTTPException(
+            status_code=422,
+            detail="This profile has no location, so an attempt cannot be verified.",
+        )
+    if _feet_between(latitude, longitude, profile.latitude, profile.longitude) > 500:
+        db.close()
+        try:
+            os.remove(filepath)
+        except OSError:
+            pass
+        raise HTTPException(
+            status_code=422,
+            detail="You must be within 500 feet of this profile to log an attempt.",
+        )
 
     # New pins always start as in_progress — status only changes to completed
     # or archived when the user explicitly closes them out.
@@ -1276,7 +1589,7 @@ async def upload_photo(
 
     # Resolve priority against the profile's company allowlist.
     cat = category.strip().lower()
-    if cat not in ("standard", "special", "next_day", "asap"):
+    if cat not in ("standard", "special", "next_day", "asap", "stake_out"):
         cat = "standard"
     company_id = profile.company or DEFAULT_COMPANY_ID
     if not company_allows_priority(company_id, cat):
@@ -1320,6 +1633,7 @@ async def upload_photo(
             timestamp=device_ts,
             created_at=datetime.utcnow(),
             location_group_id=grp,
+            client_batch_id=batch_key,
         )
         db.add(attempt)
         db.flush()
@@ -1391,24 +1705,10 @@ async def replace_photo_image(photo_id: int, file: UploadFile = File(...)):
 
 @app.patch("/photos/{photo_id}/location")
 async def update_photo_location(photo_id: int, data: dict = Body(None), latitude: float = Form(None), longitude: float = Form(None)):
-    db = SessionLocal()
-    photo = db.query(Photo).filter(Photo.id == photo_id).first()
-    if not photo:
-        db.close()
-        raise HTTPException(status_code=404, detail="Photo not found")
-    
-    if data:
-        photo.latitude  = data.get("latitude",  photo.latitude)
-        photo.longitude = data.get("longitude", photo.longitude)
-    else:
-        if latitude is not None:
-            photo.latitude = latitude
-        if longitude is not None:
-            photo.longitude = longitude
-    
-    db.commit()
-    db.close()
-    return {"ok": True}
+    raise HTTPException(
+        status_code=403,
+        detail="Attempt location is locked to the original GPS geotag and cannot be changed.",
+    )
 
 
 @app.patch("/photos/{photo_id}/note")
@@ -1432,35 +1732,18 @@ async def update_photo_note(photo_id: int, data: dict = Body(None), note: str = 
 
 @app.patch("/photos/{photo_id}/zip")
 async def update_photo_zip(photo_id: int, data: dict = Body(None), zip_code: str = Form(None)):
-    db = SessionLocal()
-    photo = db.query(Photo).filter(Photo.id == photo_id).first()
-    if not photo:
-        db.close()
-        raise HTTPException(status_code=404, detail="Photo not found")
-    
-    if data:
-        photo.zip_code = data.get("zip_code", photo.zip_code)
-    else:
-        if zip_code is not None:
-            photo.zip_code = zip_code
-    
-    db.commit()
-    db.close()
-    return {"ok": True}
+    raise HTTPException(
+        status_code=403,
+        detail="Attempt location is locked to the original GPS geotag and cannot be changed.",
+    )
 
 
 @app.patch("/photos/{photo_id}/address")
 async def update_photo_address(photo_id: int, data: dict = Body(...)):
-    db = SessionLocal()
-    photo = db.query(Photo).filter(Photo.id == photo_id).first()
-    if not photo:
-        db.close()
-        raise HTTPException(status_code=404, detail="Photo not found")
-    photo.address  = data.get("address",  photo.address)
-    photo.zip_code = data.get("zip_code", photo.zip_code)
-    db.commit()
-    db.close()
-    return {"ok": True}
+    raise HTTPException(
+        status_code=403,
+        detail="Attempt location is locked to the original GPS geotag and cannot be changed.",
+    )
 
 
 @app.patch("/photos/{photo_id}/category")
@@ -1471,7 +1754,7 @@ async def update_photo_category(photo_id: int, data: dict = Body(...)):
         db.close()
         raise HTTPException(status_code=404, detail="Photo not found")
     cat = (data.get("category") or "standard").strip().lower()
-    if cat not in ("standard", "special", "next_day", "asap"):
+    if cat not in ("standard", "special", "next_day", "asap", "stake_out"):
         cat = "standard"
     photo.category = cat
     db.commit()
@@ -1733,7 +2016,7 @@ async def export_log_email(request: Request):
 # ════════════════════════════════════════════════════════════════════════════
 
 # Service-level / scheduling metadata
-_SERVICE_LEVELS = ("asap", "next_day", "standard", "special")
+_SERVICE_LEVELS = ("asap", "stake_out", "next_day", "standard", "special")
 _PRIORITY = {"asap": 0, "next_day": 1, "special": 2, "standard": 3}
 _NEARBY_DEFAULT_FT = 200.0
 
@@ -1970,6 +2253,17 @@ async def update_status(photo_id: int, data: dict = Body(...)):
     # earnings/archive views stay consistent with the live status.
     if st in ("open", "in_progress"):
         photo.completed_at = None
+    # Completing the job takes its pay out of available earnings.
+    if photo.profile_id and st in ("completed", "archived"):
+        profile = db.query(Profile).filter(Profile.id == photo.profile_id).first()
+        if profile and _norm_profile_status(profile.status) != "archived":
+            profile.status = "archived" if st == "archived" else "completed"
+            profile.updated_at = datetime.utcnow()
+    if photo.profile_id and st in ("open", "in_progress"):
+        profile = db.query(Profile).filter(Profile.id == photo.profile_id).first()
+        if profile and _norm_profile_status(profile.status) == "completed":
+            profile.status = _compute_profile_activity_status(db, profile)
+            profile.updated_at = datetime.utcnow()
     # Record the transition for the audit trail / undo.
     db.add(StatusHistory(
         photo_id=photo_id,
@@ -1997,6 +2291,15 @@ async def update_attempt_status(attempt_id: int, data: dict = Body(...)):
     if st not in ("open", "in_progress", "completed", "archived"):
         db.close()
         raise HTTPException(status_code=422, detail="status must be open|in_progress|completed|archived")
+
+    # Completing a job is not a manual close-out. It follows attempt
+    # outcomes: one successful attempt, or enough unsuccessful attempts.
+    if st == "completed":
+        profile = db.query(Profile).filter(Profile.id == attempt.profile_id).first()
+        applied = _advance_profile_status(db, profile) if profile else "in_progress"
+        db.commit()
+        db.close()
+        return {"ok": True, "status": applied, "photos_updated": 0}
 
     # Update the Attempt row itself.
     attempt.status = st
@@ -2114,6 +2417,33 @@ def _dedupe_by_attempt(jobs):
     return out
 
 
+def _earned_pay(job, db=None):
+    """Whole-dollar pay for one attempt. The profile rate counts when the
+    photo row was saved without its own rate."""
+    if getattr(job, "pay_rate", None):
+        return job.pay_rate
+    for p in (getattr(job, "profiles", None) or []):
+        if getattr(p, "pay_rate", None):
+            return p.pay_rate
+    if db is None:
+        return 0
+    profile_ids = []
+    if getattr(job, "profile_id", None):
+        profile_ids.append(job.profile_id)
+    if getattr(job, "attempt_id", None):
+        attempt = db.query(Attempt).filter(Attempt.id == job.attempt_id).first()
+        if attempt is not None:
+            if attempt.pay_rate:
+                return attempt.pay_rate
+            if attempt.profile_id:
+                profile_ids.append(attempt.profile_id)
+    for pid in profile_ids:
+        profile = db.query(Profile).filter(Profile.id == pid).first()
+        if profile is not None and profile.pay_rate:
+            return profile.pay_rate
+    return 0
+
+
 @app.get("/earnings/summary")
 def earnings_summary(period: str = "today", user_id: Optional[int] = None,
                       start_date: Optional[str] = None, end_date: Optional[str] = None):
@@ -2141,49 +2471,62 @@ def earnings_summary(period: str = "today", user_id: Optional[int] = None,
         q = q.filter(Photo.user_id == user_id)
     jobs = q.all()
     jobs = _dedupe_by_attempt(jobs)
-    total = sum((j.pay_rate or 0) for j in jobs)
+    total = sum(_earned_pay(j, db) for j in jobs)
     count = len(jobs)
     # daily breakdown for trend chart
     daily = {}
     for j in jobs:
         day = (_to_pst_iso(j.completed_at) or "")[:10]
-        daily[day] = daily.get(day, 0) + (j.pay_rate or 0)
+        daily[day] = daily.get(day, 0) + _earned_pay(j, db)
 
     def _job_summary(j):
         if j is None:
             return None
         return {
             "id":           j.id,
-            "pay_rate":     j.pay_rate or 0,
+            "pay_rate":     _earned_pay(j, db),
             "profile_name": (j.profiles[0].name if j.profiles else "Unknown"),
             "category":     j.category or "standard",
             "address":      j.address,
             "completed_at": _to_pst_iso(j.completed_at),
         }
 
-    highest = _job_summary(max(jobs, key=lambda j: (j.pay_rate or 0), default=None))
-    lowest  = _job_summary(min(jobs, key=lambda j: (j.pay_rate or 0), default=None))
+    highest = _job_summary(max(jobs, key=_earned_pay, default=None))
+    lowest  = _job_summary(min(jobs, key=_earned_pay, default=None))
 
-    # Pay still assigned to unfinished profiles — not a cash-out / "available
-    # to withdraw" balance, and not scoped to the selected period.
+    # Pay assigned to a profile that is not finished. Pending counts: the
+    # rate is entered when the profile is created, before any attempt.
+    # A completed or archived job (profile, attempt, or photo) leaves
+    # available earnings and is counted in total earnings instead.
+    finished_ids = set()
+    for row in db.query(Photo).filter(Photo.status.in_(("completed", "archived"))).all():
+        if row.profile_id:
+            finished_ids.add(row.profile_id)
+        if row.attempt_id:
+            finished_ids.add(("attempt", row.attempt_id))
+    for row in db.query(Attempt).filter(Attempt.status.in_(("completed", "archived"))).all():
+        if row.profile_id:
+            finished_ids.add(row.profile_id)
     open_jobs = []
     for p in db.query(Profile).all():
-        if not p.pay_rate:
+        if _norm_profile_status(p.status) in ("completed", "archived"):
             continue
-        attempts = list(getattr(p, "attempts", None) or [])
-        if attempts:
-            if all((a.status or "") in ("completed", "archived") for a in attempts):
-                continue
-        else:
-            photos = list(p.photos or [])
-            if photos and all(
-                (ph.status or "") in ("completed", "archived") for ph in photos
-            ):
-                continue
+        if p.id in finished_ids:
+            continue
+        if _compute_profile_activity_status(db, p) == "completed":
+            continue
+        pay = p.pay_rate
+        if not pay:
+            for a in list(getattr(p, "attempts", None) or []):
+                if a.pay_rate:
+                    pay = a.pay_rate
+                    break
+        if not pay:
+            continue
         open_jobs.append({
             "id": p.id,
             "name": p.name,
-            "pay_rate": p.pay_rate,
+            "pay_rate": pay,
         })
 
     db.close()
@@ -2221,12 +2564,12 @@ def get_payouts(user_id: Optional[int] = None):
         day = (_to_pst_iso(j.completed_at) or "")[:10]
         bucket = days.setdefault(day, {"date": day, "jobs": 0, "amount": 0, "entries": []})
         bucket["jobs"]   += 1
-        bucket["amount"] += (j.pay_rate or 0)
+        bucket["amount"] += _earned_pay(j, db)
         bucket["entries"].append({
             "id":           j.id,
             "profile_name": (j.profiles[0].name if j.profiles else "Unknown"),
             "category":     j.category or "standard",
-            "pay_rate":     j.pay_rate or 0,
+            "pay_rate":     _earned_pay(j, db),
             "address":      j.address,
             "image_url":    j.image_url,
             "completed_at": _to_pst_iso(j.completed_at),
@@ -2264,7 +2607,7 @@ async def finalize_payout(data: dict = Body(...)):
     jobs = _dedupe_by_attempt(jobs)
     snap = PayoutPeriod(
         user_id=uid, period_start=start, period_end=end,
-        total_amount=sum((j.pay_rate or 0) for j in jobs), jobs_count=len(jobs))
+        total_amount=sum(_earned_pay(j, db) for j in jobs), jobs_count=len(jobs))
     db.add(snap)
     db.commit()
     db.refresh(snap)

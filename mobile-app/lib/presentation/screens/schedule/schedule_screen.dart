@@ -26,6 +26,7 @@ class _Queue {
 
 const _queues = [
   _Queue('asap', 'ASAP', Color(0xFFEF4444), CupertinoIcons.bolt_fill),
+  _Queue('stake_out', 'Stake Out', Color(0xFF7C3AED), CupertinoIcons.eye_fill),
   _Queue('special', 'Special', Color(0xFFF59E0B), CupertinoIcons.star_fill),
   _Queue('next_day', 'Next Day', Color(0xFFEAB308), CupertinoIcons.forward_end_fill),
   _Queue('standard', 'Standard', Color(0xFF10B981), CupertinoIcons.checkmark_circle_fill),

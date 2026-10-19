@@ -42,6 +42,8 @@ class QueuedUpload {
     this.locationGroupId,
     this.userId,
     this.profileName,
+    this.batchId,
+    this.serverAttemptId,
     this.status = QueuedStatus.pending,
     this.attempts = 0,
     this.lastError,
@@ -67,6 +69,9 @@ class QueuedUpload {
   final int? locationGroupId;
   final int? userId;
   final String? profileName;
+  /// Photos enqueued together. Later items attach to the first server attempt.
+  final String? batchId;
+  int? serverAttemptId;
   QueuedStatus status;
   int attempts;
   String? lastError;
@@ -92,6 +97,8 @@ class QueuedUpload {
         'locationGroupId': locationGroupId,
         'userId': userId,
         'profileName': profileName,
+        'batchId': batchId,
+        'serverAttemptId': serverAttemptId,
         'status': status.name,
         'attempts': attempts,
         'lastError': lastError,
@@ -122,6 +129,8 @@ class QueuedUpload {
         locationGroupId: m['locationGroupId'] as int?,
         userId: m['userId'] as int?,
         profileName: m['profileName'] as String?,
+        batchId: m['batchId'] as String?,
+        serverAttemptId: (m['serverAttemptId'] as num?)?.toInt(),
         status: QueuedStatus.values.firstWhere(
           (s) => s.name == m['status'],
           orElse: () => QueuedStatus.pending,
@@ -135,7 +144,8 @@ class QueuedUpload {
 /// Signature for the actual network upload. Returns normally on success and
 /// throws on failure (network or server). Injected so the queue stays free of
 /// any Dio/Riverpod dependency.
-typedef Uploader = Future<void> Function(QueuedUpload item);
+/// Returns the server attempt id created or reused by the upload.
+typedef Uploader = Future<int?> Function(QueuedUpload item);
 
 /// Persistent, auto-retrying upload queue for low-/no-signal field use.
 ///
@@ -239,7 +249,10 @@ class UploadQueueService {
     int? locationGroupId,
     int? userId,
     String? profileName,
+    String? batchId,
+    int? serverAttemptId,
     QueuedStatus status = QueuedStatus.pending,
+    bool drain = true,
   }) async {
     final id = const Uuid().v4();
     final persistentPath = await _persist(sourceFile, id);
@@ -264,11 +277,13 @@ class UploadQueueService {
       locationGroupId: locationGroupId,
       userId: userId,
       profileName: profileName,
+      batchId: batchId,
+      serverAttemptId: serverAttemptId,
       status: status,
     );
     await _save(item);
     // Kick a drain attempt immediately (no-op if offline / pending status).
-    if (status == QueuedStatus.pending) unawaited(process());
+    if (drain && status == QueuedStatus.pending) unawaited(process());
     return item;
   }
 
@@ -328,12 +343,19 @@ class UploadQueueService {
         item.status = QueuedStatus.retrying;
         await _save(item);
         try {
-          await uploader(item);
+          final attemptId = await uploader(item);
+          if (attemptId != null) {
+            await attachAttemptToBatch(item.batchId, attemptId);
+          }
           await _remove(item); // success — drop it
         } catch (e) {
+          final err = e.toString().replaceAll('Exception: ', '');
+          item.lastError = err;
+          final blocked = err.contains('United States') ||
+              err.contains('500 feet') ||
+              err.contains('from this job');
           item.attempts += 1;
-          item.lastError = e.toString().replaceAll('Exception: ', '');
-          item.status = item.attempts >= _maxAttempts
+          item.status = (blocked || item.attempts >= _maxAttempts)
               ? QueuedStatus.failed
               : QueuedStatus.pending;
           await _save(item);
@@ -341,6 +363,17 @@ class UploadQueueService {
       }
     } finally {
       _processing = false;
+    }
+  }
+
+  /// Later photos in the same submit must join the attempt the first photo created.
+  Future<void> attachAttemptToBatch(String? batchId, int attemptId) async {
+    if (batchId == null) return;
+    for (final other in items) {
+      if (other.batchId == batchId && other.serverAttemptId == null) {
+        other.serverAttemptId = attemptId;
+        await _save(other);
+      }
     }
   }
 

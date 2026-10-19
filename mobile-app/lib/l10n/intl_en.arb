@@ -1,7 +1,7 @@
 {
   "@@locale": "en",
 
-  "appTitle": "Geo Tag",
+  "appTitle": "SRVBOARD",
   "@appTitle": { "description": "Application title" },
 
   "navHome": "Home",

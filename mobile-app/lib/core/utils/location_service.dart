@@ -131,6 +131,35 @@ class LocationService {
     }
   }
 
+  /// One GPS read for attempt logging — no 3-retry / stabilize loop.
+  /// Last-known is used only if it is fresher than 3 minutes.
+  static Future<Position?> getFreshFix({
+    Duration timeLimit = const Duration(seconds: 12),
+  }) async {
+    final hasPermission = await requestLocationPermission();
+    if (!hasPermission) return null;
+    final on = await Geolocator.isLocationServiceEnabled();
+    if (!on) return null;
+    try {
+      final pos = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.best,
+        timeLimit: timeLimit,
+      );
+      _logGpsSample('fresh_fix', pos);
+      return pos;
+    } catch (e) {
+      debugPrint('[Location] fresh fix error: $e');
+      final last = await getLastKnownLocation();
+      if (last == null) return null;
+      final age = DateTime.now().difference(last.timestamp);
+      if (age > const Duration(minutes: 3)) {
+        debugPrint('[Location] ignoring stale last-known (${age.inSeconds}s)');
+        return null;
+      }
+      return last;
+    }
+  }
+
   // ── Watch stream ──────────────────────────────────────────────────────────
 
   /// Stream of position updates. Uses high accuracy + 10 m distance filter.
@@ -140,6 +169,31 @@ class LocationService {
           distanceFilter: 10,
         ),
       );
+
+  /// Frequent stream for the live Google-style map puck (walk/drive).
+  static Stream<Position> watchMapLocation() {
+    final LocationSettings settings;
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      settings = AppleSettings(
+        accuracy: LocationAccuracy.bestForNavigation,
+        activityType: ActivityType.otherNavigation,
+        distanceFilter: 1,
+        pauseLocationUpdatesAutomatically: false,
+      );
+    } else if (defaultTargetPlatform == TargetPlatform.android) {
+      settings = AndroidSettings(
+        accuracy: LocationAccuracy.bestForNavigation,
+        distanceFilter: 1,
+        intervalDuration: const Duration(milliseconds: 800),
+      );
+    } else {
+      settings = const LocationSettings(
+        accuracy: LocationAccuracy.bestForNavigation,
+        distanceFilter: 1,
+      );
+    }
+    return Geolocator.getPositionStream(locationSettings: settings);
+  }
 
   // ── Reverse geocoding ─────────────────────────────────────────────────────
 
@@ -222,8 +276,13 @@ class LocationService {
   /// ZIP fields, for callers with their own structured address form (e.g. a
   /// Profile Location card) rather than a single joined display string.
   /// Returns all-null fields if the lookup fails.
-  static Future<({String? street, String? city, String? state, String? zip})>
-      reverseGeocodeDetailed(double latitude, double longitude) async {
+  static Future<({
+    String? street,
+    String? city,
+    String? state,
+    String? zip,
+    String? county,
+  })> reverseGeocodeDetailed(double latitude, double longitude) async {
     final dio = Dio();
     try {
       final response = await dio.get(
@@ -257,7 +316,13 @@ class LocationService {
       // Fall through to the all-null result below — caller keeps whatever
       // it already had (e.g. lat/lng from the map pick still apply).
     }
-    return (street: null, city: null, state: null, zip: null);
+    return (
+      street: null,
+      city: null,
+      state: null,
+      zip: null,
+      county: null,
+    );
   }
 
   /// Build a clean, consistently formatted address string.
@@ -291,8 +356,13 @@ class LocationService {
   /// single line, kept separate here for callers that need discrete fields
   /// (e.g. a Profile Location form with its own Address/City/State/ZIP
   /// inputs).
-  static ({String? street, String? city, String? state, String? zip})
-      _addressComponents(Map<String, dynamic> addr) {
+  static ({
+    String? street,
+    String? city,
+    String? state,
+    String? zip,
+    String? county,
+  }) _addressComponents(Map<String, dynamic> addr) {
     final houseNumber = addr['house_number'] as String?;
     final road = addr['road'] as String?;
     final street = (road != null && road.isNotEmpty)
@@ -304,12 +374,78 @@ class LocationService {
         addr['village'] ??
         addr['municipality']) as String?;
 
-    // Prefer abbreviation for compact inline addresses.
-    final state = (addr['state_code'] ?? addr['state']) as String?;
+    var state = addr['ISO3166-2-lvl4'] as String? ?? addr['state_code'] as String?;
+    if (state != null && state.contains('-')) {
+      state = state.split('-').last;
+    }
+    if (state == null || state.length != 2) {
+      state = stateCode(addr['state'] as String?);
+    }
 
     final zip = addr['postcode'] as String?;
+    final county = nominatimCounty(addr);
 
-    return (street: street, city: city, state: state, zip: zip);
+    return (street: street, city: city, state: state, zip: zip, county: county);
+  }
+
+  static String? stateCode(String? name) {
+    if (name == null || name.trim().isEmpty) return null;
+    final trimmed = name.trim();
+    if (RegExp(r'^[A-Za-z]{2}$').hasMatch(trimmed)) return trimmed.toUpperCase();
+    const codes = {
+      'alabama': 'AL',
+      'alaska': 'AK',
+      'arizona': 'AZ',
+      'arkansas': 'AR',
+      'california': 'CA',
+      'colorado': 'CO',
+      'connecticut': 'CT',
+      'delaware': 'DE',
+      'district of columbia': 'DC',
+      'florida': 'FL',
+      'georgia': 'GA',
+      'hawaii': 'HI',
+      'idaho': 'ID',
+      'illinois': 'IL',
+      'indiana': 'IN',
+      'iowa': 'IA',
+      'kansas': 'KS',
+      'kentucky': 'KY',
+      'louisiana': 'LA',
+      'maine': 'ME',
+      'maryland': 'MD',
+      'massachusetts': 'MA',
+      'michigan': 'MI',
+      'minnesota': 'MN',
+      'mississippi': 'MS',
+      'missouri': 'MO',
+      'montana': 'MT',
+      'nebraska': 'NE',
+      'nevada': 'NV',
+      'new hampshire': 'NH',
+      'new jersey': 'NJ',
+      'new mexico': 'NM',
+      'new york': 'NY',
+      'north carolina': 'NC',
+      'north dakota': 'ND',
+      'ohio': 'OH',
+      'oklahoma': 'OK',
+      'oregon': 'OR',
+      'pennsylvania': 'PA',
+      'rhode island': 'RI',
+      'south carolina': 'SC',
+      'south dakota': 'SD',
+      'tennessee': 'TN',
+      'texas': 'TX',
+      'utah': 'UT',
+      'vermont': 'VT',
+      'virginia': 'VA',
+      'washington': 'WA',
+      'west virginia': 'WV',
+      'wisconsin': 'WI',
+      'wyoming': 'WY',
+    };
+    return codes[trimmed.toLowerCase()];
   }
 
   /// Nominatim county / district — used for search, not the display address.
@@ -375,6 +511,138 @@ class LocationService {
 
   // ── Forward geocoding ─────────────────────────────────────────────────────
 
+  /// Place name or address → coordinates, limited to the United States.
+  static Future<({double lat, double lng})?> searchPlace(String query) async {
+    final q = query.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (q.length < 3) return null;
+    try {
+      final dio = Dio();
+      final response = await dio.get(
+        '${AppConstants.nominatimBaseUrl}/search',
+        queryParameters: {
+          'q': q,
+          'countrycodes': 'us',
+          'format': 'json',
+          'limit': 1,
+        },
+        options: Options(
+          headers: {
+            'User-Agent':
+                'GeoTaggingApp/1.0 (contact: support@photo-tracker.app)',
+          },
+        ),
+      );
+      if (response.statusCode == 200 && response.data is List) {
+        final results = response.data as List;
+        if (results.isEmpty) return null;
+        final result = results[0] as Map<String, dynamic>;
+        final lat = double.parse(result['lat'].toString());
+        final lng = double.parse(result['lon'].toString());
+        if (!isInUnitedStates(lat, lng)) return null;
+        return (lat: lat, lng: lng);
+      }
+      return null;
+    } catch (e) {
+      debugPrint('[Geocode] search failed: $e');
+      return null;
+    }
+  }
+
+  /// US place names as the user types a city, county, street, or ZIP.
+  static Future<List<({String label, double lat, double lng})>> suggestPlaces(
+    String query,
+  ) async {
+    final q = query.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (q.length < 3) return const [];
+    try {
+      final dio = Dio();
+      final response = await dio.get(
+        '${AppConstants.nominatimBaseUrl}/search',
+        queryParameters: {
+          'q': q,
+          'countrycodes': 'us',
+          'format': 'json',
+          'addressdetails': 1,
+          'limit': 5,
+        },
+        options: Options(
+          headers: {
+            'User-Agent':
+                'GeoTaggingApp/1.0 (contact: support@photo-tracker.app)',
+          },
+        ),
+      );
+      if (response.statusCode != 200 || response.data is! List) {
+        return const [];
+      }
+      final seen = <String>{};
+      final hits = <({String label, double lat, double lng})>[];
+      for (final raw in response.data as List) {
+        if (raw is! Map) continue;
+        final lat = double.tryParse(raw['lat']?.toString() ?? '');
+        final lng = double.tryParse(raw['lon']?.toString() ?? '');
+        if (lat == null || lng == null || !isInUnitedStates(lat, lng)) {
+          continue;
+        }
+        final label = _suggestionLabel(raw.cast<String, dynamic>());
+        if (label.isEmpty || !seen.add(label.toLowerCase())) continue;
+        hits.add((label: label, lat: lat, lng: lng));
+      }
+      return hits;
+    } catch (e) {
+      debugPrint('[Geocode] suggest failed: $e');
+      return const [];
+    }
+  }
+
+  static String _suggestionLabel(Map<String, dynamic> result) {
+    final address = result['address'];
+    if (address is Map) {
+      String? pick(List<String> keys) {
+        for (final key in keys) {
+          final value = address[key];
+          if (value is String && value.trim().isNotEmpty) return value.trim();
+        }
+        return null;
+      }
+
+      final parts = <String>[];
+      void add(String? value) {
+        if (value == null) return;
+        if (parts.any((p) => p.toLowerCase() == value.toLowerCase())) return;
+        parts.add(value);
+      }
+
+      add(pick(['road', 'neighbourhood', 'suburb']));
+      final city = pick(['city', 'town', 'village', 'hamlet']);
+      final zip = pick(['postcode']);
+      var state = pick(['ISO3166-2-lvl4', 'ISO3166-2-lvl6']);
+      if (state != null && state.contains('-')) {
+        state = state.split('-').last;
+      }
+      if (state != null && state.length != 2) state = null;
+      final county = pick(['county']);
+      if (city != null && state != null && zip != null) {
+        final street = parts.isEmpty ? city : parts.join(', ');
+        final countyLine = county == null ? '' : '\n$county';
+        return '$street\n$city, ${state.toUpperCase()} $zip$countyLine';
+      }
+      add(city);
+      add(pick(['county']));
+      add(pick(['state']));
+      add(zip);
+      if (parts.isNotEmpty) return parts.join(', ');
+    }
+    final display = result['display_name'];
+    if (display is! String) return '';
+    return display
+        .split(',')
+        .map((part) => part.trim())
+        .where((part) => part.isNotEmpty && part.toLowerCase() != 'united states')
+        .take(4)
+        .join(', ');
+  }
+
   /// Get coordinates from a US ZIP code.
   static Future<({double lat, double lng})?> getCoordinatesFromZipCode(
     String zipCode,
@@ -415,7 +683,39 @@ class LocationService {
 
   // ── Distance ──────────────────────────────────────────────────────────────
 
-  static const double kAttemptProximityFt = 200;
+  static const double kAttemptProximityFt = 500;
+
+  /// Approximate US (incl. AK, HI, PR) check for new pins / hot routes.
+  static bool isInUnitedStates(double lat, double lng) {
+    if (lat >= 24.396 && lat <= 49.384 && lng >= -124.849 && lng <= -66.885) {
+      return true;
+    }
+    if (lat >= 51.2 && lat <= 71.5 && lng >= -179.2 && lng <= -129.9) {
+      return true;
+    }
+    if (lat >= 18.9 && lat <= 22.4 && lng >= -160.4 && lng <= -154.7) {
+      return true;
+    }
+    if (lat >= 17.8 && lat <= 18.6 && lng >= -67.3 && lng <= -65.2) {
+      return true;
+    }
+    return false;
+  }
+
+  /// Offset [feet] east/west and north/south around a point (for Close zoom).
+  static ({double minLat, double maxLat, double minLng, double maxLng})
+      boxFeetAround(double lat, double lng, double feet) {
+    const ftPerDegLat = 364000.0;
+    final lngScale = cos(lat * pi / 180).abs().clamp(0.2, 1.0);
+    final dLat = feet / ftPerDegLat;
+    final dLng = feet / (ftPerDegLat * lngScale);
+    return (
+      minLat: lat - dLat,
+      maxLat: lat + dLat,
+      minLng: lng - dLng,
+      maxLng: lng + dLng,
+    );
+  }
 
   static bool usableCoordinates(double? lat, double? lng) =>
       lat != null &&
@@ -423,6 +723,30 @@ class LocationService {
       lat.abs() <= 90 &&
       lng.abs() <= 180 &&
       (lat.abs() > 0.0001 || lng.abs() > 0.0001);
+
+  /// Error if this GPS fix cannot prove the server is at the job.
+  /// The attempt must be logged in the US and within 500 feet of the profile.
+  static String? attemptTooFarMessage({
+    required double gpsLat,
+    required double gpsLng,
+    double? jobLat,
+    double? jobLng,
+    double? gpsAccuracyMeters,
+  }) {
+    if (!isInUnitedStates(gpsLat, gpsLng)) {
+      return 'Attempts can only be logged in the United States.';
+    }
+    if (jobLat == null || jobLng == null) {
+      return null;
+    }
+    final slackFt = ((gpsAccuracyMeters ?? 0) * 3.28084).clamp(0, 150);
+    final feet = distanceFeet(gpsLat, gpsLng, jobLat, jobLng);
+    if (feet > kAttemptProximityFt + slackFt) {
+      return 'You are ${feet.round()} ft from this job. '
+          'An attempt can only be logged within ${kAttemptProximityFt.toInt()} ft of the profile.';
+    }
+    return null;
+  }
 
   /// Haversine distance in feet.
   static double distanceFeet(

@@ -30,6 +30,7 @@ final uploadPhotoProvider =
       successful: params['successful'] as bool?,
       attemptStatus: params['attemptStatus'] as String?,
       attemptId: params['attemptId'] as int?,
+      clientBatchId: params['clientBatchId'] as String?,
       payRate: params['payRate'] as int?,
       takenAt: params['takenAt'] as String?,
       locationGroupId: params['locationGroupId'] as int?,

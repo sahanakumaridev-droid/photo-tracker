@@ -78,9 +78,14 @@ class SentenceCaseInputFormatter extends TextInputFormatter {
 }
 
 /// Sentence case plus a closing period for talk-to-text notes.
+/// Also turns spoken punctuation ("period", "comma", "question mark") into marks.
 String formatProfessionalNotes(String raw, {bool closingPeriod = true}) {
-  var text = raw.trim();
+  var text = applySpokenPunctuation(raw.trim());
   if (text.isEmpty) return text;
+  text = text.replaceAllMapped(
+    RegExp(r'\bi\b'),
+    (m) => 'I',
+  );
   final buf = StringBuffer();
   var capNext = true;
   var pendingPunct = false;
@@ -108,13 +113,44 @@ String formatProfessionalNotes(String raw, {bool closingPeriod = true}) {
       pendingPunct = false;
     }
   }
-  text = buf.toString().trim();
+  text = buf.toString();
+  text = text.replaceAll(RegExp(r' +'), ' ').trim();
+  text = text.replaceAllMapped(
+    RegExp(r' +([,.;:!?])'),
+    (m) => m.group(1)!,
+  );
   if (closingPeriod &&
       text.isNotEmpty &&
       !RegExp(r'[.!?]$').hasMatch(text)) {
     text = '$text.';
   }
   return text;
+}
+
+/// Maps dictated punctuation phrases to real marks (Coursera-style dictation).
+String applySpokenPunctuation(String raw) {
+  if (raw.isEmpty) return raw;
+  var text = ' $raw ';
+  const replacements = <String, String>{
+    ' new paragraph ': '\n\n',
+    ' new line ': '\n',
+    ' next line ': '\n',
+    ' question mark ': '? ',
+    ' exclamation point ': '! ',
+    ' exclamation mark ': '! ',
+    ' full stop ': '. ',
+    ' period ': '. ',
+    ' semicolon ': '; ',
+    ' colon ': ': ',
+    ' comma ': ', ',
+  };
+  for (final e in replacements.entries) {
+    text = text.replaceAll(
+      RegExp(e.key, caseSensitive: false),
+      e.value,
+    );
+  }
+  return text.trim();
 }
 
 /// Capitalises the first letter of every word — for names. Word boundaries are

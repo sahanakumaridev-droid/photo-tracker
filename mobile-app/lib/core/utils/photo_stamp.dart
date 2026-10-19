@@ -76,7 +76,7 @@ String formatStampFriendly(String? iso) {
 
 /// Street number + name, plus ZIP only — used in email body fields.
 String formatStreetZip({String? address, String? zipCode}) {
-  var full = (address ?? '').trim().replaceAll(RegExp(r'\s+'), ' ');
+  final full = (address ?? '').trim().replaceAll(RegExp(r'\s+'), ' ');
   var zip = (zipCode ?? '').trim();
   if (zip.isEmpty) {
     zip = RegExp(r'\b\d{5}(?:-\d{4})?\b').firstMatch(full)?.group(0) ?? '';
@@ -526,7 +526,13 @@ class WatermarkCaption extends StatelessWidget {
         child: Container(
           alignment: Alignment.center,
           padding: EdgeInsets.fromLTRB(
-              14, compact ? 22 : 30, 14, compact ? 10 : 14),
+            14,
+            compact ? 22 : 30,
+            14,
+            compact
+                ? 10
+                : (below != null ? 22 : 14),
+          ),
           decoration: BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.bottomCenter,

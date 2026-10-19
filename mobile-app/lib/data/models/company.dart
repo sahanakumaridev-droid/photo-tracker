@@ -146,13 +146,14 @@ const Company kFirstLegal = Company(
     'standard': '1st 3 attempts \$18, \$6.50/attempt after',
     'next_day': '1st 3 attempts \$23.50, \$8/attempt after',
     'asap': '1st attempt \$40, \$20/attempt after',
+    'stake_out': '1st attempt \$40, \$20/attempt after',
   },
   timeIntervals: CompanyTimeIntervals(
     morning: TimeInterval(start: '7:00 AM', end: '8:00 AM'),
     midday: TimeInterval(start: '11:00 AM', end: '4:00 PM'),
     evening: TimeInterval(start: '5:30 PM', end: '10:00 PM'),
   ),
-  availablePriorityLevels: ['standard', 'next_day', 'asap'],
+  availablePriorityLevels: ['standard', 'next_day', 'asap', 'stake_out'],
 );
 
 const Company kRockstar = Company(
@@ -165,13 +166,14 @@ const Company kRockstar = Company(
     'standard': '\$50',
     'next_day': '\$60',
     'asap': '\$70',
+    'stake_out': '\$70',
   },
   timeIntervals: CompanyTimeIntervals(
     morning: TimeInterval(start: '7:00 AM', end: '10:00 AM'),
     midday: TimeInterval(start: '11:00 AM', end: '4:00 PM'),
     evening: TimeInterval(start: '6:00 PM', end: '10:00 PM'),
   ),
-  availablePriorityLevels: ['standard', 'next_day', 'asap'],
+  availablePriorityLevels: ['standard', 'next_day', 'asap', 'stake_out'],
 );
 
 const Company kKnox = Company(
@@ -184,13 +186,14 @@ const Company kKnox = Company(
   payRateStructure: {
     'standard': '\$30',
     'asap': '\$50',
+    'stake_out': '\$50',
   },
   timeIntervals: CompanyTimeIntervals(
     morning: TimeInterval(start: '7:00 AM', end: '8:30 AM'),
     midday: TimeInterval(start: '11:00 AM', end: '4:00 PM'),
     evening: TimeInterval(start: '5:30 PM', end: '10:00 PM'),
   ),
-  availablePriorityLevels: ['standard', 'asap'],
+  availablePriorityLevels: ['standard', 'asap', 'stake_out'],
 );
 
 /// All known companies, in display order.
@@ -200,9 +203,15 @@ const String kDefaultCompanyId = 'first_legal';
 
 Company? companyById(String? id) {
   if (id == null || id.isEmpty) return null;
+  final raw = id.trim();
+  final slug = raw.toLowerCase().replaceAll(RegExp(r'[\s\-]+'), '_');
   for (final c in kCompanies) {
-    if (c.id == id) return c;
+    if (c.id == raw || c.id == slug) return c;
+    if (c.name.toLowerCase() == raw.toLowerCase()) return c;
   }
+  if (slug.contains('rockstar')) return kRockstar;
+  if (slug.contains('knox')) return kKnox;
+  if (slug.contains('first') && slug.contains('legal')) return kFirstLegal;
   return null;
 }
 

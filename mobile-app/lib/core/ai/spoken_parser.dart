@@ -112,7 +112,10 @@ SpokenDraft parseSpokenDraft(String raw) {
         ' ');
   }
 
-  if (RegExp(r'\basap\b', caseSensitive: false).hasMatch(text)) {
+  if (RegExp(r'\bstake\s*out\b', caseSensitive: false).hasMatch(text)) {
+    priority = 'stake_out';
+    text = text.replaceAll(RegExp(r'\bstake\s*out\b', caseSensitive: false), ' ');
+  } else if (RegExp(r'\basap\b', caseSensitive: false).hasMatch(text)) {
     priority = 'asap';
     text = text.replaceAll(RegExp(r'\basap\b', caseSensitive: false), ' ');
   } else if (RegExp(r'\bnext\s*day\b', caseSensitive: false).hasMatch(text)) {

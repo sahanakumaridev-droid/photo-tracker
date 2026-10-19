@@ -66,7 +66,7 @@ flutter_launcher_icons:
   ios: true
   remove_alpha_ios: true
   image_path: "assets/icons/app_icon.png"
-  adaptive_icon_background: "#6366f1"
+  adaptive_icon_background: "#000000"
   adaptive_icon_foreground: "assets/icons/ic_launcher_foreground.png"
 
 flutter:
@@ -76,5 +76,6 @@ flutter:
   assets:
     - assets/geotag_logo.svg
     - assets/geotag_mark.png
+    - assets/icons/srvboard_full.png
     - assets/images/
     - assets/icons/

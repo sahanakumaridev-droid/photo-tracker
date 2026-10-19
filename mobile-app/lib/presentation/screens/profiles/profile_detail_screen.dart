@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../../config/theme.dart';
 import '../../../core/utils/file_number.dart';
+import '../../../core/utils/location_service.dart';
 import '../../../core/utils/profile_lifecycle.dart';
 import '../../../data/models/attempt.dart';
 import '../../../data/models/profile_model.dart';
@@ -41,6 +42,44 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
   bool _showAllAttempts = false;
 
   Future<void> _startAttempt() async {
+    ProfileModel? located;
+    final list = ref.read(profilesProvider).valueOrNull;
+    if (list != null) {
+      for (final p in list) {
+        if (p.id == widget.profileId) {
+          located = p;
+          break;
+        }
+      }
+    }
+    final lat = located?.latitude;
+    final lng = located?.longitude;
+    if (lat != null && lng != null) {
+      final gps = await LocationService.getFreshFix();
+      if (!mounted) return;
+      if (gps == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Turn on location to add an attempt.')),
+        );
+        return;
+      }
+      final feet = LocationService.distanceFeet(
+        gps.latitude,
+        gps.longitude,
+        lat,
+        lng,
+      );
+      if (feet > LocationService.kAttemptProximityFt) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'You are ${feet.round()} ft away. Add Attempt turns on within 500 feet.',
+            ),
+          ),
+        );
+        return;
+      }
+    }
     final known =
         ref.read(profileAttemptsProvider(widget.profileId)).valueOrNull?.length;
     final ok = await ensureCanStartNewAttempt(
@@ -50,19 +89,9 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
       knownCount: known,
     );
     if (!ok || !context.mounted) return;
-    ProfileModel? extra;
-    final list = ref.read(profilesProvider).valueOrNull;
-    if (list != null) {
-      for (final p in list) {
-        if (p.id == widget.profileId) {
-          extra = p;
-          break;
-        }
-      }
-    }
     await context.push(
       '/new-attempt?profileId=${widget.profileId}',
-      extra: extra,
+      extra: located,
     );
     if (!mounted) return;
     refreshProfileWork(ref, profileId: widget.profileId);
@@ -92,12 +121,35 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
         leading: IconButton(
           icon: const Icon(CupertinoIcons.chevron_left,
               size: 20, color: _ink),
-          onPressed: context.pop,
+          onPressed: () {
+            if (Navigator.of(context).canPop()) {
+              Navigator.of(context).pop();
+              return;
+            }
+            if (context.canPop()) {
+              context.pop();
+              return;
+            }
+            context.go('/');
+          },
         ),
-        title: Text(
-          profile?.name ?? 'Profile',
-          style: const TextStyle(
-              fontSize: 18, fontWeight: FontWeight.w700, color: _ink),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Service Attempts',
+              style: TextStyle(
+                  fontSize: 18, fontWeight: FontWeight.w700, color: _ink),
+            ),
+            if ((profile?.name ?? '').trim().isNotEmpty)
+              Text(
+                profile!.name.trim(),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.w500, color: _muted),
+              ),
+          ],
         ),
       ),
       body: attemptsAsync.when(
@@ -128,9 +180,8 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
             child: CustomScrollView(
               physics: const AlwaysScrollableScrollPhysics(),
               slivers: [
-              // ── Profile-specific information (above attempts) ───────────
               SliverToBoxAdapter(
-                child: _buildProfileInfo(profile, attempts),
+                child: _buildAttemptsHeader(attempts.length, profile),
               ),
               SliverToBoxAdapter(
                 child: _buildAttemptActions(
@@ -138,19 +189,18 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
                   attemptCount: attempts.length,
                 ),
               ),
-              SliverToBoxAdapter(
-                child: _buildAddressesSection(context, profile),
-              ),
-              // ── Service Attempts ───────────────────────────────────────
-              SliverToBoxAdapter(
-                child: _buildAttemptsHeader(attempts.length, profile),
-              ),
               if (attempts.isEmpty)
                 SliverToBoxAdapter(child: _buildEmptyAttempts())
               else
                 SliverToBoxAdapter(
                   child: _buildAttemptsList(attempts, profile),
                 ),
+              SliverToBoxAdapter(
+                child: _buildProfileInfo(profile, attempts),
+              ),
+              SliverToBoxAdapter(
+                child: _buildAddressesSection(context, profile),
+              ),
               const SliverToBoxAdapter(child: SizedBox(height: 40)),
             ],
             ),
@@ -416,15 +466,15 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: _hair),
       ),
-      child: Column(
+      child: const Column(
         children: [
-          const Icon(CupertinoIcons.doc_text, size: 36, color: _muted),
-          const SizedBox(height: 12),
-          const Text('No attempts yet',
+          Icon(CupertinoIcons.doc_text, size: 36, color: _muted),
+          SizedBox(height: 12),
+          Text('No attempts yet',
               style: TextStyle(
                   fontSize: 15, fontWeight: FontWeight.w700, color: _ink)),
-          const SizedBox(height: 6),
-          const Text(
+          SizedBox(height: 6),
+          Text(
             'Profile details stay pre-filled. Add the remaining attempt fields next.',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 13, color: _muted, height: 1.35),
@@ -454,6 +504,8 @@ class _ProfileDetailScreenState extends ConsumerState<ProfileDetailScreen> {
             _AttemptRow(
               attempt: attempts[i],
               profileFileNumber: profile?.fileNumber,
+              number: attempts.length - i,
+              total: attempts.length,
               onTap: () => context.push('/photo/${attempts[i].photoId}'),
             ),
           ],
@@ -507,11 +559,15 @@ class _AttemptRow extends StatelessWidget {
   const _AttemptRow({
     required this.attempt,
     required this.onTap,
+    required this.number,
+    required this.total,
     this.profileFileNumber,
   });
 
   final Attempt attempt;
   final VoidCallback onTap;
+  final int number;
+  final int total;
   final String? profileFileNumber;
 
   static const Color _ink = Color(0xFF1A2130);
@@ -609,6 +665,15 @@ class _AttemptRow extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 6),
+                  Text(
+                    'Attempt $number of $total',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: _muted,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
                   Text(
                     notes.isEmpty ? 'No notes' : notes,
                     maxLines: 2,

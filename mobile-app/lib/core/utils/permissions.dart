@@ -13,8 +13,9 @@ Future<void> requestAppPermissions({bool onlyFirstTime = true}) async {
 
   // Requested together so the user is walked through every prompt up front,
   // before they reach a screen that needs one.
+  // Camera is not requested here. The system asks once, the first time the
+  // user opens the camera, and does not keep camera access running.
   await [
-    Permission.camera,
     Permission.photos,
     Permission.locationWhenInUse,
   ].request();

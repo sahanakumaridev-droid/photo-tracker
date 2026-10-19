@@ -23,6 +23,7 @@ const _catColors = {
   'special': Color(0xFFF59E0B),
   'next_day': Color(0xFFEAB308),
   'standard': Color(0xFF10B981),
+  'stake_out': Color(0xFF7C3AED),
 };
 
 class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
@@ -32,6 +33,7 @@ class _ArchiveScreenState extends ConsumerState<ArchiveScreen> {
     ['next_day', 'Next Day'],
     ['standard', 'Standard'],
     ['special', 'Special'],
+    ['stake_out', 'Stake Out'],
   ];
 
   // F10 — job lifecycle filter shown above the service-level chips.

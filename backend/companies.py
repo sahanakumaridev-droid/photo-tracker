@@ -12,6 +12,7 @@ from __future__ import annotations
 _PRIORITY_STANDARD = "standard"
 _PRIORITY_NEXT_DAY = "next_day"
 _PRIORITY_ASAP = "asap"
+_PRIORITY_STAKE_OUT = "stake_out"
 
 COMPANIES = [
     {
@@ -25,6 +26,7 @@ COMPANIES = [
             _PRIORITY_STANDARD: "1st 3 attempts $18, $6.50/attempt after",
             _PRIORITY_NEXT_DAY: "1st 3 attempts $23.50, $8/attempt after",
             _PRIORITY_ASAP: "1st attempt $40, $20/attempt after",
+            _PRIORITY_STAKE_OUT: "1st attempt $40, $20/attempt after",
         },
         "time_intervals": {
             "morning": {"start": "7:00 AM", "end": "8:00 AM"},
@@ -33,6 +35,7 @@ COMPANIES = [
         },
         "available_priority_levels": [
             _PRIORITY_STANDARD, _PRIORITY_NEXT_DAY, _PRIORITY_ASAP,
+            _PRIORITY_STAKE_OUT,
         ],
     },
     {
@@ -45,6 +48,7 @@ COMPANIES = [
             _PRIORITY_STANDARD: "$50",
             _PRIORITY_NEXT_DAY: "$60",
             _PRIORITY_ASAP: "$70",
+            _PRIORITY_STAKE_OUT: "$70",
         },
         "time_intervals": {
             "morning": {"start": "7:00 AM", "end": "10:00 AM"},
@@ -53,6 +57,7 @@ COMPANIES = [
         },
         "available_priority_levels": [
             _PRIORITY_STANDARD, _PRIORITY_NEXT_DAY, _PRIORITY_ASAP,
+            _PRIORITY_STAKE_OUT,
         ],
     },
     {
@@ -66,13 +71,16 @@ COMPANIES = [
         "pay_rate_structure": {
             _PRIORITY_STANDARD: "$30",
             _PRIORITY_ASAP: "$50",
+            _PRIORITY_STAKE_OUT: "$50",
         },
         "time_intervals": {
             "morning": {"start": "7:00 AM", "end": "8:30 AM"},
             "midday":  {"start": "11:00 AM", "end": "4:00 PM"},
             "evening": {"start": "5:30 PM", "end": "10:00 PM"},
         },
-        "available_priority_levels": [_PRIORITY_STANDARD, _PRIORITY_ASAP],
+        "available_priority_levels": [
+            _PRIORITY_STANDARD, _PRIORITY_ASAP, _PRIORITY_STAKE_OUT,
+        ],
     },
 ]
 
@@ -96,9 +104,22 @@ def normalize_company_id(company_id, *, required=False):
         if required:
             return None
         return DEFAULT_COMPANY_ID
-    if raw not in VALID_COMPANY_IDS:
-        return None
-    return raw
+    if raw in VALID_COMPANY_IDS:
+        return raw
+    slug = raw.lower().replace(" ", "_").replace("-", "_")
+    if slug in VALID_COMPANY_IDS:
+        return slug
+    lowered = raw.lower()
+    for c in COMPANIES:
+        if c["name"].lower() == lowered:
+            return c["id"]
+    if "rockstar" in slug:
+        return "rockstar"
+    if "knox" in slug:
+        return "knox"
+    if "first" in slug and "legal" in slug:
+        return "first_legal"
+    return None
 
 
 def company_allows_priority(company_id, category):
@@ -107,7 +128,7 @@ def company_allows_priority(company_id, category):
     cat = (category or _PRIORITY_STANDARD).strip().lower()
     company = get_company(company_id)
     if company is None:
-        return cat in ("standard", "special", "next_day", "asap")
+        return cat in ("standard", "special", "next_day", "asap", "stake_out")
     return cat in company["available_priority_levels"]
 
 

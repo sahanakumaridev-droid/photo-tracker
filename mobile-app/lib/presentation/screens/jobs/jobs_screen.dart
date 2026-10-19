@@ -183,7 +183,7 @@ class _JobsScreenState extends ConsumerState<JobsScreen> {
                 if (jobs.isEmpty) {
                   return _EmptyState(
                     searching: _searchCtrl.text.trim().isNotEmpty,
-                    onClear: () => _searchCtrl.clear(),
+                    onClear: _searchCtrl.clear,
                   );
                 }
                 return RefreshIndicator(
@@ -292,12 +292,7 @@ class _JobRow {
   String get zip =>
       (latest?.zipCode ?? profile?.postalCode ?? '').trim();
 
-  String? get client {
-    final named = profile?.companyName?.trim();
-    if (named != null && named.isNotEmpty) return named;
-    if (profile != null) return companyOrDefault(profile!.company).name;
-    return null;
-  }
+  String? get client => profile?.displayCompanyName;
 
   double? get lat => latest?.latitude ?? profile?.latitude;
   double? get lng => latest?.longitude ?? profile?.longitude;

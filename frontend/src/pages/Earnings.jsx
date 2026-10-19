@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { getEarnings, getPayouts } from '../api'
+import { mileageState, setMileageTracking, subscribeMileage } from '../mileage'
 import { useTheme } from '../context/ThemeContext'
 
 const ACCENT = '#7C3AED'
@@ -17,6 +18,7 @@ export default function Earnings() {
   const [summary, setSummary] = useState(null)
   const [payouts, setPayouts] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [mileage, setMileage] = useState(mileageState)
   const { mode } = useTheme()
   const isDark = mode === 'dark'
 
@@ -36,6 +38,8 @@ export default function Earnings() {
     segBg:       isDark ? 'rgba(255,255,255,0.06)' : '#fff',
     segBorder:   isDark ? 'rgba(255,255,255,0.1)'  : '#ececf3',
   }
+
+  useEffect(() => subscribeMileage(setMileage), [])
 
   useEffect(() => {
     let alive = true
@@ -84,16 +88,32 @@ export default function Earnings() {
         </div>
       </div>
 
+      <div style={{ ...th.card, padding: 18, marginBottom: 16, display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 180 }}>
+          <div style={{ fontSize: 15, fontWeight: 800, color: th.text1 }}>Track Mileage</div>
+          <div style={{ fontSize: 12.5, color: th.text2, marginTop: 4 }}>
+            {mileage.total_miles.toFixed(1)} mi total · {mileage.today_miles.toFixed(1)} today · {mileage.week_miles.toFixed(1)} this week
+          </div>
+        </div>
+        <button
+          onClick={() => setMileageTracking(!mileage.tracking)}
+          style={{
+            border: 'none', cursor: 'pointer', borderRadius: 999, padding: '10px 16px', fontWeight: 800, fontSize: 13,
+            background: mileage.tracking ? '#10b981' : th.surface, color: mileage.tracking ? '#fff' : th.text1,
+          }}
+        >{mileage.tracking ? 'Tracking on' : 'Track Mileage'}</button>
+      </div>
+
       {loading ? (
         <div style={{ padding: 60, textAlign: 'center', color: th.text3 }}>Loading earnings…</div>
       ) : (
         <>
-          {/* Hero + KPIs row */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 1fr) 1.7fr', gap: 16, marginBottom: 16 }}>
-            {/* Dark hero card — intentionally always dark */}
+          {/* Top section: Total Earnings | Total Available Earnings */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
             <div style={{ background: 'linear-gradient(145deg,#2a1b4d 0%,#1f2030 70%)', borderRadius: 16, padding: 22, color: '#fff', boxShadow: '0 8px 26px rgba(124,58,237,0.25)' }}>
-              <div style={{ fontSize: 13, color: '#c4b5fd', fontWeight: 600 }}>{periodLabel} earnings</div>
+              <div style={{ fontSize: 13, color: '#c4b5fd', fontWeight: 600 }}>Total Earnings</div>
               <div style={{ fontSize: 42, fontWeight: 800, letterSpacing: '-1.5px', marginTop: 6 }}>{money(summary?.total_earnings)}</div>
+              <div style={{ fontSize: 12.5, color: '#a9adc4', marginTop: 8 }}>{periodLabel} · completed profiles</div>
               <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
                 <div style={{ flex: 1, background: 'rgba(255,255,255,0.08)', borderRadius: 12, padding: '10px 12px' }}>
                   <div style={{ fontSize: 20, fontWeight: 800 }}>{summary?.jobs_completed ?? 0}</div>
@@ -105,9 +125,18 @@ export default function Earnings() {
                 </div>
               </div>
             </div>
+            <div style={{ background: 'linear-gradient(145deg,#064e3b 0%,#1f2030 70%)', borderRadius: 16, padding: 22, color: '#fff', boxShadow: '0 8px 26px rgba(16,185,129,0.22)' }}>
+              <div style={{ fontSize: 13, color: '#6ee7b7', fontWeight: 600 }}>Total Available Earnings</div>
+              <div style={{ fontSize: 42, fontWeight: 800, letterSpacing: '-1.5px', marginTop: 6 }}>{money(summary?.available_earnings)}</div>
+              <div style={{ fontSize: 12.5, color: '#a9adc4', marginTop: 8 }}>In-progress profiles · not period-filtered</div>
+              <div style={{ marginTop: 16, background: 'rgba(255,255,255,0.08)', borderRadius: 12, padding: '10px 12px' }}>
+                <div style={{ fontSize: 20, fontWeight: 800 }}>{(summary?.open_jobs || []).length}</div>
+                <div style={{ fontSize: 11, color: '#a9adc4' }}>open profiles with a pay rate</div>
+              </div>
+            </div>
+          </div>
 
-            {/* KPI cards */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 16, marginBottom: 16 }}>
               {KPIS.map((k, i) => (
                 <div key={i} style={{ ...th.card, padding: 18, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -118,7 +147,6 @@ export default function Earnings() {
                   <div style={{ fontSize: 12, fontWeight: 600, color: th.text3, marginTop: 4 }}>{k.sub}</div>
                 </div>
               ))}
-            </div>
           </div>
 
           {/* Earnings trend */}

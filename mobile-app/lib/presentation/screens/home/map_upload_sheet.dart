@@ -62,7 +62,7 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
   static const _errorRed = Color(0xFFDC2626);
   // Radius used to surface "Nearby" profiles first in the picker — matches
   // the main Upload tab's profile picker.
-  static const double _kProfileProximityFt = 200;
+  static const double _kProfileProximityFt = 300;
 
   ProfileModel? _selectedProfile;
   // Priority level is chosen per-upload here (not stored on the profile).
@@ -127,19 +127,26 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
     }
     final jobLat = _selectedProfile!.latitude ?? widget.lat;
     final jobLng = _selectedProfile!.longitude ?? widget.lng;
-    if (LocationService.usableCoordinates(jobLat, jobLng)) {
-      final ft = LocationService.distanceFeet(
-        gps.latitude, gps.longitude, jobLat, jobLng,
-      );
-      if (ft > _kProfileProximityFt) {
-        setState(() {
-          _uploading = false;
-          _error =
-              'You are ${ft >= 5280 ? '${(ft / 5280).toStringAsFixed(1)} mi' : '${ft.round()} ft'} '
-              'from this job. Log an attempt only within ${_kProfileProximityFt.toInt()} feet.';
-        });
-        return;
-      }
+    final tooFar = LocationService.attemptTooFarMessage(
+          gpsLat: gps.latitude,
+          gpsLng: gps.longitude,
+          jobLat: jobLat,
+          jobLng: jobLng,
+          gpsAccuracyMeters: gps.accuracy,
+        ) ??
+        LocationService.attemptTooFarMessage(
+          gpsLat: gps.latitude,
+          gpsLng: gps.longitude,
+          jobLat: widget.lat,
+          jobLng: widget.lng,
+          gpsAccuracyMeters: gps.accuracy,
+        );
+    if (tooFar != null) {
+      setState(() {
+        _uploading = false;
+        _error = tooFar;
+      });
+      return;
     }
     final takenAt = _takenAt ?? DateTime.now().toUtc().toIso8601String();
     final note = _noteCtrl.text.trim().isEmpty ? null : _noteCtrl.text.trim();
@@ -175,6 +182,20 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
         widget.onUploaded();
       }
     } catch (e) {
+      final msg = e.toString();
+      if (mounted &&
+          (msg.contains('United States') ||
+              msg.contains('500 feet') ||
+              msg.contains('within 500') ||
+              msg.contains('from this job'))) {
+        await UploadQueueService.instance.remove(queued.id);
+        setState(() {
+          _uploading = false;
+          _error =
+              'Attempt not saved. You can only send from the United States.';
+        });
+        return;
+      }
       if (mounted) {
         HapticFeedback.heavyImpact();
         Navigator.pop(context);
@@ -186,16 +207,15 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
     }
   }
 
-  // Profile IDs with a photo within _kProfileProximityMi of the tapped
-  // location — surfaced first in the picker, matching the main Upload tab.
+  // Profiles whose saved address is within 300 ft of the tapped location.
   Set<int> _nearbyProfileIds() {
-    final photos = ref.read(photosProvider).valueOrNull ?? const [];
+    final profiles = ref.read(profilesProvider).valueOrNull ?? const [];
     final ids = <int>{};
-    for (final p in photos) {
-      if (p.profileId == null) continue;
+    for (final p in profiles) {
+      if (p.latitude == null || p.longitude == null) continue;
       final km = LocationService.calculateDistance(
-          widget.lat, widget.lng, p.latitude, p.longitude);
-      if (km * 3280.84 <= _kProfileProximityFt) ids.add(p.profileId!);
+          widget.lat, widget.lng, p.latitude!, p.longitude!);
+      if (km * 3280.84 <= _kProfileProximityFt) ids.add(p.id);
     }
     return ids;
   }
@@ -595,7 +615,11 @@ class _MapUploadSheetState extends ConsumerState<_MapUploadSheet> {
   }
 
   Future<void> _openAddProfile() async {
-    final created = await showCreateProfileDialog(context);
+    final created = await showCreateProfileDialog(
+      context,
+      latitude: widget.lat,
+      longitude: widget.lng,
+    );
     // profilesProvider is watched in build(), so the new profile appears in
     // the list automatically; pre-select it for the user.
     if (created != null && mounted) {

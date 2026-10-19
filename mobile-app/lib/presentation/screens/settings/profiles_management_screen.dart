@@ -16,6 +16,7 @@ import '../../../data/models/profile_model.dart';
 import '../../providers/profile_provider.dart';
 import '../../widgets/ai/speak_fill_banner.dart';
 import '../../widgets/ai/voice_mic_button.dart';
+import '../../widgets/common/company_dropdown.dart';
 import '../upload/location_picker_map.dart';
 
 class ProfilesManagementScreen extends ConsumerStatefulWidget {
@@ -120,7 +121,7 @@ class _ProfilesManagementScreenState
         TextEditingController(text: p?.longitude?.toStringAsFixed(6) ?? '');
     // Map legacy values (rush→asap, airport→standard) to the 4 categories
     final raw = widget.profileToEdit?.serviceType ?? 'standard';
-    const valid = {'asap', 'standard', 'special', 'next_day'};
+    const valid = {'asap', 'standard', 'special', 'next_day', 'stake_out'};
     _selectedServiceType = valid.contains(raw)
         ? raw
         : (raw == 'rush' ? 'asap' : 'standard');
@@ -305,13 +306,7 @@ class _ProfilesManagementScreenState
       );
       return;
     }
-    final payRate = int.tryParse(_payRateController.text.trim());
-    if (payRate == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter a payout amount')),
-      );
-      return;
-    }
+    final payRate = widget.profileToEdit?.payRate;
     // Only treated as set when BOTH parse — a partially-edited pair is
     // treated as "not set" rather than silently saving a mismatched point.
     final lat = double.tryParse(_latController.text.trim());
@@ -710,23 +705,9 @@ class _ProfilesManagementScreenState
           _helper('Sets available priorities, diligence rules, and rates.'),
           const SizedBox(height: 12),
           _dropdownShell(
-            child: DropdownButtonFormField<String>(
-              key: ValueKey(_companyId),
-              initialValue: _companyId,
-              decoration: const InputDecoration(
-                border: InputBorder.none,
-                contentPadding:
-                    EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-              ),
-              style: _fieldStyle,
-              icon: const Icon(Icons.expand_more_rounded, color: _inkSubtle),
-              items: [
-                for (final c in kCompanies)
-                  DropdownMenuItem(value: c.id, child: Text(c.name)),
-              ],
+            child: CompanyDropdown(
+              value: _companyId,
               onChanged: (v) {
-                if (v == null) return;
-                HapticFeedback.selectionClick();
                 setState(() {
                   _companyId = v;
                   _selectedServiceType = defaultPriorityForCompany(v);
@@ -1097,22 +1078,7 @@ class _ProfilesManagementScreenState
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _sectionLabel('Payout', Icons.attach_money_rounded, done: _payoutDone),
-            const SizedBox(height: 6),
-            _helper('Required. Standing payout for this profile.'),
-            const SizedBox(height: 14),
-            _fieldLabel('Payout (\$)'),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _payRateController,
-              keyboardType: TextInputType.number,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-              style: _fieldStyle,
-              decoration: _deco(
-                hint: 'e.g. 50',
-                icon: Icons.attach_money_rounded,
-              ),
-            ),
+            _sectionLabel('Notes', Icons.description_outlined),
             if (_isEditing) ...[
               const SizedBox(height: 14),
               _fieldLabel('Note'),
@@ -1143,12 +1109,12 @@ class _ProfilesManagementScreenState
 
   bool get _canAdvance {
     if (_step == 0) return _nameDone;
-    if (_step == 1) return _deliveryDone && _payoutDone;
+    if (_step == 1) return _deliveryDone;
     return true;
   }
 
   bool get _requiredComplete =>
-      _nameDone && _deliveryDone && _payoutDone;
+      _nameDone && _deliveryDone;
 
   void _goNext() {
     if (!_canAdvance) return;

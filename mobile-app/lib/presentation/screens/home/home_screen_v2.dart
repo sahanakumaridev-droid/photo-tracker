@@ -200,24 +200,23 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 // Logo
-                const AppLogo(size: 40, radius: 12, withShadow: false),
+                const AppLogo(size: 44, withShadow: false),
                 const SizedBox(width: 10),
-                // Wordmark: violet "Geo" + purple "Tag"
                 RichText(
                   text: const TextSpan(
                     style: TextStyle(
-                      fontSize: 24,
+                      fontSize: 22,
                       fontWeight: FontWeight.w900,
                       letterSpacing: -1,
                       height: 1,
                     ),
                     children: [
                       TextSpan(
-                        text: 'Geo',
+                        text: 'SRV',
                         style: TextStyle(color: Color(0xFF4A90E2)),
                       ),
                       TextSpan(
-                        text: 'Tag',
+                        text: 'BOARD',
                         style: TextStyle(color: Color(0xFF1A2130)),
                       ),
                     ],
@@ -512,7 +511,7 @@ class _HomeScreenV2State extends ConsumerState<HomeScreenV2> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(p.profileName ?? 'GeoTag',
+                      Text(p.profileName ?? 'SRVBOARD',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(

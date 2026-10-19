@@ -74,17 +74,39 @@ class LocalStorage {
 
   // ─── Served To — custom names ──────────────────────────────────────────────
   static const String _servedToCustomNamesKey = 'served_to_custom_names';
+  static const String _servedToGendersKey = 'served_to_custom_genders';
 
   /// Custom "Served To" names the user has created, most-recent first.
   static List<String> getServedToCustomNames() =>
       _prefs.getStringList(_servedToCustomNamesKey) ?? [];
 
+  /// Saved gender for a custom name: male, female, or other.
+  static Map<String, String> getServedToGenders() {
+    final raw = _prefs.getString(_servedToGendersKey);
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return {};
+      return decoded.map((k, v) => MapEntry('$k', '$v'));
+    } catch (_) {
+      return {};
+    }
+  }
+
   /// Remember a custom "Served To" name for reuse (most-recent first, deduped).
-  static Future<bool> addServedToCustomName(String name) async {
+  static Future<bool> addServedToCustomName(
+    String name, {
+    String? gender,
+  }) async {
     final names = getServedToCustomNames()
       ..remove(name)
       ..insert(0, name);
-    return _prefs.setStringList(_servedToCustomNamesKey, names);
+    final saved = await _prefs.setStringList(_servedToCustomNamesKey, names);
+    if (gender != null && gender.isNotEmpty) {
+      final genders = getServedToGenders()..[name] = gender;
+      await _prefs.setString(_servedToGendersKey, jsonEncode(genders));
+    }
+    return saved;
   }
 
   // ─── Permissions ──────────────────────────────────────────────────────────

@@ -12,7 +12,7 @@ class AppConfig {
   static const int apiRetryCount = 3;
 
   // App Configuration
-  static const String appName = 'Geo Tag';
+  static const String appName = 'SRVBOARD';
   static const String appVersion = '1.0.0';
 
   // Feature Flags

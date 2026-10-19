@@ -232,14 +232,59 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
       '${log.latitude.toStringAsFixed(6)}, ${log.longitude.toStringAsFixed(6)}';
 
   // ── Section grouping ──────────────────────────────────────────────────────
+  /// Profiles with no attempt yet still belong in this list.
+  List<LogEntryModel> _withProfilesWithoutAttempts(List<LogEntryModel> logs) {
+    final profiles = ref.watch(profilesProvider).valueOrNull ?? const [];
+    final covered = <int>{
+      for (final log in logs)
+        if (log.profileId != null) log.profileId!,
+    };
+    final extras = <LogEntryModel>[];
+    for (final p in profiles) {
+      if (covered.contains(p.id)) continue;
+      extras.add(LogEntryModel(
+        id: -p.id,
+        imageUrl: '',
+        latitude: p.latitude ?? 0,
+        longitude: p.longitude ?? 0,
+        timestamp: (p.createdAt != null && p.createdAt!.trim().isNotEmpty)
+            ? p.createdAt
+            : '1970-01-01T00:00:00Z',
+        address: p.address,
+        profileId: p.id,
+        profileName: p.name,
+        serviceType: p.serviceType,
+        category: p.serviceType,
+        fileNumber: p.fileNumber,
+        profiles: [p],
+        attemptStatus: 'pending',
+      ));
+    }
+    return [...extras, ...logs];
+  }
+
   Map<String, List<LogEntryModel>> _groupByDate(List<LogEntryModel> logs) {
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
     final yesterday = today.subtract(const Duration(days: 1));
     final weekAgo = today.subtract(const Duration(days: 7));
 
-    final groups = <String, List<LogEntryModel>>{};
+    // One card per profile. Photo files can carry old camera dates, which
+    // otherwise split the same profile across two month sections.
+    final newest = <String, LogEntryModel>{};
     for (final log in logs) {
+      final profileKey = log.profileId?.toString() ??
+          log.profileName ??
+          log.id.toString();
+      final prev = newest[profileKey];
+      if (prev == null ||
+          (log.timestamp ?? '').compareTo(prev.timestamp ?? '') > 0) {
+        newest[profileKey] = log;
+      }
+    }
+
+    final groups = <String, List<LogEntryModel>>{};
+    for (final log in newest.values) {
       String key;
       try {
         final dt = DateTime.parse(log.timestamp ?? '').toLocal();
@@ -1196,8 +1241,9 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
         loading: _buildSkeleton,
         error: (err, _) => _buildError(err),
         data: (allLogs) {
-          if (allLogs.isEmpty) return _buildEmpty();
-          final logs = _applyClientFilters(allLogs);
+          final merged = _withProfilesWithoutAttempts(allLogs);
+          if (merged.isEmpty) return _buildEmpty();
+          final logs = _applyClientFilters(merged);
           if (logs.isEmpty) return _buildEmpty();
           return _buildGroupedList(logs, userPos);
         },
@@ -1223,34 +1269,26 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
       ),
     );
 
-  // ── Grouped list ──────────────────────────────────────────────────────────
-  Widget _buildGroupedList(List<LogEntryModel> logs, dynamic userPos) {
-    final groups = _groupByDate(logs);
-    for (final list in groups.values) {
-      list.sort((a, b) => (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
-    }
-    final sectionOrder = ['Today', 'Yesterday', 'Earlier This Week'];
-    DateTime? sectionDate(String key) {
-      try {
-        return DateFormat('MMMM yyyy').parse(key);
-      } catch (_) {
-        return null;
+  List<LogEntryModel> _latestFirst(List<LogEntryModel> logs) {
+    final newest = <String, LogEntryModel>{};
+    for (final log in logs) {
+      final profileKey = log.profileId?.toString() ??
+          log.profileName ??
+          log.id.toString();
+      final prev = newest[profileKey];
+      if (prev == null ||
+          (log.timestamp ?? '').compareTo(prev.timestamp ?? '') > 0) {
+        newest[profileKey] = log;
       }
     }
+    final items = newest.values.toList()
+      ..sort((a, b) => (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
+    return items;
+  }
 
-    final extraKeys = groups.keys.where((k) => !sectionOrder.contains(k)).toList()
-      ..sort((a, b) {
-        final da = sectionDate(a);
-        final db = sectionDate(b);
-        if (da != null && db != null) return db.compareTo(da);
-        if (da != null) return -1;
-        if (db != null) return 1;
-        return a.compareTo(b);
-      });
-    final orderedKeys = [
-      ...sectionOrder.where(groups.containsKey),
-      ...extraKeys,
-    ];
+  // ── Grouped list ──────────────────────────────────────────────────────────
+  Widget _buildGroupedList(List<LogEntryModel> logs, dynamic userPos) {
+    final items = _latestFirst(logs);
 
     return RefreshIndicator(
       color: _accent,
@@ -1258,38 +1296,21 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
       onRefresh: () async { ref.invalidate(logProvider(_filters)); },
       child: ListView.builder(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 100),
-        itemCount: orderedKeys.fold<int>(
-          0,
-          (sum, k) => sum + 1 + (groups[k]?.length ?? 0),
-        ),
-        itemBuilder: (context, flatIndex) {
-          var cursor = 0;
-          for (final key in orderedKeys) {
-            final items = groups[key]!;
-            if (flatIndex == cursor) {
-              return _buildSectionHeader(key, items.length);
-            }
-            cursor++;
-            if (flatIndex < cursor + items.length) {
-              final item = items[flatIndex - cursor];
-              final localIdx = flatIndex - cursor;
-              return _buildLogCard(item, localIdx, userPos)
-                  .animate()
-                  .fadeIn(
-                    duration: 350.ms,
-                    delay: Duration(milliseconds: localIdx * 40),
-                  )
-                  .slideY(
-                    begin: 0.06,
-                    end: 0,
-                    duration: 350.ms,
-                    delay: Duration(milliseconds: localIdx * 40),
-                    curve: Curves.easeOut,
-                  );
-            }
-            cursor += items.length;
-          }
-          return const SizedBox.shrink();
+        itemCount: items.length,
+        itemBuilder: (context, index) {
+          return _buildLogCard(items[index], index, userPos)
+              .animate()
+              .fadeIn(
+                duration: 350.ms,
+                delay: Duration(milliseconds: index * 40),
+              )
+              .slideY(
+                begin: 0.06,
+                end: 0,
+                duration: 350.ms,
+                delay: Duration(milliseconds: index * 40),
+                curve: Curves.easeOut,
+              );
         },
       ),
     );
@@ -1354,7 +1375,8 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
 
     // Distance badge — only shown when GPS is available and pin is within 25 mi
     String? distLabel;
-    if (userPos != null) {
+    final hasPin = log.latitude.abs() > 0.0001 || log.longitude.abs() > 0.0001;
+    if (userPos != null && hasPin) {
       final km = LocationService.calculateDistance(
         userPos.latitude, userPos.longitude,
         log.latitude, log.longitude,
@@ -1368,37 +1390,41 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
         distLabel = '${mi.round()} miles away';
       }
     }
-    final imageUrl = '${AppConfig.apiBaseUrl}${log.imageUrl}';
+    final hasPhoto = log.imageUrl.trim().isNotEmpty;
+    final imageUrl = hasPhoto ? '${AppConfig.apiBaseUrl}${log.imageUrl}' : '';
     final selected = _selectedLogIds.contains(log.id);
     final unsuccessful =
         normalizeAttemptStatus(log.attemptStatus) == kAttemptStatusUnsuccessful;
-    ProfileModel? profile;
-    if (log.profiles != null && log.profiles!.isNotEmpty) {
-      profile = log.profiles!.first;
-    } else if (log.profileId != null) {
+    final ProfileModel? nested = (log.profiles != null && log.profiles!.isNotEmpty)
+        ? log.profiles!.first
+        : null;
+    ProfileModel? catalogMatch;
+    final pid = log.profileId ?? nested?.id;
+    if (pid != null) {
       for (final p in ref.watch(profilesProvider).valueOrNull ?? const []) {
-        if (p.id == log.profileId) {
-          profile = p;
+        if (p.id == pid) {
+          catalogMatch = p;
           break;
         }
       }
     }
-    final companyName = profile == null
-        ? null
-        : ((profile.companyName ?? '').trim().isNotEmpty
-            ? profile.companyName!.trim()
-            : companyOrDefault(profile.company).name);
-    final attemptN = (profile?.attemptsCount ?? 0) > 0
-        ? profile!.attemptsCount
-        : 1;
-    final attemptMax = attemptCapForProfile(profile);
+    final profile = catalogMatch ?? nested;
+    final companyName = profile?.displayCompanyName;
+    final attemptMax = profile?.attemptsCount ?? 0;
+    final attemptN = attemptMax;
+    final attemptLabel =
+        attemptMax == 0 ? 'No attempt' : '$attemptN of $attemptMax';
 
     return GestureDetector(
       onTap: _selectionMode
           ? () => _toggleLogSelected(log.id)
           : () {
               HapticFeedback.selectionClick();
-              context.push('/photo/${log.id}');
+              if (log.id < 0 && log.profileId != null) {
+                context.push('/profile/${log.profileId}');
+              } else {
+                context.push('/photo/${log.id}');
+              }
             },
       onLongPress: () {
         HapticFeedback.mediumImpact();
@@ -1450,7 +1476,8 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                       children: [
                     ClipRRect(
                       borderRadius: BorderRadius.circular(12),
-                      child: CachedNetworkImage(
+                      child: hasPhoto
+                          ? CachedNetworkImage(
                         imageUrl: imageUrl,
                         width: 60,
                         height: 60,
@@ -1474,11 +1501,22 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                             size: 22,
                           ),
                         ),
-                      ),
+                      )
+                      : Container(
+                          width: 60,
+                          height: 60,
+                          color: const Color(0xFFE8EEF6),
+                          alignment: Alignment.center,
+                          child: const Icon(
+                            CupertinoIcons.placemark_fill,
+                            color: Color(0xFF4A90E2),
+                            size: 26,
+                          ),
+                        ),
                     ),
                         const SizedBox(height: 6),
                         Text(
-                          '$attemptN of $attemptMax',
+                          attemptLabel,
                           style: const TextStyle(
                             fontSize: 10,
                             fontWeight: FontWeight.w700,
@@ -1596,6 +1634,8 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                           // affordance is the _LocationText hyperlink above,
                           // so there's a single, unambiguous "open in Maps"
                           // tap target. Indented to align with that link.
+                          if (log.latitude.abs() > 0.0001 ||
+                              log.longitude.abs() > 0.0001)
                           Padding(
                             padding: const EdgeInsets.only(left: 17),
                             child: Text(

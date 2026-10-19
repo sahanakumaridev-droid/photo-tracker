@@ -7,7 +7,6 @@ import 'package:latlong2/latlong.dart';
 
 import '../../../config/map_tiles.dart';
 import '../../../data/models/photo_model.dart';
-import '../../providers/photo_provider.dart';
 
 class EditLocationScreen extends ConsumerStatefulWidget {
   const EditLocationScreen({required this.photo, super.key});
@@ -59,76 +58,15 @@ class _EditLocationScreenState extends ConsumerState<EditLocationScreen> {
   bool get _valid =>
       _lat >= -90 && _lat <= 90 && _lng >= -180 && _lng <= 180;
 
-  void _onMapTap(TapPosition _, LatLng point) {
-    HapticFeedback.lightImpact();
-    setState(() {
-      _lat = point.latitude;
-      _lng = point.longitude;
-      _latCtrl.text = _lat.toStringAsFixed(6);
-      _lngCtrl.text = _lng.toStringAsFixed(6);
-      _error = null;
-    });
-    _mapController.move(point, _mapController.camera.zoom);
-  }
-
-  void _onLatChanged(String v) {
-    final parsed = double.tryParse(v);
-    if (parsed != null) {
-      setState(() {
-        _lat = parsed;
-        _error = null;
-      });
-      if (_valid) {
-        _mapController.move(LatLng(_lat, _lng), _mapController.camera.zoom);
-      }
-    }
-  }
-
-  void _onLngChanged(String v) {
-    final parsed = double.tryParse(v);
-    if (parsed != null) {
-      setState(() {
-        _lng = parsed;
-        _error = null;
-      });
-      if (_valid) {
-        _mapController.move(LatLng(_lat, _lng), _mapController.camera.zoom);
-      }
-    }
-  }
+  void _onMapTap(TapPosition _, LatLng point) {}
 
   Future<void> _save() async {
-    if (!_valid) {
-      setState(() => _error = 'Enter valid coordinates.');
-      return;
-    }
     HapticFeedback.mediumImpact();
-    setState(() { _saving = true; _error = null; });
-    try {
-      await ref.read(
-        updatePhotoLocationProvider((widget.photo.id, _lat, _lng)).future,
-      );
-      if (mounted) {
-        HapticFeedback.heavyImpact();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text('Location updated'),
-            backgroundColor: const Color(0xFF6B7280),
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
-          ),
-        );
-        context.pop(true); // return true = updated
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _error = 'Failed to save. Try again.');
-      }
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
+    setState(() {
+      _saving = false;
+      _error =
+          'Attempt location is locked to the original GPS geotag and cannot be changed.';
+    });
   }
 
   @override
@@ -148,7 +86,7 @@ class _EditLocationScreenState extends ConsumerState<EditLocationScreen> {
                 SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    'Tap the map to move the pin, or edit coordinates below',
+                    'Location is locked to the original GPS geotag',
                     style: TextStyle(
                       fontSize: 12,
                       color: _accent,
@@ -168,7 +106,7 @@ class _EditLocationScreenState extends ConsumerState<EditLocationScreen> {
                 initialZoom: 14,
                 minZoom: 2,
                 maxZoom: 18,
-                onTap: _onMapTap,
+                onTap: null,
               ),
               children: [
                 AppMapTiles.layer(),
@@ -294,7 +232,6 @@ class _EditLocationScreenState extends ConsumerState<EditLocationScreen> {
                     label: 'Latitude',
                     controller: _latCtrl,
                     hint: '-90 to 90',
-                    onChanged: _onLatChanged,
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -303,7 +240,6 @@ class _EditLocationScreenState extends ConsumerState<EditLocationScreen> {
                     label: 'Longitude',
                     controller: _lngCtrl,
                     hint: '-180 to 180',
-                    onChanged: _onLngChanged,
                   ),
                 ),
               ],
@@ -398,7 +334,6 @@ class _EditLocationScreenState extends ConsumerState<EditLocationScreen> {
     required String label,
     required TextEditingController controller,
     required String hint,
-    required ValueChanged<String> onChanged,
   }) =>
       Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -414,11 +349,12 @@ class _EditLocationScreenState extends ConsumerState<EditLocationScreen> {
           const SizedBox(height: 5),
           TextField(
             controller: controller,
+            readOnly: true,
+            enableInteractiveSelection: false,
             keyboardType: const TextInputType.numberWithOptions(
               signed: true,
               decimal: true,
             ),
-            onChanged: onChanged,
             style: const TextStyle(
               fontSize: 14,
               color: _ink,

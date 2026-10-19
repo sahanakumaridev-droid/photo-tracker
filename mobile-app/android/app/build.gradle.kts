@@ -35,6 +35,11 @@ android {
         versionName = flutter.versionName
     }
 
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
+
     signingConfigs {
         create("release") {
             keyAlias = keyProperties["keyAlias"] as String

@@ -53,6 +53,7 @@ class PhotoRepository {
     bool? successful,          // legacy; prefer attemptStatus
     String? attemptStatus,     // pending | successful | unsuccessful
     int? attemptId,            // attach to existing Attempt (multi-photo)
+    String? clientBatchId,     // same value for every photo in one save
     int? payRate,              // F7
     String? takenAt,           // F6 device capture time (ISO)
     int? locationGroupId,      // F1 append to existing master pin
@@ -79,6 +80,8 @@ class PhotoRepository {
             'attempt_status': attemptStatus,
         if (successful != null) 'successful': successful,
         if (attemptId != null) 'attempt_id': attemptId,
+        if (clientBatchId != null && clientBatchId.isNotEmpty)
+          'client_batch_id': clientBatchId,
         if (payRate != null) 'pay_rate': payRate,
         // F6: lock timestamp to device capture time
         'taken_at': takenAt ?? DateTime.now().toUtc().toIso8601String(),

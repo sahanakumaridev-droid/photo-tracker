@@ -82,7 +82,7 @@ class AttemptDetailsScreen extends ConsumerWidget {
                             const SizedBox(height: 14),
                             _buildPayRateSection(),
                             const SizedBox(height: 14),
-                            _buildDetailsSection(context),
+                            _buildDetailsSection(context, ref),
                             const SizedBox(height: 8),
                           ],
                         ),
@@ -163,25 +163,12 @@ class AttemptDetailsScreen extends ConsumerWidget {
       );
 
   // ── Details: Note, Attempt Status, Served To / Relation To ────────────────
-  Widget _buildDetailsSection(BuildContext context) => _card(
+  Widget _buildDetailsSection(BuildContext context, WidgetRef ref) => _card(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _sectionLabel('Note', Icons.edit_outlined),
-            const SizedBox(height: 14),
-            _inputField(
-              controller: controller.noteController,
-              hint: 'Tap the mic and talk the note…',
-              icon: Icons.description_outlined,
-              maxLines: 3,
-              textCapitalization: TextCapitalization.sentences,
-              inputFormatters: const [SentenceCaseInputFormatter()],
-              voice: true,
-              voiceMode: VoiceFillMode.append,
-            ),
             const SizedBox(height: 10),
-            NoteSuggestionChips(controller: controller.noteController),
-            const SizedBox(height: 16),
             _sectionLabel(
               'Attempt Status',
               Icons.flag_rounded,
@@ -248,14 +235,36 @@ class AttemptDetailsScreen extends ConsumerWidget {
                 );
               }).toList(),
             ),
+            const SizedBox(height: 12),
+            if (controller.isSuccessfulAttempt)
+              SubjectDescriptionForm(
+                description: controller.subjectDescription,
+                onChanged: controller.bump,
+              )
+            else
+              NoteSuggestionChips(
+                controller: controller.noteController,
+                outcome: controller.attemptStatus,
+              ),
+            const SizedBox(height: 12),
+            _inputField(
+              controller: controller.noteController,
+              hint: 'Tap the mic and talk the note…',
+              icon: Icons.description_outlined,
+              maxLines: 3,
+              textCapitalization: TextCapitalization.sentences,
+              inputFormatters: const [SentenceCaseInputFormatter()],
+              voice: true,
+              voiceMode: VoiceFillMode.append,
+            ),
             if (controller.isSuccessfulAttempt) ...[
               const SizedBox(height: 16),
               _fieldLabel('Served To', optional: true),
               const SizedBox(height: 6),
-              _buildServedToField(context),
+              _buildServedToField(context, ref),
               if (controller.servedToController.text.trim().isNotEmpty &&
-                  controller.servedToController.text.trim() !=
-                      'Same as profile') ...[
+                  AttemptDraftController.servedToNeedsRelation(
+                      controller.servedToController.text)) ...[
                 const SizedBox(height: 16),
                 _fieldLabel('Relation To'),
                 const SizedBox(height: 6),
@@ -273,10 +282,10 @@ class AttemptDetailsScreen extends ConsumerWidget {
       );
 
   // ── Served To picker field ────────────────────────────────────────────────
-  Widget _buildServedToField(BuildContext context) {
+  Widget _buildServedToField(BuildContext context, WidgetRef ref) {
     final hasValue = controller.servedToController.text.trim().isNotEmpty;
     return GestureDetector(
-      onTap: () => _showServedToPicker(context),
+      onTap: () => _showServedToPicker(context, ref),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
         decoration: BoxDecoration(
@@ -309,7 +318,7 @@ class AttemptDetailsScreen extends ConsumerWidget {
     );
   }
 
-  void _showServedToPicker(BuildContext context) {
+  void _showServedToPicker(BuildContext context, WidgetRef ref) {
     HapticFeedback.lightImpact();
 
     void select(String value) {
@@ -351,13 +360,7 @@ class AttemptDetailsScreen extends ConsumerWidget {
       }
     }
 
-    // Presets first, then remembered custom names (most-recent first),
-    // skipping any that duplicate a preset.
-    final servedToOptions = [
-      ...AttemptDraftController.kServedToPresets,
-      ...controller.customServedToNames.where(
-          (n) => !AttemptDraftController.kServedToPresets.contains(n)),
-    ];
+    final servedToOptions = controller.servedToChoices(ref);
 
     showModalBottomSheet<void>(
       context: context,
@@ -398,17 +401,6 @@ class AttemptDetailsScreen extends ConsumerWidget {
             const SizedBox(height: 12),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: Column(
-                children: servedToOptions
-                    .map((p) => _servedToPickerTile(
-                          label: p,
-                          onSelect: () => select(p),
-                        ))
-                    .toList(),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
               child: GestureDetector(
                 onTap: createCustom,
                 child: Container(
@@ -425,7 +417,7 @@ class AttemptDetailsScreen extends ConsumerWidget {
                       Icon(Icons.add_circle_outline_rounded,
                           size: 18, color: _accent),
                       SizedBox(width: 10),
-                      Text('New name',
+                      Text('New Name',
                           style: TextStyle(
                               fontSize: 14,
                               fontWeight: FontWeight.w600,
@@ -433,6 +425,17 @@ class AttemptDetailsScreen extends ConsumerWidget {
                     ],
                   ),
                 ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+              child: Column(
+                children: servedToOptions
+                    .map((p) => _servedToPickerTile(
+                          label: p,
+                          onSelect: () => select(p),
+                        ))
+                    .toList(),
               ),
             ),
           ],
@@ -538,12 +541,6 @@ class AttemptDetailsScreen extends ConsumerWidget {
                         ? '—'
                         : controller.fileNumberController.text.trim(),
                   ),
-                  if (controller.addressController.text.trim().isNotEmpty) ...[
-                    const Divider(height: 20),
-                    _summaryRow(
-                        label: 'Location',
-                        value: controller.addressController.text.trim()),
-                  ],
                 ],
               ),
             ),

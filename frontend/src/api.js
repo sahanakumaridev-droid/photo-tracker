@@ -113,6 +113,8 @@ export const getArchive        = (params)    => api.get('/archive', { params }).
 
 // ── F8/F9: earnings + payouts ────────────────────────────────────────────────
 export const getEarnings       = (period = 'today', user_id) => api.get('/earnings/summary', { params: { period, ...(user_id ? { user_id } : {}) } }).then(r => r.data)
+export const getMileage        = (email) => api.get('/mileage', { params: email ? { email } : {} }).then(r => r.data)
+export const pingMileage       = (data) => api.post('/mileage/ping', data).then(r => r.data)
 export const getPayouts        = (user_id)   => api.get('/payouts', { params: user_id ? { user_id } : {} }).then(r => r.data)
 export const finalizePayout    = (data)      => api.post('/payouts/finalize', data).then(r => r.data)
 

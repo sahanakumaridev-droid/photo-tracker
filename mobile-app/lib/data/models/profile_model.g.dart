@@ -24,6 +24,7 @@ ProfileModel _$ProfileModelFromJson(Map<String, dynamic> json) => ProfileModel(
       latitude: (json['latitude'] as num?)?.toDouble(),
       longitude: (json['longitude'] as num?)?.toDouble(),
       attemptsCount: (json['attempts_count'] as num?)?.toInt() ?? 0,
+      createdAt: json['created_at'] as String?,
     );
 
 Map<String, dynamic> _$ProfileModelToJson(ProfileModel instance) =>
@@ -45,4 +46,5 @@ Map<String, dynamic> _$ProfileModelToJson(ProfileModel instance) =>
       'latitude': instance.latitude,
       'longitude': instance.longitude,
       'attempts_count': instance.attemptsCount,
+      'created_at': instance.createdAt,
     };

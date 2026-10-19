@@ -14,7 +14,7 @@ class VoiceMicButton extends StatefulWidget {
     this.onChanged,
     this.mode = VoiceFillMode.replace,
     this.color = const Color(0xFF4A90E2),
-    this.tooltip = 'Tap to talk',
+    this.tooltip = 'Tap to talk. Pause or tap again to stop.',
   });
 
   final TextEditingController controller;
@@ -31,6 +31,8 @@ class _VoiceMicButtonState extends State<VoiceMicButton> {
   late final String _id =
       'field-${identityHashCode(widget.controller)}';
   String _base = '';
+  bool _wasActive = false;
+  String? _shownError;
 
   SpeechDictation get _speech => SpeechDictation.instance;
 
@@ -47,7 +49,21 @@ class _VoiceMicButtonState extends State<VoiceMicButton> {
   }
 
   void _onSpeech() {
-    if (mounted) setState(() {});
+    final active = _speech.isActive(_id);
+    if (_wasActive && !active && mounted) {
+      _applyFormatted(widget.controller.text, closingPeriod: true);
+    }
+    _wasActive = active;
+    if (mounted) {
+      setState(() {});
+      final err = _speech.error;
+      if (err != null && err != _shownError && !active) {
+        _shownError = err;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(err)),
+        );
+      }
+    }
   }
 
   Future<void> _toggle() async {
@@ -62,13 +78,9 @@ class _VoiceMicButtonState extends State<VoiceMicButton> {
       fieldId: _id,
       onWords: (words, isFinal) {
         if (!mounted || words.trim().isEmpty) return;
-        final spoken = formatProfessionalNotes(
-          words,
-          closingPeriod: isFinal,
-        );
         final next = widget.mode == VoiceFillMode.replace
-            ? spoken
-            : _join(_base, spoken);
+            ? words
+            : _join(_base, words);
         widget.controller.value = TextEditingValue(
           text: next,
           selection: TextSelection.collapsed(offset: next.length),

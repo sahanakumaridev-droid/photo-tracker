@@ -6,8 +6,6 @@ import 'package:shimmer/shimmer.dart';
 
 import '../../../config/map_tiles.dart';
 import 'attempt_draft_controller.dart';
-import 'location_picker_map.dart';
-import '../../widgets/ai/voice_mic_button.dart';
 
 /// Dedicated Location screen, pushed from the Resume Attempt hub. Body is
 /// the old form's location section — Refresh/Pick-on-Map/error/shimmer
@@ -63,28 +61,12 @@ class AttemptLocationScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _openMapPicker(BuildContext context, WidgetRef ref) async {
-    if (controller.locationFrozenFromCache) {
-      controller.showSnack(
-        context,
-        'Location is locked from cache. Unlock from the hub banner to change it.',
-        isError: true,
-      );
-      return;
-    }
-    final initial = (controller.latitude != null && controller.longitude != null)
-        ? LatLng(controller.latitude!, controller.longitude!)
-        : null;
-
-    final picked = await Navigator.of(context).push<PickedLocation>(
-      MaterialPageRoute(
-        fullscreenDialog: true,
-        builder: (_) => LocationPickerMap(initial: initial),
-      ),
+  void _lockedLocationSnack(BuildContext context) {
+    controller.showSnack(
+      context,
+      'Attempt location is locked to your GPS geotag and cannot be changed.',
+      isError: true,
     );
-
-    if (picked == null || !context.mounted) return;
-    await controller.applyPickedLocation(picked, context, ref);
   }
 
   // ── Location section ──────────────────────────────────────────────────────
@@ -106,95 +88,46 @@ class AttemptLocationScreen extends ConsumerWidget {
               ],
             ),
             const SizedBox(height: 10),
-            Row(
-              children: [
-                GestureDetector(
-                  onTap: () => _openMapPicker(context, ref),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: controller.locationFrozenFromCache
-                          ? const Color(0xFFF3F4F6)
-                          : _accentSoft,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.map_outlined,
-                          size: 13,
-                          color: controller.locationFrozenFromCache
-                              ? const Color(0xFF9CA3AF)
-                              : _accent,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          'Pick on Map',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: controller.locationFrozenFromCache
-                                ? const Color(0xFF9CA3AF)
-                                : _accent,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+            const Text(
+              'Attempt GPS is taken from your device geotag and cannot be moved on the map.',
+              style: TextStyle(fontSize: 13, color: _inkSubtle, height: 1.35),
+            ),
+            const SizedBox(height: 10),
+            GestureDetector(
+              onTap: () => controller.fetchLocation(context, ref),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
                 ),
-                const SizedBox(width: 8),
-                GestureDetector(
-                  onTap: () {
-                    if (controller.locationFrozenFromCache) {
-                      controller.showSnack(
-                        context,
-                        'Location is locked from cache. Unlock from the hub banner to refresh GPS.',
-                      );
-                      return;
-                    }
-                    controller.fetchLocation(context, ref);
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: _canvas,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.location_on_outlined,
-                          size: 13,
-                          color: controller.isLoadingLocation
-                              ? _inkSubtle
-                              : _accent,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          controller.isLoadingLocation
-                              ? 'Locating…'
-                              : 'Refresh',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: controller.isLoadingLocation
-                                ? _inkSubtle
-                                : _accent,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                decoration: BoxDecoration(
+                  color: _canvas,
+                  borderRadius: BorderRadius.circular(20),
                 ),
-              ],
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.location_on_outlined,
+                      size: 13,
+                      color: controller.isLoadingLocation
+                          ? _inkSubtle
+                          : _accent,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      controller.isLoadingLocation ? 'Locating…' : 'Refresh GPS',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: controller.isLoadingLocation
+                            ? _inkSubtle
+                            : _accent,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
             const SizedBox(height: 14),
 
@@ -255,93 +188,53 @@ class AttemptLocationScreen extends ConsumerWidget {
             else ...[
               _fieldLabel('Address', optional: false),
               const SizedBox(height: 6),
-              Stack(
-                children: [
-                  TextField(
-                    controller: controller.addressController,
-                    maxLines: 2,
-                    textCapitalization: TextCapitalization.words,
-                    style: const TextStyle(
-                      fontSize: 13,
-                      color: _ink,
-                      height: 1.4,
-                    ),
-                    decoration: InputDecoration(
-                      hintText: 'Street, City, State, ZIP',
-                      hintStyle: const TextStyle(
-                        color: _inkSubtle,
-                        fontSize: 13,
-                      ),
-                      prefixIcon: const Padding(
-                        padding: EdgeInsets.only(left: 12, right: 8),
-                        child: Icon(
-                          Icons.apartment_rounded,
-                          size: 18,
-                          color: _inkSubtle,
-                        ),
-                      ),
-                      prefixIconConstraints: const BoxConstraints(
-                        minWidth: 40,
-                        minHeight: 40,
-                      ),
-                      suffixIcon: VoiceMicButton(
-                        controller: controller.addressController,
-                      ),
-                      filled: true,
-                      fillColor: _canvas,
-                      contentPadding: const EdgeInsets.fromLTRB(
-                        0,
-                        12,
-                        44,
-                        12,
-                      ),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide.none,
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide.none,
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(
-                          color: _accent,
-                          width: 1.5,
-                        ),
-                      ),
+              TextField(
+                controller: controller.addressController,
+                readOnly: true,
+                enableInteractiveSelection: false,
+                maxLines: 2,
+                style: const TextStyle(
+                  fontSize: 13,
+                  color: _ink,
+                  height: 1.4,
+                ),
+                decoration: InputDecoration(
+                  hintText: 'Filled from the GPS geotag',
+                  hintStyle: const TextStyle(
+                    color: _inkSubtle,
+                    fontSize: 13,
+                  ),
+                  prefixIcon: const Padding(
+                    padding: EdgeInsets.only(left: 12, right: 8),
+                    child: Icon(
+                      Icons.lock_outline_rounded,
+                      size: 18,
+                      color: _inkSubtle,
                     ),
                   ),
-                  Positioned(
-                    top: 10,
-                    right: 10,
-                    child: GestureDetector(
-                      onTap: controller.toggleEditingAddress,
-                      child: Container(
-                        width: 28,
-                        height: 28,
-                        decoration: BoxDecoration(
-                          color: _accentSoft,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Icon(
-                          controller.isEditingAddress
-                              ? Icons.check_rounded
-                              : Icons.edit_outlined,
-                          size: 14,
-                          color: _accent,
-                        ),
-                      ),
-                    ),
+                  prefixIconConstraints: const BoxConstraints(
+                    minWidth: 40,
+                    minHeight: 40,
                   ),
-                ],
+                  filled: true,
+                  fillColor: _canvas,
+                  contentPadding: const EdgeInsets.fromLTRB(0, 12, 14, 12),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
               ),
               const SizedBox(height: 14),
 
-              // ── Map preview — exact pin the user picked/captured ──
+              // ── Map preview — GPS geotag only (not pickable) ──
               GestureDetector(
                 behavior: HitTestBehavior.opaque,
-                onTap: () => _openMapPicker(context, ref),
+                onTap: () => _lockedLocationSnack(context),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
                   child: SizedBox(
@@ -406,7 +299,7 @@ class AttemptLocationScreen extends ConsumerWidget {
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               child: const Text(
-                                'Tap to adjust',
+                                'GPS only',
                                 style: TextStyle(
                                     fontSize: 10,
                                     color: Colors.white,

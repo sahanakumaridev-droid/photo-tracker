@@ -3,25 +3,47 @@ backend/__pycache__/
 backend/*.pyc
 backend/photo_tracker.db
 backend/venv/
-backend/uploads/*.jpg
-backend/uploads/*.png
-backend/uploads/*.webp
-!backend/uploads/sample*.jpg
+backend/uploads/*
+!backend/uploads/.gitkeep
+backend/.env*
+backend/backups_local/
 
 # Frontend
 frontend/node_modules/
 frontend/dist/
-frontend/.env
+frontend/.env*
+
+# Mobile App
+mobile-app/build/
+mobile-app/android/build/
+mobile-app/android/.gradle/
+mobile-app/android/local.properties
+mobile-app/.dart_tool/
+mobile-app/.idea/
+mobile-app/.flutter-plugins*
+mobile-app/ios/Pods/
+mobile-app/ios/.symlinks/
+mobile-app/ios/Flutter/Flutter.framework
+mobile-app/ios/Flutter/Flutter.podspec
+mobile-app/ios/Flutter/ephemeral/
+mobile-app/ios/Flutter/Generated.xcconfig
+mobile-app/ios/Flutter/flutter_export_environment.sh
+mobile-app/releases/
+mobile-app/*.log
+
+# Markdown / Docs / Tooling
+*.md
+**/*.md
+.commandcode/
+**/.commandcode/
+.claude/
+**/.claude/
 
 # General
 .DS_Store
+.env
+.env.*
 *.log
+*.apk
+*.ipa
 
-# Secrets — never commit
-backend/.env
-
-# Local production-data backups — never commit
-backend/backups_local/
-
-# Local built APKs — never commit binaries
-mobile-app/releases/

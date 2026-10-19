@@ -4,8 +4,11 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'config/theme.dart';
+import 'core/mileage/mileage_tracker.dart';
 import 'core/storage/upload_queue.dart';
 import 'l10n/app_localizations.dart';
+import 'core/network/api_client.dart';
+import 'presentation/providers/auth_provider.dart';
 import 'presentation/providers/locale_provider.dart';
 import 'presentation/providers/photo_provider.dart';
 import 'presentation/providers/repository_providers.dart';
@@ -23,12 +26,19 @@ class _PhotoTrackerAppState extends ConsumerState<PhotoTrackerApp> {
   @override
   void initState() {
     super.initState();
+    MileageTracker.instance.init().then((_) {
+      if (!mounted) return;
+      MileageTracker.instance.bind(
+        ref.read(dioProvider),
+        email: ref.read(authProvider).email,
+      );
+    });
     // Give the offline queue a way to actually upload: the photo repository.
     // Each queued item carries its own (immutable) timestamp + geotag, which
     // are re-sent verbatim on every retry.
     UploadQueueService.instance.attachUploader((item) async {
       final repo = ref.read(photoRepositoryProvider);
-      await repo.uploadPhoto(
+      final photo = await repo.uploadPhoto(
         filePath: item.filePath,
         profileId: item.profileId,
         latitude: item.latitude,
@@ -42,13 +52,15 @@ class _PhotoTrackerAppState extends ConsumerState<PhotoTrackerApp> {
         fileNumber: item.fileNumber,
         successful: item.successful,
         attemptStatus: item.attemptStatus,
+        attemptId: item.serverAttemptId,
+        clientBatchId: item.batchId,
         payRate: item.payRate,
         takenAt: item.takenAt,
         locationGroupId: item.locationGroupId,
         userId: item.userId,
       );
-      // A queued upload landed — refresh the photo list so it appears.
       ref.invalidate(photosProvider);
+      return photo.attemptId;
     });
   }
 
@@ -59,7 +71,7 @@ class _PhotoTrackerAppState extends ConsumerState<PhotoTrackerApp> {
     final router = ref.watch(routerProvider);
 
     return MaterialApp.router(
-      title: 'Geo Tag',
+      title: 'SRVBOARD',
       theme: AppTheme.lightTheme(themeState.accentColor),
       darkTheme: AppTheme.lightTheme(themeState.accentColor),
       themeMode: ThemeMode.light,

@@ -5,8 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:latlong2/latlong.dart';
 
+import '../../../core/storage/local_storage.dart';
 import '../../../core/utils/attempt_status.dart';
 import '../../../core/utils/photo_stamp.dart';
 import '../../../core/utils/text_formatters.dart';
@@ -15,13 +15,13 @@ import '../../../data/models/profile_model.dart';
 import '../../providers/profile_provider.dart';
 import '../../widgets/ai/note_suggestion_chips.dart';
 import '../../widgets/ai/voice_mic_button.dart';
+import '../../widgets/common/company_dropdown.dart';
 import '../../widgets/common/create_profile_dialog.dart';
 import '../../widgets/common/pill_chip.dart';
 import '../../widgets/common/profile_facts_card.dart';
 import 'attempt_draft_controller.dart';
 import 'attempt_limits.dart';
 import 'attempts_dashboard_screen.dart';
-import 'location_picker_map.dart';
 
 /// Single-screen New / Edit Attempt. Photo + geotag first; every other field
 /// is on this scroll. Pickers are sheets — never a sequential step screen.
@@ -98,13 +98,16 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
                         ],
                         _buildNotesCard(),
                         const SizedBox(height: 12),
-                        if (!controller.isExistingProfileAttempt) ...[
-                          _buildPriorityCard(),
+                        if (controller.isSuccessfulAttempt) ...[
+                          _buildServedToCard(context),
                           const SizedBox(height: 12),
                         ],
-                        _buildOutcomeCard(context),
-                        const SizedBox(height: 12),
-                        _buildGeotagChip(),
+                        if (controller.latitude == null ||
+                            controller.isLoadingLocation ||
+                            controller.locationError) ...[
+                          const SizedBox(height: 12),
+                          _buildGeotagChip(),
+                        ],
                         const SizedBox(height: 18),
                         if (controller.selectedProfile != null)
                           ProfileFactsCard(
@@ -307,7 +310,7 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
     return _Pressable(
       onTap: () => controller.pickImage(context, ImageSource.camera),
       child: Container(
-        height: 220,
+        height: 132,
         width: double.infinity,
         decoration: BoxDecoration(
           color: _elevated,
@@ -495,11 +498,7 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
     }
 
     return _Pressable(
-      onTap: tagged && !controller.locationFrozenFromCache
-          ? _adjustLocation
-          : failed
-              ? () => controller.fetchLocation(context, ref)
-              : () {},
+      onTap: failed ? () => controller.fetchLocation(context, ref) : () {},
       child: Container(
         padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
         decoration: BoxDecoration(
@@ -539,8 +538,11 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
                 ],
               ),
             ),
-            if (tagged && !controller.locationFrozenFromCache)
-              const Icon(Icons.tune_rounded, size: 16, color: _inkSubtle),
+            if (failed)
+              IconButton(
+                icon: const Icon(Icons.refresh_rounded, size: 18, color: _inkSubtle),
+                onPressed: () => controller.fetchLocation(context, ref),
+              ),
           ],
         ),
       ),
@@ -549,15 +551,11 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
 
   Future<void> _adjustLocation() async {
     HapticFeedback.lightImpact();
-    final initial = controller.latitude != null && controller.longitude != null
-        ? LatLng(controller.latitude!, controller.longitude!)
-        : null;
-    final picked = await Navigator.of(context).push<PickedLocation>(
-      MaterialPageRoute(builder: (_) => LocationPickerMap(initial: initial)),
+    controller.showSnack(
+      context,
+      'Attempt location is locked to your GPS geotag and cannot be changed.',
+      isError: true,
     );
-    if (picked != null && mounted) {
-      await controller.applyPickedLocation(picked, context, ref);
-    }
   }
 
   // ── Job identity (prefilled when opened from a job / existing profile) ──
@@ -577,7 +575,10 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
           else ...[
             _fieldCaption('Company'),
             const SizedBox(height: 6),
-            _companyDropdown(),
+            CompanyDropdown(
+              value: controller.companyId,
+              onChanged: controller.setCompany,
+            ),
             const SizedBox(height: 14),
             _fieldCaption('Profile'),
             const SizedBox(height: 6),
@@ -610,123 +611,92 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
     );
   }
 
-  Widget _companyDropdown() {
-    return Container(
-      decoration: BoxDecoration(
-        color: _canvas,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButtonFormField<String>(
-          key: ValueKey(controller.companyId),
-          initialValue: controller.companyId,
-          dropdownColor: _elevated,
-          decoration: const InputDecoration(
-            border: InputBorder.none,
-            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-          ),
-          style: const TextStyle(
-            fontSize: 15,
-            fontWeight: FontWeight.w600,
-            color: _ink,
-          ),
-          icon: const Icon(Icons.expand_more_rounded, color: _inkSubtle),
-          items: [
-            for (final c in kCompanies)
-              DropdownMenuItem(value: c.id, child: Text(c.name)),
-          ],
-          onChanged: (v) {
-            if (v == null) return;
-            HapticFeedback.selectionClick();
-            controller.setCompany(v);
-          },
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPriorityCard() {
+  Widget _buildServedToCard(BuildContext context) {
     return _card(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _sectionLabel('Priority', Icons.label_rounded),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children:
-                priorityCategoriesForCompany(controller.companyId).map((c) {
-              final selected = controller.selectedCategory == c.value;
-              return _chip(
-                label: c.label,
-                icon: c.icon,
-                selected: selected,
-                color: c.color,
-                onTap: () {
-                  HapticFeedback.selectionClick();
-                  controller.setSelectedCategory(c.value);
-                },
-              );
-            }).toList(),
+          _fieldCaption('Served to', optional: true),
+          const SizedBox(height: 6),
+          _Pressable(
+            onTap: () => _showServedToPicker(context),
+            child: _selectRow(
+              value: controller.servedToController.text.trim().isEmpty
+                  ? null
+                  : controller.servedToController.text.trim(),
+              placeholder: 'Who was served',
+            ),
           ),
+          if (controller.servedToController.text.trim().isNotEmpty &&
+              AttemptDraftController.servedToNeedsRelation(
+                  controller.servedToController.text)) ...[
+            const SizedBox(height: 14),
+            _fieldCaption('Relation to'),
+            const SizedBox(height: 6),
+            _inputField(
+              controller: controller.relationToController,
+              hint: 'e.g. Spouse, coworker',
+              icon: Icons.groups_outlined,
+              textCapitalization: TextCapitalization.words,
+            ),
+          ],
         ],
       ),
     );
   }
 
-  Widget _buildOutcomeCard(BuildContext context) {
-    return _card(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _outcomeSegment() {
+    final options = kAttemptStatuses
+        .where((s) => s.value != kAttemptStatusPending)
+        .toList();
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: _canvas,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
         children: [
-          _sectionLabel('Outcome', Icons.flag_rounded),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: kAttemptStatuses.map((s) {
-              final selected = controller.attemptStatus == s.value;
-              return _chip(
-                label: s.label,
-                icon: s.icon,
-                selected: selected,
-                color: s.color,
+          for (final s in options)
+            Expanded(
+              child: _Pressable(
                 onTap: () {
                   HapticFeedback.selectionClick();
                   controller.setAttemptStatus(s.value);
                 },
-              );
-            }).toList(),
-          ),
-          if (controller.isSuccessfulAttempt) ...[
-            const SizedBox(height: 16),
-            _fieldCaption('Served to', optional: true),
-            const SizedBox(height: 6),
-            _Pressable(
-              onTap: () => _showServedToPicker(context),
-              child: _selectRow(
-                value: controller.servedToController.text.trim().isEmpty
-                    ? null
-                    : controller.servedToController.text.trim(),
-                placeholder: 'Who was served',
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  curve: Curves.easeOut,
+                  height: 40,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: controller.attemptStatus == s.value
+                        ? _surface
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(11),
+                    boxShadow: controller.attemptStatus == s.value
+                        ? [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.06),
+                              blurRadius: 8,
+                              offset: const Offset(0, 2),
+                            ),
+                          ]
+                        : null,
+                  ),
+                  child: Text(
+                    s.label,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: controller.attemptStatus == s.value
+                          ? s.color
+                          : _inkMuted,
+                    ),
+                  ),
+                ),
               ),
             ),
-            if (controller.servedToController.text.trim().isNotEmpty &&
-                controller.servedToController.text.trim() !=
-                    'Same as profile') ...[
-              const SizedBox(height: 14),
-              _fieldCaption('Relation to'),
-              const SizedBox(height: 6),
-              _inputField(
-                controller: controller.relationToController,
-                hint: 'e.g. Spouse, coworker',
-                icon: Icons.groups_outlined,
-                textCapitalization: TextCapitalization.words,
-              ),
-            ],
-          ],
         ],
       ),
     );
@@ -737,6 +707,10 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          _sectionLabel('Outcome', Icons.flag_rounded),
+          const SizedBox(height: 8),
+          _outcomeSegment(),
+          const SizedBox(height: 14),
           _sectionLabel('Notes', Icons.edit_outlined),
           const SizedBox(height: 8),
           _inputField(
@@ -750,43 +724,25 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
             voiceMode: VoiceFillMode.append,
           ),
           const SizedBox(height: 10),
-          NoteSuggestionChips(controller: controller.noteController),
+          NoteSuggestionChips(
+            controller: controller.noteController,
+            outcome: controller.attemptStatus,
+            onChanged: controller.bump,
+          ),
+          if (controller.isSuccessfulAttempt) ...[
+            const SizedBox(height: 10),
+            SubjectDescriptionForm(
+              description: controller.subjectDescription,
+              onChanged: controller.bump,
+            ),
+          ],
         ],
       ),
     );
   }
 
   Widget _buildPayAndAddress() {
-    final lockedPay = controller.isExistingProfileAttempt;
-    return _card(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (!lockedPay) ...[
-            _sectionLabel('Pay rate', Icons.attach_money_rounded),
-            const SizedBox(height: 8),
-            _inputField(
-              controller: controller.payRateController,
-              hint: 'e.g. 30',
-              icon: Icons.attach_money,
-              keyboardType: TextInputType.number,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-            ),
-            const SizedBox(height: 16),
-          ],
-          _sectionLabel('Address', Icons.home_outlined),
-          const SizedBox(height: 8),
-          _inputField(
-            controller: controller.addressController,
-            hint: 'Filled from geotag — or talk the address',
-            icon: Icons.place_outlined,
-            maxLines: 2,
-            textCapitalization: TextCapitalization.words,
-            voice: true,
-          ),
-        ],
-      ),
-    );
+    return const SizedBox.shrink();
   }
 
   Widget _buildLinkProfilesCard() {
@@ -892,9 +848,12 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
       completeLabel = 'Processing…';
     } else if (canUpload) {
       completeLabel = widget.isEditing ? 'Save changes' : 'Complete Attempt';
+    } else if (!controller.hasPhoto) {
+      completeLabel = 'Take photo';
     } else {
       completeLabel = controller.missingFieldsHint();
     }
+    final primaryReady = canUpload || isInProgress || !controller.hasPhoto;
 
     return Container(
       decoration: BoxDecoration(
@@ -956,11 +915,8 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
                   height: 48,
                   child: DecoratedBox(
                     decoration: BoxDecoration(
-                      gradient:
-                          (canUpload || isInProgress) ? _btnGradient : null,
-                      color: (!canUpload && !isInProgress)
-                          ? _elevated
-                          : null,
+                      gradient: primaryReady ? _btnGradient : null,
+                      color: primaryReady ? null : _elevated,
                       borderRadius: BorderRadius.circular(14),
                       boxShadow: tappable
                           ? [
@@ -973,9 +929,18 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
                           : null,
                     ),
                     child: ElevatedButton(
-                      onPressed: tappable
-                          ? () => controller.upload(context, ref)
-                          : null,
+                      onPressed: isInProgress
+                          ? null
+                          : () {
+                              if (tappable) {
+                                controller.upload(context, ref);
+                              } else if (!controller.hasPhoto) {
+                                controller.pickImage(
+                                  context,
+                                  ImageSource.camera,
+                                );
+                              }
+                            },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.transparent,
                         foregroundColor: Colors.white,
@@ -989,14 +954,13 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
                       ),
                       child: Text(
                         completeLabel,
-                        maxLines: 1,
+                        maxLines: 2,
+                        textAlign: TextAlign.center,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w700,
-                          color: (!canUpload && !isInProgress)
-                              ? _inkSubtle
-                              : Colors.white,
+                          color: primaryReady ? Colors.white : _inkSubtle,
                         ),
                       ),
                     ),
@@ -1201,9 +1165,10 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
   void _showProfilePicker(List<ProfileModel> profiles) {
     HapticFeedback.lightImpact();
     final searchCtrl = TextEditingController();
+    final openProfiles = profiles.where((p) => p.canAddAttempts).toList();
     final nearbyIds = controller.nearbyProfileIds(ref);
     final nearbyProfiles =
-        profiles.where((p) => nearbyIds.contains(p.id)).toList();
+        openProfiles.where((p) => nearbyIds.contains(p.id)).toList();
 
     showModalBottomSheet<void>(
       context: context,
@@ -1379,7 +1344,7 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
                           child: Text(
                             searchCtrl.text.trim().isEmpty
                                 ? 'No profiles within '
-                                    '${AttemptDraftController.kProfileProximityFt.toInt()} ft. '
+                                    '${AttemptDraftController.kProfileFilterFt.toInt()} ft. '
                                     'Create one above.'
                                 : 'No nearby profiles match '
                                     '"${searchCtrl.text.trim()}"',
@@ -1416,108 +1381,284 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
       Navigator.pop(context);
     }
 
+    final servedToOptions = controller.servedToChoices(ref);
+
     Future<void> createCustom() async {
       final nameCtrl = TextEditingController();
-      final name = await showDialog<String>(
+      var gender = 'male';
+      final result = await showDialog<({String name, String gender})>(
         context: context,
         useRootNavigator: true,
-        builder: (dialogCtx) => AlertDialog(
-          backgroundColor: _surface,
-          title: const Text('Served to',
-              style: TextStyle(color: _ink, fontWeight: FontWeight.w700)),
-          content: TextField(
-            controller: nameCtrl,
-            autofocus: true,
-            textCapitalization: TextCapitalization.words,
-            inputFormatters: const [TitleCaseInputFormatter()],
-            style: const TextStyle(color: _ink),
-            decoration: const InputDecoration(hintText: 'Full name'),
+        builder: (dialogCtx) => StatefulBuilder(
+          builder: (dialogCtx, setDialog) => AlertDialog(
+            backgroundColor: _surface,
+            title: const Text('New name',
+                style: TextStyle(color: _ink, fontWeight: FontWeight.w700)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                TextField(
+                  controller: nameCtrl,
+                  autofocus: true,
+                  textCapitalization: TextCapitalization.words,
+                  inputFormatters: const [TitleCaseInputFormatter()],
+                  style: const TextStyle(color: _ink),
+                  decoration: const InputDecoration(hintText: 'Full name'),
+                ),
+                const SizedBox(height: 14),
+                const Text('Gender',
+                    style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: _inkMuted)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    for (final option in const [
+                      ('male', 'Male'),
+                      ('female', 'Female'),
+                      ('other', 'Other'),
+                    ])
+                      ChoiceChip(
+                        label: Text(option.$2),
+                        selected: gender == option.$1,
+                        onSelected: (_) =>
+                            setDialog(() => gender = option.$1),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogCtx),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  final name = nameCtrl.text.trim();
+                  if (name.isEmpty) return;
+                  Navigator.pop(dialogCtx, (name: name, gender: gender));
+                },
+                child: const Text('Save'),
+              ),
+            ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogCtx),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.pop(dialogCtx, nameCtrl.text.trim()),
-              child: const Text('Save'),
-            ),
-          ],
         ),
       );
-      if (name != null && name.isNotEmpty) {
-        await controller.addCustomServedToName(name);
-        select(name);
+      if (result != null && result.name.isNotEmpty) {
+        await controller.addCustomServedToName(
+          result.name,
+          gender: result.gender,
+        );
+        select(result.name);
       }
     }
-
-    final servedToOptions = [
-      ...AttemptDraftController.kServedToPresets,
-      ...controller.customServedToNames.where(
-          (n) => !AttemptDraftController.kServedToPresets.contains(n)),
-    ];
 
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
-      builder: (sheetCtx) => Container(
-        decoration: const BoxDecoration(
-          color: _surface,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 12),
-            Center(
-              child: Container(
-                width: 36,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: _separator,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'Served to',
-              style: TextStyle(
-                fontSize: 17,
-                fontWeight: FontWeight.w700,
-                color: _ink,
-                letterSpacing: -0.3,
-              ),
-            ),
-            const SizedBox(height: 12),
-            ConstrainedBox(
-              constraints: BoxConstraints(
-                maxHeight: MediaQuery.of(context).size.height * 0.45,
-              ),
-              child: ListView(
-                shrinkWrap: true,
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+      builder: (sheetCtx) {
+        var query = '';
+        var filter = 'all';
+        return StatefulBuilder(
+          builder: (sheetCtx, setSheet) {
+            final genders = LocalStorage.getServedToGenders();
+            String groupOf(String name) {
+              const known = {
+                'John Doe': 'male',
+                'Jane Doe': 'female',
+              };
+              final savedGender = known[name] ?? genders[name];
+              if (savedGender == 'male' || savedGender == 'female') {
+                return savedGender!;
+              }
+              return 'saved';
+            }
+
+            bool matches(String name) {
+              final q = query.trim().toLowerCase();
+              if (q.isNotEmpty && !name.toLowerCase().contains(q)) {
+                return false;
+              }
+              if (filter == 'all') return true;
+              return groupOf(name) == filter;
+            }
+
+            final quick = [
+              for (final name in const ['Same as Profile', 'Posted to Door'])
+                if (filter == 'all' && matches(name)) name,
+            ];
+            final people = [
+              for (final name in servedToOptions)
+                if (name != 'Same as Profile' &&
+                    name != 'Posted to Door' &&
+                    matches(name))
+                  name,
+            ];
+            final male = [
+              for (final name in people)
+                if (groupOf(name) == 'male') name,
+            ];
+            final female = [
+              for (final name in people)
+                if (groupOf(name) == 'female') name,
+            ];
+            final saved = [
+              for (final name in people)
+                if (groupOf(name) != 'male' && groupOf(name) != 'female') name,
+            ];
+
+            Widget section(String title, List<String> names) {
+              if (names.isEmpty) return const SizedBox.shrink();
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  for (final name in servedToOptions)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(4, 14, 4, 4),
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                        color: _inkMuted,
+                        letterSpacing: 0.4,
+                      ),
+                    ),
+                  ),
+                  for (final name in names)
                     ListTile(
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 4),
                       title: Text(name,
                           style: const TextStyle(color: _ink, fontSize: 15)),
                       onTap: () => select(name),
                     ),
-                  ListTile(
-                    leading: const Icon(Icons.add_rounded, color: _accent),
-                    title: const Text('New name',
-                        style: TextStyle(
-                            color: _accent, fontWeight: FontWeight.w600)),
-                    onTap: createCustom,
-                  ),
                 ],
+              );
+            }
+
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.viewInsetsOf(sheetCtx).bottom,
               ),
-            ),
-          ],
-        ),
-      ),
+              child: Container(
+                decoration: const BoxDecoration(
+                  color: _surface,
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(height: 12),
+                    Center(
+                      child: Container(
+                        width: 36,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: _separator,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Served to',
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700,
+                        color: _ink,
+                        letterSpacing: -0.3,
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                      child: TextField(
+                        onChanged: (v) => setSheet(() => query = v),
+                        textCapitalization: TextCapitalization.words,
+                        decoration: InputDecoration(
+                          hintText: 'Search names',
+                          prefixIcon: const Icon(Icons.search_rounded),
+                          filled: true,
+                          fillColor: const Color(0xFFF2F4F7),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide.none,
+                          ),
+                          isDense: true,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      height: 36,
+                      child: ListView(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        children: [
+                          for (final option in const [
+                            ('all', 'All'),
+                            ('male', 'Male'),
+                            ('female', 'Female'),
+                            ('saved', 'Saved'),
+                          ])
+                            Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: ChoiceChip(
+                                label: Text(option.$2),
+                                selected: filter == option.$1,
+                                onSelected: (_) =>
+                                    setSheet(() => filter = option.$1),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxHeight: MediaQuery.of(context).size.height * 0.45,
+                      ),
+                      child: ListView(
+                        shrinkWrap: true,
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                        children: [
+                          if (query.trim().isEmpty && filter == 'all')
+                            ListTile(
+                              contentPadding:
+                                  const EdgeInsets.symmetric(horizontal: 4),
+                              leading:
+                                  const Icon(Icons.add_rounded, color: _accent),
+                              title: const Text('New name',
+                                  style: TextStyle(
+                                      color: _accent,
+                                      fontWeight: FontWeight.w600)),
+                              onTap: createCustom,
+                            ),
+                          section('Quick', quick),
+                          section('Male', male),
+                          section('Female', female),
+                          section('Saved names', saved),
+                          if (quick.isEmpty && people.isEmpty)
+                            const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 24),
+                              child: Text(
+                                'No names match.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(color: _inkSubtle, fontSize: 13),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 

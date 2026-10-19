@@ -1016,7 +1016,6 @@ function PinPopup({ ph, onNoteUpdated }) {
 /* ── Photo Grid ── */
 function PhotoGrid({ photos, empty, onDelete, onEditLocation }) {
   const [confirming, setConfirming] = useState(null)
-  const [editing,    setEditing]    = useState(null)
   const replaceRef = React.useRef()
   const [replacingId, setReplacingId] = useState(null)
 
@@ -1036,7 +1035,6 @@ function PhotoGrid({ photos, empty, onDelete, onEditLocation }) {
   )
   return (
     <>
-      {editing && <EditLocationModal photo={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); onEditLocation(true) }}/>}
       {/* Hidden file input for replace */}
       <input
         ref={replaceRef} type="file" accept="image/*" style={{display:'none'}}
@@ -1049,9 +1047,6 @@ function PhotoGrid({ photos, empty, onDelete, onEditLocation }) {
               <img src={p.image_url} alt="" onError={e => { e.target.src='https://via.placeholder.com/400x300/1e1b4b/6366f1?text=Photo' }}/>
               <div className={`dk-photo-badge dk-badge-${p.service_type}`}>{p.service_type}</div>
               <div className="dk-photo-actions">
-                <button className="dk-photo-btn" onClick={() => setEditing(p)} title="Edit location">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" fill="currentColor"/></svg>
-                </button>
                 <button className="dk-photo-btn" title="Replace image"
                   onClick={() => { setReplacingId(p.id); replaceRef.current.click() }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
@@ -1088,14 +1083,11 @@ function PhotoGrid({ photos, empty, onDelete, onEditLocation }) {
 /* ── Photo List ── */
 function PhotoList({ photos, empty, onDelete, onEditLocation }) {
   const [confirming, setConfirming] = useState(null)
-  const [editing,    setEditing]    = useState(null)
-
   if (photos.length === 0) return (
     <div className="dk-empty"><div>{empty}</div></div>
   )
   return (
     <>
-      {editing && <EditLocationModal photo={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); onEditLocation(true) }}/>}
       <div className="dk-list">
         {photos.map(p => (
           <div className="dk-list-row" key={p.id}>
@@ -1109,9 +1101,6 @@ function PhotoList({ photos, empty, onDelete, onEditLocation }) {
               {p.service_type === 'rush' ? '🔴 ASAP' : '🟢 Standard'}
             </span>
             <div className="dk-list-actions">
-              <button className="dk-list-btn" onClick={() => setEditing(p)} title="Edit location">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" fill="currentColor"/></svg>
-              </button>
               {confirming === p.id ? (
                 <>
                   <button className="dk-confirm-yes" style={{padding:'4px 10px',fontSize:11}} onClick={() => { onDelete(p.id); setConfirming(null) }}>Yes</button>

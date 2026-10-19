@@ -9,10 +9,13 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../../config/map_tiles.dart';
 import '../../../core/utils/attempt_status.dart';
+import '../../../core/utils/profile_lifecycle.dart';
 import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../core/utils/file_number.dart';
@@ -25,10 +28,15 @@ import '../../providers/ai_prefs_provider.dart';
 import '../../widgets/ai/ai_spark_button.dart';
 import '../../widgets/ai/voice_mic_button.dart';
 import '../../widgets/common/photo_preview_gallery.dart';
+import '../profiles/profile_detail_screen.dart';
 import '../upload/attempt_draft_controller.dart';
+import 'photo_detail_screen.dart';
 import '../upload/attempt_limits.dart';
 import '../upload/resume_attempt_screen.dart';
-import 'map_upload_sheet.dart';
+import '../../../core/mileage/mileage_tracker.dart';
+import '../../../core/network/api_client.dart';
+import '../../providers/auth_provider.dart';
+import '../../widgets/common/create_profile_dialog.dart';
 
 // ── Design tokens (light field UI) ────────────────────────────────────────────
 const _kSurface  = Color(0xFFFFFFFF);
@@ -45,6 +53,12 @@ const _kFab      = Color(0xF2FFFFFF);
 // Used for the "enable GPS" hint in the filter sheet. (Category colours now
 // come from categoryOf() in category.dart.)
 const _kAsap     = Color(0xFFEF4444);
+
+/// Camera limit covering CONUS, Alaska, Hawaii, and Puerto Rico.
+final LatLngBounds _kUsaCameraBounds = LatLngBounds(
+  const LatLng(17.8, -179.5),
+  const LatLng(71.6, -65.2),
+);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 Map<String, List<PhotoModel>> _groupByLocation(List<PhotoModel> photos) {
@@ -72,7 +86,22 @@ class _MapJob {
         kAttemptStatusPending;
   }
 
-  Color get pinColor => isPending ? _kPending : _kAccent;
+  bool get isHotRoute =>
+      profile != null && (profile!.deliveryStyle ?? '').trim().isEmpty;
+
+  bool get diligenceComplete {
+    if (profile == null) return false;
+    return attemptCount >= attemptCapForProfile(profile);
+  }
+
+  bool get hasAttempts =>
+      attemptCount > 0 || (profile?.attemptsCount ?? 0) > 0;
+
+  Color get pinColor {
+    if (diligenceComplete) return const Color(0xFF16A34A);
+    if (hasAttempts) return _kPending;
+    return const Color(0xFFEA580C);
+  }
 
   String get jobId {
     final fn = latest?.fileNumber?.trim();
@@ -174,6 +203,11 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
   bool     _fetchingLocation  = false;
   bool     _locationAttemptDone = false;
   Position? _userPosition;
+  StreamSubscription<Position>? _locSub;
+  bool _followUser = false;
+  double _userHeading = 0;
+  bool _hasHeading = false;
+  List<LatLng> _lastPinPoints = const [];
   final _searchCtrl = TextEditingController();
 
   @override
@@ -187,23 +221,50 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
   }
 
   /// Fired by FlutterMap once it's ready to accept camera moves.
-  /// Pins are framed as soon as they load — locate FAB still jumps to GPS.
+  /// The first view is Close: 500 ft across, centered on the user.
   void _onMapReady() {
-    _fetchUserLocation(moveCamera: false);
+    _followUser = true;
+    _fetchUserLocation(moveCamera: true);
+    _startWatching();
   }
 
+  void _startWatching() {
+    _locSub ??= LocationService.watchMapLocation().listen(_onLiveGps);
+  }
+
+  void _onLiveGps(Position pos) {
+    if (!mounted) return;
+    if (pos.heading.isFinite && pos.heading >= 0) {
+      _userHeading = pos.heading;
+      _hasHeading = true;
+    }
+    setState(() => _userPosition = pos);
+    if (!_followUser) return;
+    try {
+      _mapController.move(
+        LatLng(pos.latitude, pos.longitude),
+        _mapController.camera.zoom,
+      );
+    } catch (_) {}
+  }
+
+  bool _closeAfterFetch = false;
+
   Future<void> _fetchUserLocation({bool moveCamera = false}) async {
+    if (moveCamera) {
+      _closeAfterFetch = true;
+      ref.invalidate(photosProvider);
+      ref.invalidate(profilesProvider);
+    }
     if (_fetchingLocation) return;
     setState(() => _fetchingLocation = true);
     try {
       final pos = await LocationService.getCurrentLocation();
       if (pos != null && mounted) {
         setState(() => _userPosition = pos);
-        // Only recentre on the user when explicitly asked (e.g. the FAB).
-        // On first load we want the camera to frame the pins, not jump to
-        // the device location, which otherwise leaves all pins off-screen.
-        if (moveCamera) {
-          _mapController.move(LatLng(pos.latitude, pos.longitude), 14);
+        if (_closeAfterFetch) {
+          _closeAfterFetch = false;
+          _fitCloseToUser(pos);
         }
       }
     } finally {
@@ -218,6 +279,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
 
   @override
   void dispose() {
+    _locSub?.cancel();
     _mapController.dispose();
     _searchCtrl.dispose();
     super.dispose();
@@ -235,11 +297,31 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
   void _refresh() {
     ref.invalidate(photosProvider);
     ref.invalidate(profilesProvider);
-    _fetchUserLocation();
+    _fetchUserLocation(moveCamera: false);
+  }
+
+  /// Close: 250 ft of map on each side of the user (500 ft across the screen).
+  void _fitCloseToUser(Position pos) {
+    if (!_mapHasSize) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _fitCloseToUser(pos);
+      });
+      return;
+    }
+    final widthPx = _mapController.camera.size.x;
+    final cosLat =
+        math.cos(pos.latitude * math.pi / 180).abs().clamp(0.2, 1.0);
+    // Zoomed in, but wide enough that a 500 ft radius is a medium ring
+    // (~45% of the screen), not a disc that fills the map.
+    const feetAcross = 2200.0;
+    const ftPerDegLat = 364000.0;
+    final degAcross = feetAcross / (ftPerDegLat * cosLat);
+    final zoom = (math.log(360 * widthPx / (256 * degAcross)) / math.ln2)
+        .clamp(4.0, 18.0);
+    _mapController.move(LatLng(pos.latitude, pos.longitude), zoom);
   }
 
   void _fitAll(List<LatLng> points) {
-    if (points.isEmpty) return;
     if (!_mapHasSize) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _fitAll(points);
@@ -247,39 +329,71 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
       return;
     }
 
-    final core = _mainClusterPoints(points);
+    var core = [
+      for (final p in points)
+        if (p.latitude.abs() > 0.0001 &&
+            p.longitude.abs() > 0.0001 &&
+            LocationService.isInUnitedStates(p.latitude, p.longitude))
+          p,
+    ];
+    if (core.isEmpty) {
+      if (_userPosition != null) {
+        _fitCloseToUser(_userPosition!);
+      } else {
+        _mapController.move(const LatLng(32.7157, -117.1611), 10);
+      }
+      return;
+    }
+
+    // Cluster around the jobs themselves, not GPS. Locate me is the
+    // street-level view; Fit all is the metro job map.
+    if (core.length > 2) {
+      final lats = core.map((p) => p.latitude).toList()..sort();
+      final lngs = core.map((p) => p.longitude).toList()..sort();
+      final midLat = lats[lats.length ~/ 2];
+      final midLng = lngs[lngs.length ~/ 2];
+      final clustered = [
+        for (final p in core)
+          if (LocationService.calculateDistance(
+                      midLat, midLng, p.latitude, p.longitude) *
+                  0.621371 <=
+              80)
+            p,
+      ];
+      if (clustered.isNotEmpty) core = clustered;
+    }
 
     var minLat = core.first.latitude;
     var maxLat = core.first.latitude;
     var minLng = core.first.longitude;
     var maxLng = core.first.longitude;
     for (final p in core) {
-      if (p.latitude  < minLat) minLat = p.latitude;
-      if (p.latitude  > maxLat) maxLat = p.latitude;
+      if (p.latitude < minLat) minLat = p.latitude;
+      if (p.latitude > maxLat) maxLat = p.latitude;
       if (p.longitude < minLng) minLng = p.longitude;
       if (p.longitude > maxLng) maxLng = p.longitude;
     }
 
-    final spanMi = LocationService.calculateDistance(
-            minLat, minLng, maxLat, maxLng) *
-        0.621371;
-    if (spanMi > 500) {
-      _mapController.move(core.first, 12);
-      return;
+    // Never collapse to a few city blocks. Fit all stays a metro window.
+    const minSpanDeg = 0.22;
+    if (maxLat - minLat < minSpanDeg) {
+      final mid = (minLat + maxLat) / 2;
+      minLat = mid - minSpanDeg / 2;
+      maxLat = mid + minSpanDeg / 2;
     }
-
-    if ((maxLat - minLat).abs() < 1e-4 && (maxLng - minLng).abs() < 1e-4) {
-      _mapController.move(LatLng(minLat, minLng), 13);
-      return;
+    if (maxLng - minLng < minSpanDeg) {
+      final mid = (minLng + maxLng) / 2;
+      minLng = mid - minSpanDeg / 2;
+      maxLng = mid + minSpanDeg / 2;
     }
 
     final topInset = MediaQuery.of(context).padding.top;
+    final bottomInset = MediaQuery.of(context).padding.bottom;
     _mapController.fitCamera(
       CameraFit.bounds(
         bounds: LatLngBounds(LatLng(minLat, minLng), LatLng(maxLat, maxLng)),
-        padding: EdgeInsets.fromLTRB(48, topInset + 88, 56, 140),
-        maxZoom: 13,
-        forceIntegerZoomLevel: true,
+        padding: EdgeInsets.fromLTRB(20, topInset + 72, 20, bottomInset + 88),
+        maxZoom: 12,
       ),
     );
   }
@@ -287,10 +401,21 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
   /// Default window: my GPS + the closest job pin, same viewport.
   void _fitMeAndNearest(List<LatLng> points) {
     if (!mounted) return;
+    if (points.isNotEmpty) _lastPinPoints = List<LatLng>.from(points);
+    if (!_mapHasSize) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _fitMeAndNearest(points);
+      });
+      return;
+    }
     final user = _userPosition;
-    final pins = _mainClusterPoints(points);
-    if (user == null || pins.isEmpty) {
-      _fitAll(points);
+    final pins = _mainClusterPoints(points.isEmpty ? _lastPinPoints : points);
+    if (user == null) {
+      _fitAll(pins);
+      return;
+    }
+    if (pins.isEmpty) {
+      _fitCloseToUser(user);
       return;
     }
     final origin = LatLng(user.latitude, user.longitude);
@@ -315,11 +440,9 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
     );
   }
 
-  // Excludes pins farther than [_outlierThresholdMi] from the median position
-  // of the group, so a single stray outlier can't force "Fit All" out to a
-  // world-scale zoom. Falls back to the full list if that would exclude
-  // everything (e.g. the group is small or evenly spread out).
-  static const double _outlierThresholdMi = 200;
+  // Pins farther than this from the user (or San Diego if GPS is missing)
+  // are ignored by Fit all so a stray job cannot yank the camera.
+  static const double _outlierThresholdMi = 40;
 
   // (0,0) "null island" or out-of-range values from a bad GPS fix — dropped
   // before computing the median/bounds so a handful of them can't skew the
@@ -331,20 +454,16 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
         p.latitude.abs() <= 90 &&
         p.longitude.abs() <= 180).toList();
     final base = valid.isEmpty ? points : valid;
-    if (base.length <= 2) return base;
-
-    final lats = base.map((p) => p.latitude).toList()..sort();
-    final lngs = base.map((p) => p.longitude).toList()..sort();
-    final medianLat = lats[lats.length ~/ 2];
-    final medianLng = lngs[lngs.length ~/ 2];
+    final originLat = _userPosition?.latitude ?? 32.7157;
+    final originLng = _userPosition?.longitude ?? -117.1611;
 
     final core = base.where((p) {
       final km = LocationService.calculateDistance(
-          medianLat, medianLng, p.latitude, p.longitude);
+          originLat, originLng, p.latitude, p.longitude);
       return km * 0.621371 <= _outlierThresholdMi;
     }).toList();
 
-    return core.isEmpty ? base : core;
+    return core;
   }
 
   @override
@@ -366,13 +485,30 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
         searchCtrl: _searchCtrl,
         mapController: _mapController,
         userPosition: _userPosition,
+        userHeading: _userHeading,
+        hasHeading: _hasHeading,
+        followingUser: _followUser,
         fetchingLocation: _fetchingLocation,
         locationAttemptDone: _locationAttemptDone,
         onMapReady: _onMapReady,
-        onFitAll: _fitAll,
+        onFitAll: (pts) {
+          _followUser = false;
+          _fitAll(pts);
+        },
+        onFitClose: () {
+          final pos = _userPosition;
+          if (pos != null) _fitCloseToUser(pos);
+        },
         onFitMeAndNearest: _fitMeAndNearest,
         onRefresh: _refresh,
-        onMyLocation: () => _fetchUserLocation(moveCamera: true),
+        onUserPanned: () {
+          if (_followUser && mounted) setState(() => _followUser = false);
+        },
+        onMyLocation: () async {
+          setState(() => _followUser = true);
+          _startWatching();
+          await _fetchUserLocation(moveCamera: true);
+        },
       ),
     );
   }
@@ -386,10 +522,15 @@ class _MapBody extends ConsumerStatefulWidget {
     required this.mapController,
     required this.onMapReady,
     required this.onFitAll,
+    required this.onFitClose,
     required this.onFitMeAndNearest,
     required this.onRefresh,
     required this.onMyLocation,
+    required this.onUserPanned,
     this.userPosition,
+    this.userHeading = 0,
+    this.hasHeading = false,
+    this.followingUser = false,
     this.fetchingLocation = false,
     this.locationAttemptDone = false,
   });
@@ -399,10 +540,15 @@ class _MapBody extends ConsumerStatefulWidget {
   final MapController                  mapController;
   final VoidCallback                   onMapReady;
   final ValueChanged<List<LatLng>> onFitAll;
+  final VoidCallback onFitClose;
   final ValueChanged<List<LatLng>> onFitMeAndNearest;
   final VoidCallback                   onRefresh;
   final VoidCallback                   onMyLocation;
+  final VoidCallback                   onUserPanned;
   final Position?                      userPosition;
+  final double                         userHeading;
+  final bool                           hasHeading;
+  final bool                           followingUser;
   final bool                           fetchingLocation;
   final bool                           locationAttemptDone;
 
@@ -415,8 +561,11 @@ class _MapBodyState extends ConsumerState<_MapBody> {
   // Quick-filter pill: only today's pins. Independent of _levels so "All" +
   // "Today" can combine (e.g. every priority, today only).
   bool _todayOnly = false;
-  int _fittedCount = -1;
+  final int _fittedCount = -1;
   bool _fittedWithGps = false;
+  final bool _showedNearbyPins = false;
+  bool _userPinnedCamera = false;
+  bool _glowNearby = false;
   // Distance filter — a radius from the user (0–100 mi).
   double _distanceMi = 100;
   String? _distanceMode; // 'distance' | null
@@ -424,6 +573,15 @@ class _MapBodyState extends ConsumerState<_MapBody> {
   // it flies once the user settles instead of on every intermediate tick.
   Timer? _filterFitDebounce;
   _MapJob? _selectedJob;
+  int? _focusProfileId;
+  LatLng? _hotRouteAt;
+  int _hotRouteShiftGen = 0;
+  DateTime? _usaSnackAt;
+  LatLng _lastUsaCenter = const LatLng(32.7157, -117.1611);
+  bool _clampingUsa = false;
+  Timer? _usaClampTimer;
+  Timer? _searchFly;
+  int _searchToken = 0;
 
   @override
   void initState() {
@@ -433,12 +591,120 @@ class _MapBodyState extends ConsumerState<_MapBody> {
 
   void _onSearchChanged() {
     if (mounted) setState(() {});
+    _searchFly?.cancel();
+    final q = _placeQuery(widget.searchCtrl.text);
+    if (q.length < 3) return;
+    _userPinnedCamera = true;
+    _searchFly = Timer(const Duration(milliseconds: 450), () {
+      unawaited(_flyToSpokenPlace(q));
+    });
+  }
+
+  /// "Take me to Union Square." → "union square"
+  String _placeQuery(String raw) {
+    var q = raw.trim().toLowerCase();
+    q = q.replaceAll(RegExp(r'[.?!,"]+'), ' ');
+    q = q.replaceAll(RegExp(r'\s+'), ' ').trim();
+    q = q.replaceFirst(
+      RegExp(
+        r'^(please\s+)?(can you\s+|could you\s+)?'
+        r'(take me to|take me|go to|navigate to|show me|find me|'
+        r'look up|search for|search|find|locate|where is|zoom to)\s+',
+      ),
+      '',
+    );
+    return q.trim();
+  }
+
+  void _moveTo(LatLng pin) {
+    _userPinnedCamera = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      try {
+        widget.mapController.move(pin, 16);
+      } catch (_) {}
+    });
+  }
+
+  Future<void> _flyToSpokenPlace(String query) async {
+    final token = ++_searchToken;
+    final q = _placeQuery(query);
+    if (q.length < 3) return;
+    for (final job in _mapJobs()) {
+      final name = job.recipient.toLowerCase();
+      if (name.length < 3 || !job.hasPoint) continue;
+      final named = name == q || name.startsWith('$q ') || q.startsWith('$name ');
+      if (!named) continue;
+      if (!mounted || token != _searchToken) return;
+      _moveTo(LatLng(job.lat, job.lng));
+      return;
+    }
+    final hit = await LocationService.searchPlace(q);
+    if (!mounted || token != _searchToken) return;
+    if (hit == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not find that place in the United States.'),
+        ),
+      );
+      return;
+    }
+    _moveTo(LatLng(hit.lat, hit.lng));
+  }
+
+  void _showUsaOnlySnack() {
+    final now = DateTime.now();
+    if (_usaSnackAt != null &&
+        now.difference(_usaSnackAt!) < const Duration(seconds: 2)) {
+      return;
+    }
+    _usaSnackAt = now;
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    messenger?.hideCurrentSnackBar();
+    messenger?.showSnackBar(
+      const SnackBar(
+        content: Text('Only USA'),
+        duration: Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  void _onMapPositionChanged(MapPosition pos, bool hasGesture) {
+    final center = pos.center;
+    if (center == null) return;
+    if (LocationService.isInUnitedStates(center.latitude, center.longitude)) {
+      _lastUsaCenter = center;
+      if (hasGesture) {
+        widget.onUserPanned();
+      }
+      return;
+    }
+    // Layout/maxBounds can fire this without a gesture. Moving the camera
+    // then (or during the hot-route overlay) leaves InheritedWidgets with
+    // dependents and crashes: `_dependents.isEmpty`.
+    if (!hasGesture || _hotRouteAt != null || _clampingUsa) return;
+    _showUsaOnlySnack();
+    _clampingUsa = true;
+    final zoom = (pos.zoom ?? 13).clamp(4.0, 18.0);
+    final target = _lastUsaCenter;
+    _usaClampTimer?.cancel();
+    _usaClampTimer = Timer(Duration.zero, () {
+      _clampingUsa = false;
+      if (!mounted || _hotRouteAt != null) return;
+      try {
+        widget.mapController.move(target, zoom);
+      } catch (_) {}
+    });
   }
 
   @override
   void dispose() {
     widget.searchCtrl.removeListener(_onSearchChanged);
     _filterFitDebounce?.cancel();
+    _usaClampTimer?.cancel();
+    _searchFly?.cancel();
     super.dispose();
   }
 
@@ -498,6 +764,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
         'special' => 'Jobs that need extra care or special instructions.',
         'standard' => 'Regular service attempts at the usual pace.',
         'next_day' => 'Jobs scheduled for the next business day.',
+        'stake_out' => 'Surveillance-style jobs that sit on a location.',
         _ => 'Show matching pins on the map.',
       };
 
@@ -652,8 +919,237 @@ class _MapBodyState extends ConsumerState<_MapBody> {
         ),
       );
 
+  Future<bool> _gpsIsOnSite(
+    BuildContext context,
+    double jobLat,
+    double jobLng, {
+    bool notify = true,
+  }) async {
+    final gps = await LocationService.getFreshFix() ??
+        await LocationService.getLastKnownLocation();
+    if (!context.mounted) return false;
+    if (gps == null) {
+      if (notify) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not read GPS for this attempt.')),
+        );
+      }
+      return false;
+    }
+    final err = LocationService.attemptTooFarMessage(
+      gpsLat: gps.latitude,
+      gpsLng: gps.longitude,
+      jobLat: jobLat,
+      jobLng: jobLng,
+      gpsAccuracyMeters: gps.accuracy,
+    );
+    if (err != null) {
+      if (notify) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+      }
+      return false;
+    }
+    return true;
+  }
+
+  Future<void> _openAttemptFromGps(double lat, double lng) async {
+    final profiles = ref.read(profilesProvider).valueOrNull ?? [];
+    ProfileModel? nearest;
+    var nearestFt = LocationService.kAttemptProximityFt;
+    for (final p in profiles) {
+      if (!p.hasLocation) continue;
+      final d = LocationService.distanceFeet(lat, lng, p.latitude!, p.longitude!);
+      if (d <= nearestFt) {
+        nearestFt = d;
+        nearest = p;
+      }
+    }
+    if (!context.mounted) return;
+    await Navigator.of(context, rootNavigator: true).push(
+      MaterialPageRoute<void>(
+        fullscreenDialog: true,
+        builder: (_) => ResumeAttemptScreen(
+          initialProfileId: nearest?.id,
+          initialProfile: nearest,
+        ),
+      ),
+    );
+    widget.onRefresh();
+  }
+
+  void _openHotRouteBubbles(LatLng latLng) {
+    if (!LocationService.isInUnitedStates(latLng.latitude, latLng.longitude)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Hot routes can only be added in the United States.'),
+        ),
+      );
+      return;
+    }
+    _userPinnedCamera = true;
+    setState(() {
+      _selectedJob = null;
+      _hotRouteAt = latLng;
+    });
+    // One nudge only. Repeating it sends the pin away from the tap.
+    // A corner tap needs the point pulled in just far enough for the menu.
+    final generation = ++_hotRouteShiftGen;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || generation != _hotRouteShiftGen) return;
+      final camera = widget.mapController.camera;
+      final screen = camera.latLngToScreenPoint(latLng);
+      final size = camera.size;
+      const marginX = 150.0;
+      const marginTop = 190.0;
+      const marginBottom = 200.0;
+      if (size.x < 32 || size.y < 32) return;
+      final targetX =
+          screen.x.clamp(marginX, math.max(marginX, size.x - marginX));
+      final targetY = screen.y.clamp(
+        marginTop,
+        math.max(marginTop, size.y - marginBottom),
+      );
+      final dx = screen.x - targetX;
+      final dy = screen.y - targetY;
+      if (dx.abs() <= 2 && dy.abs() <= 2) return;
+      final centerPx = camera.latLngToScreenPoint(camera.center);
+      final shifted = camera.pointToLatLng(
+        math.Point(centerPx.x + dx, centerPx.y + dy),
+      );
+      widget.mapController.move(shifted, camera.zoom);
+    });
+  }
+
+  bool _attemptInRange(LatLng pin) {
+    final gps = widget.userPosition;
+    if (gps == null) return false;
+    return LocationService.distanceFeet(
+          gps.latitude,
+          gps.longitude,
+          pin.latitude,
+          pin.longitude,
+        ) <=
+        LocationService.kAttemptProximityFt;
+  }
+
+  Offset _screenOffsetFor(LatLng latLng) {
+    try {
+      final p = widget.mapController.camera.latLngToScreenPoint(latLng);
+      return Offset(p.x, p.y);
+    } catch (_) {
+      return Offset.zero;
+    }
+  }
+
+  Future<void> _openAttemptForProfile(ProfileModel created) async {
+    widget.onRefresh();
+    if (!mounted || created.id == 0) return;
+    await Navigator.of(context, rootNavigator: true).push(
+      MaterialPageRoute<void>(
+        fullscreenDialog: true,
+        builder: (_) => ResumeAttemptScreen(
+          initialProfileId: created.id,
+          initialProfile: created,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _onHotRouteChoice(String choice, LatLng latLng) async {
+    setState(() => _hotRouteAt = null);
+    if (choice == 'hot') {
+      if (!LocationService.isInUnitedStates(
+          latLng.latitude, latLng.longitude)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('A hot route can only be created in the United States.'),
+          ),
+        );
+        return;
+      }
+      String? address;
+      try {
+        address = await LocationService.reverseGeocode(
+          latLng.latitude,
+          latLng.longitude,
+        );
+      } catch (_) {}
+      if (!context.mounted) return;
+      final created = await showCreateProfileDialog(
+        context,
+        latitude: latLng.latitude,
+        longitude: latLng.longitude,
+        address: address,
+        hotRoute: true,
+      );
+      if (created != null) {
+        final pinLat = created.latitude ?? latLng.latitude;
+        final pinLng = created.longitude ?? latLng.longitude;
+        _focusProfileId = created.id;
+        widget.onRefresh();
+        widget.mapController.move(LatLng(pinLat, pinLng), 17);
+      }
+      return;
+    }
+    if (choice == 'attempt') {
+      final gps = widget.userPosition;
+      if (gps == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Turn on location to add an attempt.')),
+        );
+        return;
+      }
+      setState(() => _glowNearby = true);
+      _pullCameraToRadius();
+      var eligible = 0;
+      var completeNearby = false;
+      for (final job in _mapJobs()) {
+        if (!job.hasPoint || job.profile == null) continue;
+        if (!_inAttemptRange(job)) continue;
+        if (!_jobAcceptsAttempt(job)) {
+          completeNearby = true;
+          continue;
+        }
+        eligible++;
+      }
+      if (eligible == 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              completeNearby
+                  ? 'Nearby green pins are already complete. Use a yellow or orange pin within 500 ft.'
+                  : 'Move within 500 feet of a profile, then tap Attempt again.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+    if (choice == 'camera') {
+      try {
+        await ImagePicker().pickImage(
+          source: ImageSource.camera,
+          requestFullMetadata: false,
+          preferredCameraDevice: CameraDevice.rear,
+        );
+      } catch (_) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not open the camera.')),
+          );
+        }
+      }
+      return;
+    }
+    if (choice == 'mileage') {
+      final container = ProviderScope.containerOf(context);
+      final dio = container.read(dioProvider);
+      final email = container.read(authProvider).email;
+      await MileageTracker.instance.toggle(dio, email: email);
+    }
+  }
+
   // Filter sheet: same dock categories (with details) plus distance.
-  // Opens from the tune button or a swipe-up on the filter dock.
   void _showFilterSheet() {
     HapticFeedback.lightImpact();
     showModalBottomSheet<void>(
@@ -891,25 +1387,90 @@ class _MapBodyState extends ConsumerState<_MapBody> {
   }
 
   Marker _jobMarker(_MapJob job, List<_MapJob> all) {
-    final selected = _isSelectedJob(job);
+    // Pins with attempts stay yellow (or green if complete) even when tapped.
+    // Only first-time orange pins use the selected/map-card highlight.
+    final selected = !job.hasAttempts && _isSelectedJob(job);
+    final glow =
+        _glowNearby && _inAttemptRange(job) && _jobAcceptsAttempt(job);
     return Marker(
       point: _spreadPoint(job, all),
-      width: selected ? 36 : 28,
-      height: selected ? 48 : 38,
-      alignment: Alignment.topCenter,
+      width: glow ? 56 : 48,
+      height: glow ? 68 : 58,
+      alignment: Alignment.bottomCenter,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: () {
           HapticFeedback.mediumImpact();
-          setState(() => _selectedJob = job);
+          unawaited(_openJobFromPin(job));
         },
         child: _PinMarker(
           color: job.pinColor,
           selected: selected,
+          glow: glow,
           label: null,
         ),
       ),
     );
+  }
+
+  /// Prefer a pin tap over the empty-map hot-wheel. Stacked jobs sit on the
+  /// GPS puck, so flutter_map often delivers the tap to the map instead.
+  _MapJob? _jobNearTap(LatLng tap, List<_MapJob> jobs) {
+    final tapPx = _screenOffsetFor(tap);
+    if (tapPx == Offset.zero && jobs.isEmpty) return null;
+    _MapJob? best;
+    var bestPx = 56.0;
+    for (final job in jobs) {
+      if (!job.hasPoint) continue;
+      final pinPx = _screenOffsetFor(_spreadPoint(job, jobs));
+      final d = (pinPx - tapPx).distance;
+      if (d < bestPx) {
+        bestPx = d;
+        best = job;
+      }
+    }
+    return best;
+  }
+
+  bool _inAttemptRange(_MapJob job) {
+    final gps = widget.userPosition;
+    if (gps == null || !job.hasPoint) return false;
+    return LocationService.distanceFeet(
+          gps.latitude,
+          gps.longitude,
+          job.lat,
+          job.lng,
+        ) <=
+        LocationService.kAttemptProximityFt;
+  }
+
+  /// Green / completed / archived pins cannot take a new attempt.
+  bool _jobAcceptsAttempt(_MapJob job) {
+    if (job.diligenceComplete) return false;
+    final profile = job.profile;
+    if (profile != null && !profile.canAddAttempts) return false;
+    return true;
+  }
+
+  void _pullCameraToRadius() {
+    final gps = widget.userPosition;
+    if (gps == null) return;
+    const meters = 152.4;
+    const dLat = meters / 111320;
+    final dLng =
+        meters / (111320 * math.cos(gps.latitude * math.pi / 180).abs());
+    _userPinnedCamera = true;
+    widget.mapController.fitCamera(
+      CameraFit.bounds(
+        bounds: LatLngBounds(
+          LatLng(gps.latitude - dLat, gps.longitude - dLng),
+          LatLng(gps.latitude + dLat, gps.longitude + dLng),
+        ),
+        padding: const EdgeInsets.fromLTRB(36, 150, 36, 160),
+        maxZoom: 18,
+      ),
+    );
+    if (mounted) setState(() {});
   }
 
   /// Fan coincident pins into a ring so 10 jobs at one GPS still all show.
@@ -922,8 +1483,9 @@ class _MapBodyState extends ConsumerState<_MapBody> {
     final i = twins.indexOf(job);
     final n = twins.length;
     final angle = (2 * math.pi * (i < 0 ? 0 : i)) / n;
-    // ~250m base, grows with count so a 10-job stack is a clear ring.
-    final d = 0.0022 + n * 0.00045;
+    // ~20 m base so stacked jobs stay near the real address (the old 250 m
+    // ring put the pin outside the 500 ft attempt radius).
+    final d = 0.00032 + n * 0.00005;
     return LatLng(
       job.lat + d * math.cos(angle),
       job.lng + d * math.sin(angle),
@@ -937,6 +1499,74 @@ class _MapBodyState extends ConsumerState<_MapBody> {
       return s.profile!.id == job.profile!.id;
     }
     return s.jobId == job.jobId;
+  }
+
+  PhotoModel? _photoForJob(_MapJob job) {
+    if (job.photos.isNotEmpty) return job.photos.first;
+    final pid = job.profile?.id ?? job.latest?.profileId;
+    if (pid == null || pid == 0) return job.latest;
+    final all = ref.read(photosProvider).valueOrNull ?? const <PhotoModel>[];
+    final matches = all
+        .where((ph) =>
+            ph.profileId == pid ||
+            (ph.profiles?.any((p) => p.id == pid) ?? false))
+        .toList()
+      ..sort((a, b) => (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
+    return matches.isEmpty ? null : matches.first;
+  }
+
+  Future<void> _openJobFromPin(_MapJob job) async {
+    if (!mounted) return;
+    // Attempt on the hot wheel: only glowing pins within 500 ft open
+    // Add Attempt. Regular pin taps still go to the photo screen.
+    if (_glowNearby) {
+      if (_inAttemptRange(job) && _jobAcceptsAttempt(job)) {
+        await _startAttemptFromPin(context, job: job);
+        return;
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Pick a glowing pin within 500 feet to add an attempt.',
+          ),
+        ),
+      );
+      return;
+    }
+    final photo = _photoForJob(job);
+    final pid = job.profile?.id ??
+        job.latest?.profileId ??
+        photo?.profileId;
+    // Yellow / green pins with an attempt open the attempt photo screen,
+    // not the Service Attempts list.
+    if (job.hasAttempts) {
+      var photoId = (photo != null && photo.id != 0) ? photo.id : 0;
+      if (photoId == 0 && pid != null && pid != 0) {
+        final attempts =
+            ref.read(profileAttemptsProvider(pid)).valueOrNull;
+        if (attempts != null && attempts.isNotEmpty) {
+          photoId = attempts.first.photoId;
+        }
+      }
+      if (photoId != 0) {
+        await Navigator.of(context, rootNavigator: true).push(
+          MaterialPageRoute<void>(
+            builder: (_) => PhotoDetailScreen(photoId: photoId),
+          ),
+        );
+        return;
+      }
+      if (pid != null && pid != 0) {
+        await Navigator.of(context, rootNavigator: true).push(
+          MaterialPageRoute<void>(
+            builder: (_) => ProfileDetailScreen(profileId: pid),
+          ),
+        );
+      }
+      return;
+    }
+    setState(() => _selectedJob = job);
   }
 
   Future<void> _startAttemptFromPin(BuildContext context, {_MapJob? job}) async {
@@ -954,6 +1584,31 @@ class _MapBodyState extends ConsumerState<_MapBody> {
       );
       return;
     }
+    final gps = widget.userPosition;
+    if (gps == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Turn on location to add an attempt.')),
+      );
+      return;
+    }
+    final feet = LocationService.distanceFeet(
+      gps.latitude,
+      gps.longitude,
+      selected.lat,
+      selected.lng,
+    );
+    if (feet > LocationService.kAttemptProximityFt) {
+      setState(() => _glowNearby = true);
+      _pullCameraToRadius();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'You are ${feet.round()} ft from this pin. An attempt is only allowed within 500 feet, and it uses your current location.',
+          ),
+        ),
+      );
+      return;
+    }
     HapticFeedback.mediumImpact();
     final ok = await ensureCanStartNewAttempt(
       context,
@@ -962,6 +1617,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
       knownCount: selected.attemptCount,
     );
     if (!ok || !context.mounted) return;
+    if (mounted) setState(() => _glowNearby = false);
     await Navigator.of(context, rootNavigator: true).push(
       MaterialPageRoute<void>(
         fullscreenDialog: true,
@@ -971,6 +1627,28 @@ class _MapBodyState extends ConsumerState<_MapBody> {
         ),
       ),
     );
+  }
+
+  String _latestJobLabel(List<_MapJob> jobs) {
+    _MapJob? latest;
+    for (final job in jobs) {
+      if (latest == null) {
+        latest = job;
+        continue;
+      }
+      final stamp = job.latest?.timestamp ?? '';
+      final other = latest.latest?.timestamp ?? '';
+      if (stamp.compareTo(other) > 0) {
+        latest = job;
+      } else if (stamp == other &&
+          (job.profile?.id ?? 0) > (latest.profile?.id ?? 0)) {
+        latest = job;
+      }
+    }
+    if (latest == null) return 'No recent profile';
+    final hot = (latest.profile?.deliveryStyle ?? '').trim().isEmpty &&
+        latest.profile != null;
+    return hot ? '${latest.recipient}\nHot route' : latest.recipient;
   }
 
   String? _distanceLabelFor(double lat, double lng) {
@@ -1064,21 +1742,27 @@ class _MapBodyState extends ConsumerState<_MapBody> {
       if (pPhotos.isEmpty) {
         if (_todayOnly) continue;
         if (_levels.isNotEmpty &&
-            !_levels.contains((profile.serviceType).toLowerCase())) {
+            !_levels.contains(profile.serviceType.toLowerCase())) {
           continue;
         }
         if (!profile.hasLocation) continue;
         if (!_profilePassesDistanceAndSearch(profile)) continue;
       }
       final job = _MapJob(profile: profile, photos: pPhotos);
-      if (job.hasPoint) jobs.add(job);
+      if (job.hasPoint &&
+          LocationService.isInUnitedStates(job.lat, job.lng)) {
+        jobs.add(job);
+      }
     }
 
     final leftover = photos.where((p) => !used.contains(p.id)).toList();
     for (final g in _groupByLocation(leftover).values) {
       g.sort((a, b) => (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
       final job = _MapJob(profile: null, photos: g);
-      if (job.hasPoint) jobs.add(job);
+      if (job.hasPoint &&
+          LocationService.isInUnitedStates(job.lat, job.lng)) {
+        jobs.add(job);
+      }
     }
     return jobs;
   }
@@ -1117,54 +1801,34 @@ class _MapBodyState extends ConsumerState<_MapBody> {
   }
 
   Widget _nextUpChip(List<_MapJob> jobs) {
-    final profiles = ref.read(profilesProvider).valueOrNull ?? [];
-    ProfileModel? latestProfile;
-    if (profiles.isNotEmpty) {
-      latestProfile = profiles.reduce((a, b) => a.id >= b.id ? a : b);
-    }
+    final open = [
+      for (final j in jobs)
+        if (j.profile == null || j.profile!.canAddAttempts) j,
+    ];
+    if (open.isEmpty) return const SizedBox.shrink();
 
-    _MapJob? next;
-    if (latestProfile != null) {
-      for (final j in jobs) {
-        if (j.profile?.id == latestProfile.id) {
-          next = j;
-          break;
-        }
+    const sd = LatLng(32.7157, -117.1611);
+    final pos = widget.userPosition;
+    final originLat = pos?.latitude ?? sd.latitude;
+    final originLng = pos?.longitude ?? sd.longitude;
+
+    _MapJob next = open.first;
+    var best = double.infinity;
+    for (final j in open) {
+      if (!j.hasPoint) continue;
+      final d = Geolocator.distanceBetween(
+        originLat, originLng, j.lat, j.lng,
+      );
+      if (d < best) {
+        best = d;
+        next = j;
       }
     }
-    next ??= jobs.isEmpty ? null : jobs.reduce((a, b) {
-      final aid = a.profile?.id ?? a.latest?.id ?? 0;
-      final bid = b.profile?.id ?? b.latest?.id ?? 0;
-      return bid >= aid ? b : a;
-    });
 
-    if (next == null && latestProfile == null) {
-      return const SizedBox.shrink();
-    }
-
-    final name = latestProfile?.name.trim().isNotEmpty == true
-        ? latestProfile!.name.trim()
-        : next?.recipient ?? 'Unknown';
-    final pid = latestProfile?.id ?? next?.profile?.id;
-
+    final name = next.recipient;
     double? miles;
-    final pos = widget.userPosition;
-    final lat = latestProfile != null &&
-            _MapJob._usable(latestProfile.latitude, latestProfile.longitude)
-        ? latestProfile.latitude
-        : next?.hasPoint == true
-            ? next!.lat
-            : null;
-    final lng = latestProfile != null &&
-            _MapJob._usable(latestProfile.latitude, latestProfile.longitude)
-        ? latestProfile.longitude
-        : next?.hasPoint == true
-            ? next!.lng
-            : null;
-    if (pos != null && lat != null && lng != null) {
-      miles = Geolocator.distanceBetween(
-            pos.latitude, pos.longitude, lat, lng) /
-          1609.34;
+    if (next.hasPoint) {
+      miles = best.isFinite ? best / 1609.34 : null;
     }
 
     final dist = miles == null
@@ -1174,48 +1838,76 @@ class _MapBodyState extends ConsumerState<_MapBody> {
             : miles < 10
                 ? '${miles.toStringAsFixed(1)} mi'
                 : '${miles.round()} mi';
-    final pay = latestProfile?.payRate ?? next?.profile?.payRate;
+    final pay = next.profile?.payRate;
+    final jobLine = (next.profile?.displayCompanyName ?? next.address).trim();
     return Padding(
-      padding: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.only(top: 10),
       child: GestureDetector(
         onTap: () {
           HapticFeedback.selectionClick();
-          if (pid != null) {
-            context.push(
-              '/new-attempt?profileId=$pid',
-              extra: latestProfile ?? next?.profile,
-            );
-          }
+          unawaited(_openJobFromPin(next));
         },
         child: Container(
           width: double.infinity,
-          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+          padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
           decoration: BoxDecoration(
-            color: const Color(0xF5FFFFFF),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: _kSep),
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(18),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.08),
+                blurRadius: 16,
+                offset: const Offset(0, 6),
+              ),
+            ],
           ),
           child: Row(
             children: [
-              const Icon(Icons.auto_awesome_rounded, size: 16, color: _kAccent),
-              const SizedBox(width: 8),
+              const Icon(Icons.auto_awesome_rounded,
+                  size: 18, color: _kAccent),
+              const SizedBox(width: 10),
               Expanded(
-                child: Text(
-                  [
-                    'Next up · $name',
-                    if (dist != null) dist,
-                    if (pay != null) '\$$pay',
-                  ].join(' · '),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: _kInk,
-                  ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      [
+                        'Next up',
+                        name,
+                        if (dist != null) dist,
+                        if (pay != null) '\$$pay',
+                      ].join(' · '),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: _kInk,
+                      ),
+                    ),
+                    if (miles != null || jobLine.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        [
+                          if (miles != null)
+                            miles < 0.1
+                                ? 'Nearby'
+                                : '${miles.toStringAsFixed(1)} mi away',
+                          if (jobLine.isNotEmpty) jobLine,
+                        ].join('  ·  '),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: _kInkMuted,
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
               ),
-              const Icon(Icons.chevron_right_rounded, size: 18, color: _kSubtle),
+              const Icon(Icons.chevron_right_rounded,
+                  size: 20, color: _kSubtle),
             ],
           ),
         ),
@@ -1229,18 +1921,34 @@ class _MapBodyState extends ConsumerState<_MapBody> {
     ref.watch(profilesProvider);
 
     final jobs = _mapJobs();
-    final hasData = jobs.isNotEmpty;
+    final focusId = _focusProfileId;
+    if (focusId != null) {
+      for (final job in jobs) {
+        if (job.profile?.id == focusId &&
+            _selectedJob?.profile?.id != focusId) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted || _focusProfileId != focusId) return;
+            setState(() {
+              _selectedJob = job;
+              _focusProfileId = null;
+            });
+            widget.mapController.move(job.point, 17);
+          });
+          break;
+        }
+      }
+    }
 
-    if (hasData &&
-        (jobs.length != _fittedCount ||
-            (widget.userPosition != null && !_fittedWithGps))) {
-      _fittedCount = jobs.length;
-      _fittedWithGps = widget.userPosition != null;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        widget.onFitMeAndNearest(
-            jobs.map((j) => _spreadPoint(j, jobs)).toList());
-      });
+    if (!_userPinnedCamera && !_fittedWithGps) {
+      final pos = widget.userPosition;
+      if (pos != null) {
+        _fittedWithGps = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || _userPinnedCamera) return;
+          _userPinnedCamera = true;
+          widget.onFitClose();
+        });
+      }
     }
 
     const mapCenter = LatLng(32.7157, -117.1611);
@@ -1260,24 +1968,40 @@ class _MapBodyState extends ConsumerState<_MapBody> {
               return FlutterMap(
             mapController: widget.mapController,
             options: MapOptions(
-              initialCenter: mapCenter,
-              initialZoom: 13,
-              minZoom: 2,
+              initialCenter: const LatLng(39.8, -98.6),
+              initialZoom: 5,
+              minZoom: 4,
               maxZoom: 18,
-              keepAlive: true,
+              // contain keeps the whole screen inside the US. containCenter
+              // only holds the center, which still shows Europe and Asia.
+              cameraConstraint: CameraConstraint.containCenter(
+                bounds: _kUsaCameraBounds,
+              ),
+              keepAlive: false,
+              interactionOptions: InteractionOptions(
+                flags: _hotRouteAt != null
+                    ? InteractiveFlag.none
+                    : InteractiveFlag.all,
+              ),
               backgroundColor: const Color(0xFFF2F4F7),
               onMapReady: widget.onMapReady,
-              onTap: _selectedJob != null
+              onPositionChanged: _onMapPositionChanged,
+              onTap: _selectedJob != null || _hotRouteAt != null
                   ? null
                   : (_, latLng) {
+                      final hit = _jobNearTap(latLng, jobs);
+                      if (hit != null) {
+                        HapticFeedback.mediumImpact();
+                        unawaited(_openJobFromPin(hit));
+                        return;
+                      }
                       HapticFeedback.lightImpact();
-                      showMapUploadSheet(
-                        context,
-                        lat: latLng.latitude,
-                        lng: latLng.longitude,
-                        onUploaded: widget.onRefresh,
-                      );
+                      _openHotRouteBubbles(latLng);
                     },
+              onLongPress: (_, latLng) {
+                HapticFeedback.mediumImpact();
+                _openHotRouteBubbles(latLng);
+              },
             ),
             children: [
               AppMapTiles.layer(),
@@ -1298,8 +2022,23 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                   ),
                 ],
               ),
-            // User location under job pins so stacked jobs stay visible.
-            if (widget.userPosition != null)
+            if (widget.userPosition != null) ...[
+              CircleLayer(
+                circles: [
+                  CircleMarker(
+                    point: LatLng(
+                      widget.userPosition!.latitude,
+                      widget.userPosition!.longitude,
+                    ),
+                    // GPS accuracy only — grows on zoom-in like Google Maps,
+                    // never the old 500-ft radar.
+                    radius: widget.userPosition!.accuracy.clamp(8.0, 28.0),
+                    useRadiusInMeter: true,
+                    color: const Color(0xFF4285F4).withValues(alpha: 0.18),
+                    borderStrokeWidth: 0,
+                  ),
+                ],
+              ),
               MarkerLayer(
                 markers: [
                   Marker(
@@ -1307,15 +2046,20 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                       widget.userPosition!.latitude,
                       widget.userPosition!.longitude,
                     ),
-                    width: 56,
-                    height: 56,
-                    child: _UserLocationMarker(
-                      accuracy: widget.userPosition!.accuracy,
+                    width: 92,
+                    height: 92,
+                    child: IgnorePointer(
+                      child: _GoogleBlueDot(
+                        headingDeg: widget.userHeading,
+                        showCone: true,
+                      ),
                     ),
                   ),
                 ],
               ),
-            // One teardrop pin per job. Pending / awaiting = yellow; others blue.
+            ],
+            // New profiles and hot routes are orange. In-progress jobs stay
+            // yellow until diligence is complete, then the pin turns green.
             MarkerLayer(
               markers: [
                 for (final job in jobs) _jobMarker(job, jobs),
@@ -1352,64 +2096,63 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                   Expanded(
                     child: _SearchBar(controller: widget.searchCtrl),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 10),
                   const AiSparkButton(),
                 ],
               ),
-              if (ref.watch(aiSmartSuggestionsProvider))
-                _nextUpChip(jobs),
+              _nextUpChip(jobs),
             ],
           ),
         ),
 
-        // ── Filter dock ────────────────────────────────────────────────
-          if (_selectedJob == null)
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: _MapFilterDock(
-              moreFiltersActive: _todayOnly || _distanceMode != null,
-              onMoreFilters: _showFilterSheet,
-            ),
-          ),
-
-        // ── Map FABs: fit / locate ─────────────────────────────────────
+        // ── Map FABs: fit / close / filter / mileage ───────────────────
         Positioned(
           right: 14,
-          bottom: _selectedJob != null
-              ? 380
-              : 86,
+          bottom: _selectedJob != null ? 380 : 108,
           child: Material(
             color: Colors.transparent,
             child: _ZoomControls(
-              onFitTap: () =>
-                  widget.onFitAll(jobs.map((j) => j.point).toList()),
+              onFitTap: () {
+                _userPinnedCamera = true;
+                widget.onFitAll(jobs.map((j) => j.point).toList());
+              },
               userPosition: widget.userPosition,
+              followingUser: widget.followingUser,
               loading: widget.fetchingLocation,
+              filterActive:
+                  _todayOnly || _distanceMode != null || _levels.isNotEmpty,
+              onFilterTap: _showFilterSheet,
               onLocateTap: () {
                 HapticFeedback.lightImpact();
+                _userPinnedCamera = true;
                 widget.onMyLocation();
-                if (widget.userPosition != null) {
-                  widget.mapController.move(
-                    LatLng(
-                      widget.userPosition!.latitude,
-                      widget.userPosition!.longitude,
-                    ),
-                    15,
-                  );
-                }
               },
             ),
           ),
         ),
+
+        if (_hotRouteAt != null)
+          Positioned.fill(
+            child: ListenableBuilder(
+              listenable: MileageTracker.instance,
+              builder: (context, _) => _HotRouteBubbles(
+                origin: _screenOffsetFor(_hotRouteAt!),
+                mileageOn: MileageTracker.instance.tracking,
+                attemptEnabled: _attemptInRange(_hotRouteAt!),
+                centerLabel: _latestJobLabel(jobs),
+                onDismiss: () => setState(() => _hotRouteAt = null),
+                onChoice: (choice) =>
+                    unawaited(_onHotRouteChoice(choice, _hotRouteAt!)),
+              ),
+            ),
+          ),
 
         // Pin card last so map, dock, and FABs cannot steal button taps.
         if (_selectedJob != null)
           Positioned(
             left: 14,
             right: 14,
-            bottom: _selectedJob != null ? 16 : 86,
+            bottom: 100,
             child: Material(
               color: Colors.transparent,
               child: GestureDetector(
@@ -1426,6 +2169,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                   address: _selectedJob!.address,
                   title: _selectedJob!.pinSummaryTitle,
                   pending: _selectedJob!.isPending,
+                  attemptEnabled: _inAttemptRange(_selectedJob!),
                   onNewAttempt: () {
                     unawaited(_startAttemptFromPin(context, job: _selectedJob));
                   },
@@ -1475,11 +2219,11 @@ class _FloatingHeader extends StatelessWidget {
                 ),
                 children: [
                   TextSpan(
-                    text: 'Geo',
+                    text: 'SRV',
                     style: TextStyle(color: _kAccent),
                   ),
                   TextSpan(
-                    text: 'Tag',
+                    text: 'BOARD',
                     style: TextStyle(color: _kInk),
                   ),
                 ],
@@ -1556,11 +2300,17 @@ class _SearchBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 48,
+      height: 52,
       decoration: BoxDecoration(
-        color: const Color(0xF5FFFFFF),
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: _kSep),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(26),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.08),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       child: Row(
         children: [
@@ -1573,7 +2323,7 @@ class _SearchBar extends StatelessWidget {
               controller: controller,
               style: const TextStyle(fontSize: 14, color: _kInk),
               decoration: const InputDecoration(
-                hintText: 'Say a profile or ZIP',
+                hintText: 'Search location, profile or ZIP',
                 hintStyle: TextStyle(color: _kSubtle, fontSize: 14),
                 border: InputBorder.none,
                 contentPadding: EdgeInsets.symmetric(horizontal: 10),
@@ -1645,10 +2395,12 @@ class _LocationFab extends StatelessWidget {
   const _LocationFab({
     required this.onTap,
     this.userPosition,
+    this.following = false,
     this.loading = false,
   });
   final VoidCallback onTap;
   final Position?    userPosition;
+  final bool         following;
   final bool         loading;
 
   @override
@@ -1658,9 +2410,15 @@ class _LocationFab extends StatelessWidget {
       width: 46,
       height: 46,
       decoration: BoxDecoration(
-        color: _kFab,
+        color: following ? const Color(0xFF1A73E8) : Colors.white,
         shape: BoxShape.circle,
-        border: Border.all(color: _kSep),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.12),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       child: loading
           ? const Center(
@@ -1676,7 +2434,9 @@ class _LocationFab extends StatelessWidget {
           : Icon(
               Icons.my_location_rounded,
               size: 20,
-              color: userPosition != null ? _kInk : _kSubtle,
+              color: following
+                  ? Colors.white
+                  : (userPosition != null ? _kInk : _kSubtle),
             ),
     ),
   );
@@ -1754,11 +2514,13 @@ class _JobPreviewCard extends StatefulWidget {
     this.distance,
     this.atCap = false,
     this.pending = false,
+    this.attemptEnabled = true,
   });
 
   final int attempts;
   final bool atCap;
   final bool pending;
+  final bool attemptEnabled;
   final String? distance;
   final String address;
   final String title;
@@ -1947,13 +2709,24 @@ class _JobPreviewCardState extends State<_JobPreviewCard> {
             ),
           ),
           const SizedBox(height: 6),
-          Text(
-            widget.address,
-            style: const TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: _kAccent,
-              height: 1.3,
+          GestureDetector(
+            onTap: () {
+              final query = Uri.encodeComponent(widget.address);
+              launchUrl(
+                Uri.parse('https://maps.apple.com/?q=$query'),
+                mode: LaunchMode.externalApplication,
+              );
+            },
+            child: Text(
+              widget.address,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: _kAccent,
+                height: 1.3,
+                decoration: TextDecoration.underline,
+                decorationColor: _kAccent,
+              ),
             ),
           ),
           const SizedBox(height: 10),
@@ -1978,104 +2751,22 @@ class _JobPreviewCardState extends State<_JobPreviewCard> {
             alignment: Alignment.centerRight,
             child: IntrinsicWidth(
               child: _CardBtn(
-                icon: widget.atCap ? Icons.block_rounded : Icons.add_rounded,
-                label: widget.atCap ? 'Max attempts' : 'Add Attempt',
-                onTap: widget.atCap ? null : widget.onNewAttempt,
-                filled: !widget.atCap,
+                icon: widget.atCap || !widget.attemptEnabled
+                    ? Icons.block_rounded
+                    : Icons.add_rounded,
+                label: widget.atCap
+                    ? 'Max attempts'
+                    : widget.attemptEnabled
+                        ? 'Add Attempt'
+                        : 'Add Attempt',
+                onTap: widget.atCap || !widget.attemptEnabled
+                    ? null
+                    : widget.onNewAttempt,
+                filled: !widget.atCap && widget.attemptEnabled,
               ),
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-// ── Bottom filter dock — pills only, no profile list. ────────────────────────
-class _MapFilterDock extends StatelessWidget {
-  const _MapFilterDock({
-    required this.moreFiltersActive,
-    required this.onMoreFilters,
-  });
-
-  final bool moreFiltersActive;
-  final VoidCallback onMoreFilters;
-
-  void _openFromSwipe(DragEndDetails details) {
-    final v = details.primaryVelocity ?? 0;
-    if (v < -240) onMoreFilters();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: Container(
-        decoration: const BoxDecoration(
-          color: Color(0xFFFFFFFF),
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-          boxShadow: [
-            BoxShadow(
-              color: Color(0x1A000000),
-              blurRadius: 16,
-              offset: Offset(0, -4),
-            ),
-          ],
-        ),
-        padding: const EdgeInsets.fromLTRB(16, 2, 16, 12),
-        child: GestureDetector(
-          behavior: HitTestBehavior.translucent,
-          onVerticalDragEnd: _openFromSwipe,
-          onTap: onMoreFilters,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(24, 8, 24, 10),
-                child: Center(
-                  child: Container(
-                    width: 40,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: Colors.black26,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                ),
-              ),
-              Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      'Filters',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w800,
-                        color: _kInk,
-                      ),
-                    ),
-                  ),
-                  Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: moreFiltersActive ? _kAccent : const Color(0xFFF2F4F7),
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: moreFiltersActive ? _kAccent : _kSep,
-                      ),
-                    ),
-                    child: Icon(
-                      Icons.tune_rounded,
-                      size: 18,
-                      color: moreFiltersActive ? Colors.white : _kInkMuted,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }
@@ -2142,222 +2833,536 @@ class _CardBtn extends StatelessWidget {
 }
 
 // ── Job pin — filled teardrop, blue or yellow (pending). ─────────────────────
-class _PinMarker extends StatelessWidget {
+class _PinMarker extends StatefulWidget {
   const _PinMarker({
     required this.color,
     required this.selected,
+    this.glow = false,
     this.label,
   });
 
   final Color color;
   final bool selected;
+  final bool glow;
   final String? label;
 
   @override
+  State<_PinMarker> createState() => _PinMarkerState();
+}
+
+class _PinMarkerState extends State<_PinMarker>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _pulse;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    );
+    if (widget.glow) _pulse.repeat(reverse: true);
+  }
+
+  @override
+  void didUpdateWidget(covariant _PinMarker oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.glow && !_pulse.isAnimating) {
+      _pulse.repeat(reverse: true);
+    } else if (!widget.glow && _pulse.isAnimating) {
+      _pulse.stop();
+      _pulse.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final head = selected ? 26.0 : 22.0;
-    return Column(
+    final head = widget.selected ? 26.0 : 22.0;
+    final pin = Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (label != null) ...[
+        if (widget.label != null) ...[
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
-              color: color,
+              color: widget.color,
               borderRadius: BorderRadius.circular(8),
-              boxShadow: [
-                BoxShadow(
-                  color: color.withValues(alpha: 0.45),
-                  blurRadius: 8,
-                ),
-              ],
             ),
             child: Text(
-              label!,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+              widget.label!,
               style: const TextStyle(
+                color: Colors.white,
                 fontSize: 11,
                 fontWeight: FontWeight.w700,
-                color: Colors.white,
               ),
             ),
           ),
           const SizedBox(height: 4),
         ],
         SizedBox(
-          width: head,
-          height: head + 10,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: head,
-                height: head,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: color,
-                  boxShadow: [
-                    BoxShadow(
-                      color: color.withValues(alpha: selected ? 0.5 : 0.32),
-                      blurRadius: selected ? 10 : 6,
-                    ),
-                  ],
-                ),
-                child: Center(
-                  child: Container(
-                    width: 6,
-                    height: 6,
-                    decoration: const BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
-              ),
-              CustomPaint(
-                size: Size(head * 0.42, 9),
-                painter: _PinTipPainter(color),
-              ),
-            ],
+          width: head + 8,
+          height: head + 14,
+          child: CustomPaint(
+            painter: _PinTipPainter(
+              color: widget.color,
+              selected: widget.selected,
+            ),
           ),
         ),
       ],
     );
+    if (!widget.glow) return pin;
+    return AnimatedBuilder(
+      animation: _pulse,
+      builder: (context, child) {
+        final t = _pulse.value;
+        return Stack(
+          alignment: Alignment.topCenter,
+          clipBehavior: Clip.none,
+          children: [
+            Positioned(
+              top: 2,
+              child: Container(
+                width: 28 + t * 10,
+                height: 28 + t * 10,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: widget.color.withValues(alpha: 0.28),
+                  boxShadow: [
+                    BoxShadow(
+                      color: widget.color.withValues(alpha: 0.55),
+                      blurRadius: 12,
+                      spreadRadius: 2 + t * 3,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            child!,
+          ],
+        );
+      },
+      child: pin,
+    );
   }
 }
 
+
 class _PinTipPainter extends CustomPainter {
-  _PinTipPainter(this.color);
+  _PinTipPainter({required this.color, this.selected = false});
 
   final Color color;
+  final bool selected;
 
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()..color = color;
+    final r = size.width / 2;
+    final head = Offset(r, r * 0.85);
+    final headRadius = r * 0.72;
+    canvas.drawCircle(head, headRadius, paint);
     final tip = ui.Path()
-      ..moveTo(0, 0)
-      ..lineTo(size.width, 0)
-      ..lineTo(size.width / 2, size.height)
+      ..moveTo(r - headRadius * 0.55, head.dy + headRadius * 0.35)
+      ..quadraticBezierTo(r, size.height * 0.72, r, size.height - 1)
+      ..quadraticBezierTo(
+        r,
+        size.height * 0.72,
+        r + headRadius * 0.55,
+        head.dy + headRadius * 0.35,
+      )
       ..close();
     canvas.drawPath(tip, paint);
+    canvas.drawCircle(
+      head,
+      headRadius * 0.38,
+      Paint()..color = Colors.white,
+    );
+    if (selected) {
+      canvas.drawCircle(
+        head,
+        headRadius + 2,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.5
+          ..color = Colors.white,
+      );
+    }
   }
 
   @override
   bool shouldRepaint(covariant _PinTipPainter oldDelegate) =>
-      oldDelegate.color != color;
+      oldDelegate.color != color || oldDelegate.selected != selected;
 }
 
-// ── Quick-filter pill row (All / Standard / ASAP / Today) — a faster-access
-// layer on top of the existing _levels/_todayOnly state; the full filter
-// sheet (profile + distance/ZIP + priority) is still reachable via the
-// search bar's tune icon. ──
-class _FilterPillRow extends StatelessWidget {
-  const _FilterPillRow({
-    required this.levels,
-    required this.todayOnly,
-    required this.onLevelsChanged,
-    required this.onTodayChanged,
+/// Finger-steered action wheel. Drag around the circle to swap the
+/// highlighted action. Lift to choose it.
+class _HotRouteBubbles extends StatefulWidget {
+  const _HotRouteBubbles({
+    required this.origin,
+    required this.mileageOn,
+    required this.attemptEnabled,
+    required this.centerLabel,
+    required this.onDismiss,
+    required this.onChoice,
   });
-  final Set<String> levels;
-  final bool todayOnly;
-  final ValueChanged<Set<String>> onLevelsChanged;
-  final ValueChanged<bool> onTodayChanged;
+
+  final Offset origin;
+  final bool mileageOn;
+  final bool attemptEnabled;
+  final String centerLabel;
+  final VoidCallback onDismiss;
+  final ValueChanged<String> onChoice;
 
   @override
-  Widget build(BuildContext context) => SingleChildScrollView(
-    scrollDirection: Axis.horizontal,
-    child: Row(
-      children: [
-        _pill(
-          label: 'All',
-          selected: levels.isEmpty,
-          color: _kAccent,
-          onTap: () => onLevelsChanged({}),
-        ),
-        const SizedBox(width: 8),
-        _pill(
-          label: 'Standard',
-          selected: levels.length == 1 && levels.contains('standard'),
-          color: categoryOf('standard').color,
-          onTap: () => onLevelsChanged({'standard'}),
-        ),
-        const SizedBox(width: 8),
-        _pill(
-          label: 'ASAP',
-          selected: levels.length == 1 && levels.contains('asap'),
-          color: categoryOf('asap').color,
-          onTap: () => onLevelsChanged({'asap'}),
-        ),
-        const SizedBox(width: 8),
-        _pill(
-          label: 'Special',
-          selected: levels.length == 1 && levels.contains('special'),
-          color: categoryOf('special').color,
-          onTap: () => onLevelsChanged({'special'}),
-        ),
-        const SizedBox(width: 8),
-        _pill(
-          label: 'Next Day',
-          selected: levels.length == 1 && levels.contains('next_day'),
-          color: categoryOf('next_day').color,
-          onTap: () => onLevelsChanged({'next_day'}),
-        ),
-        const SizedBox(width: 8),
-        _pill(
-          label: 'Today',
-          selected: todayOnly,
-          color: _kAccent,
-          onTap: () => onTodayChanged(!todayOnly),
-          icon: Icons.calendar_today_rounded,
-        ),
-      ],
-    ),
-  );
+  State<_HotRouteBubbles> createState() => _HotRouteBubblesState();
+}
 
-  Widget _pill({
-    required String label,
-    required bool selected,
-    required Color color,
-    required VoidCallback onTap,
-    IconData? icon,
-  }) => GestureDetector(
-    onTap: () {
-      HapticFeedback.selectionClick();
-      onTap();
-    },
-    child: AnimatedContainer(
-      duration: const Duration(milliseconds: 150),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-      decoration: BoxDecoration(
-        color: selected ? color : const Color(0xF2FFFFFF),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: selected ? color : _kSep,
+class _WheelItem {
+  const _WheelItem({
+    required this.id,
+    required this.icon,
+    required this.label,
+    required this.color,
+  });
+  final String id;
+  final IconData icon;
+  final String label;
+  final Color color;
+}
+
+class _HotRouteBubblesState extends State<_HotRouteBubbles> {
+  int _index = 0;
+
+  List<_WheelItem> get _items => [
+        const _WheelItem(
+          id: 'hot',
+          icon: Icons.local_fire_department_rounded,
+          label: 'Hot route',
+          color: Color(0xFFEA580C),
         ),
-        boxShadow: selected
-            ? [BoxShadow(color: color.withValues(alpha: 0.3), blurRadius: 8)]
-            : null,
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (icon != null) ...[
-            Icon(icon, size: 13, color: selected ? Colors.white : _kInkMuted),
-            const SizedBox(width: 5),
-          ],
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
-              color: selected ? Colors.white : _kInkMuted,
+        const _WheelItem(
+          id: 'camera',
+          icon: Icons.photo_camera_rounded,
+          label: 'Camera',
+          color: _kInk,
+        ),
+        _WheelItem(
+          id: 'attempt',
+          icon: Icons.add_location_alt_rounded,
+          label: widget.attemptEnabled ? 'Attempt' : 'Attempt',
+          color: widget.attemptEnabled ? _kAccent : const Color(0xFF94A3B8),
+        ),
+        _WheelItem(
+          id: 'mileage',
+          icon: Icons.directions_car_filled_rounded,
+          label: widget.mileageOn ? 'Mileage on' : 'Mileage',
+          color: widget.mileageOn ? _kAccent : const Color(0xFF5C6778),
+        ),
+      ];
+
+  void _selectFromFinger(Offset local, Offset center) {
+    final delta = local - center;
+    if (delta.distance < 28) return;
+    var angle = math.atan2(delta.dy, delta.dx) + math.pi / 2;
+    if (angle < 0) angle += math.pi * 2;
+    final count = _items.length;
+    final slot = (angle / (math.pi * 2) * count).floor() % count;
+    if (slot == _index) return;
+    HapticFeedback.selectionClick();
+    setState(() => _index = slot);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    final cx = widget.origin.dx.clamp(120.0, math.max(120.0, size.width - 120));
+    final items = _items;
+    final selected = items[_index];
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final h = constraints.maxHeight;
+        final cy = widget.origin.dy.clamp(130.0, math.max(130.0, h - 150));
+        const wheel = 220.0;
+        const hub = wheel / 2;
+        return Stack(
+          children: [
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: widget.onDismiss,
+                child: const ColoredBox(color: Color(0x66000000)),
+              ),
             ),
-          ),
-        ],
+            Positioned(
+              top: 12,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: GestureDetector(
+                  onTap: widget.onDismiss,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: const Text(
+                      'Close',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: _kInk,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              left: cx - hub,
+              top: cy - hub,
+              width: wheel,
+              height: wheel,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapDown: (d) =>
+                    _selectFromFinger(d.localPosition, const Offset(hub, hub)),
+                onTapUp: (_) {
+                  HapticFeedback.mediumImpact();
+                  widget.onChoice(items[_index].id);
+                },
+                onPanStart: (d) =>
+                    _selectFromFinger(d.localPosition, const Offset(hub, hub)),
+                onPanUpdate: (d) =>
+                    _selectFromFinger(d.localPosition, const Offset(hub, hub)),
+                onPanEnd: (_) {
+                  HapticFeedback.mediumImpact();
+                  widget.onChoice(items[_index].id);
+                },
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: CustomPaint(
+                          painter: _WheelDisc(
+                            count: items.length,
+                            selected: _index,
+                          ),
+                        ),
+                      ),
+                    ),
+                    Center(
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 140),
+                        child: SizedBox(
+                          key: ValueKey(selected.id),
+                          width: 86,
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                selected.label,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w800,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                '${_index + 1} / ${items.length}',
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                  color: Color(0xFF7DD3FC),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    for (var i = 0; i < items.length; i++)
+                      _placed(
+                        index: i,
+                        count: items.length,
+                        hub: hub,
+                        selected: i == _index,
+                        item: items[i],
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _placed({
+    required int index,
+    required int count,
+    required double hub,
+    required bool selected,
+    required _WheelItem item,
+  }) {
+    const ring = 74.0;
+    final angle = (math.pi * 2 * index / count) - math.pi / 2;
+    final dx = hub + ring * math.cos(angle) - 16;
+    final dy = hub + ring * math.sin(angle) - 16;
+    return Positioned(
+      left: dx,
+      top: dy,
+      child: Icon(
+        item.icon,
+        color: selected ? Colors.white : const Color(0xE6FFFFFF),
+        size: selected ? 30 : 24,
       ),
-    ),
-  );
+    );
+  }
+}
+
+class _WheelDisc extends CustomPainter {
+  _WheelDisc({required this.count, required this.selected});
+
+  final int count;
+  final int selected;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final outer = size.width / 2 - 1;
+    const inner = 42.0;
+    final sweep = math.pi * 2 / count;
+    for (var i = 0; i < count; i++) {
+      final start = -math.pi / 2 + i * sweep - sweep / 2;
+      final path = ui.Path()
+        ..moveTo(
+          center.dx + inner * math.cos(start),
+          center.dy + inner * math.sin(start),
+        )
+        ..arcTo(
+          Rect.fromCircle(center: center, radius: outer),
+          start,
+          sweep,
+          false,
+        )
+        ..arcTo(
+          Rect.fromCircle(center: center, radius: inner),
+          start + sweep,
+          -sweep,
+          false,
+        )
+        ..close();
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = i == selected
+              ? const Color(0x99FFFFFF)
+              : const Color(0x5522262E),
+      );
+      canvas.drawPath(
+        path,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2
+          ..color = const Color(0x66FFFFFF),
+      );
+    }
+    canvas.drawCircle(
+      center,
+      inner,
+      Paint()..color = const Color(0xCC1A2130),
+    );
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: outer - 3),
+      math.pi * 0.72,
+      0.7,
+      false,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 4
+        ..strokeCap = StrokeCap.round
+        ..color = const Color(0xFF4A90E2),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _WheelDisc oldDelegate) =>
+      oldDelegate.selected != selected;
+}
+
+class _SpinRing extends StatefulWidget {
+  const _SpinRing({required this.size});
+  final double size;
+
+  @override
+  State<_SpinRing> createState() => _SpinRingState();
+}
+
+class _SpinRingState extends State<_SpinRing>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _spin = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 8),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _spin.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RotationTransition(
+      turns: _spin,
+      child: CustomPaint(
+        size: Size.square(widget.size),
+        painter: _RingPainter(),
+      ),
+    );
+  }
+}
+
+class _RingPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = size.width / 2 - 8;
+    final ring = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..color = const Color(0x66FFFFFF);
+    canvas.drawCircle(center, radius, ring);
+    final arc = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 5
+      ..strokeCap = StrokeCap.round
+      ..color = const Color(0xFF4A90E2);
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius),
+      0,
+      1.2,
+      false,
+      arc,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 // ── Map/List segmented toggle — "List" opens the classic feed screen ───────
@@ -2421,36 +3426,54 @@ class _MapListToggle extends StatelessWidget {
   );
 }
 
-// ── Vertical zoom-control stack: [+] [-] [locate]. Replaces the standalone
-// _LocationFab Positioned block; the locate button is that exact same
-// widget/behavior, just relocated into this stack. ──
+// ── Map controls: fit, locate (crosshairs), filter sheet, mileage.
 class _ZoomControls extends StatelessWidget {
   const _ZoomControls({
     required this.onFitTap,
     required this.userPosition,
     required this.loading,
     required this.onLocateTap,
+    required this.onFilterTap,
+    this.followingUser = false,
+    this.filterActive = false,
   });
   final VoidCallback onFitTap;
   final Position? userPosition;
   final bool loading;
   final VoidCallback onLocateTap;
+  final VoidCallback onFilterTap;
+  final bool followingUser;
+  final bool filterActive;
 
   @override
   Widget build(BuildContext context) => Column(
     mainAxisSize: MainAxisSize.min,
     children: [
-      _fabBtn(icon: Icons.crop_free_rounded, onTap: onFitTap),
-      const SizedBox(height: 8),
+      _fabBtn(icon: Icons.crop_free_rounded, onTap: onFitTap, label: 'Fit all'),
+      const SizedBox(height: 10),
       _LocationFab(
         userPosition: userPosition,
+        following: followingUser,
         loading: loading,
         onTap: onLocateTap,
       ),
+      const SizedBox(height: 10),
+      _fabBtn(
+        icon: Icons.layers_rounded,
+        onTap: onFilterTap,
+        accent: filterActive,
+      ),
+      const SizedBox(height: 10),
+      _MileageFab(),
     ],
   );
 
-  Widget _fabBtn({required IconData icon, required VoidCallback onTap}) =>
+  Widget _fabBtn({
+    required IconData icon,
+    required VoidCallback onTap,
+    String? label,
+    bool accent = false,
+  }) =>
       Material(
         color: Colors.transparent,
         child: GestureDetector(
@@ -2458,84 +3481,165 @@ class _ZoomControls extends StatelessWidget {
             HapticFeedback.lightImpact();
             onTap();
           },
-          child: Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              color: _kFab,
-              shape: BoxShape.circle,
-              border: Border.all(color: _kSep),
-            ),
-            child: Icon(icon, size: 20, color: _kInk),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: accent ? _kAccent : Colors.white,
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.12),
+                      blurRadius: 12,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Icon(icon, size: 20, color: accent ? Colors.white : _kInk),
+              ),
+              if (label != null) ...[
+                const SizedBox(height: 3),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: _kInk,
+                    shadows: [Shadow(color: Colors.white, blurRadius: 6)],
+                  ),
+                ),
+              ],
+            ],
           ),
         ),
       );
 }
 
-// ── User-location marker (pulsing) ────────────────────────────────────────────
-class _UserLocationMarker extends StatefulWidget {
-  const _UserLocationMarker({required this.accuracy});
-  final double accuracy;
-
+class _MileageFab extends StatelessWidget {
   @override
-  State<_UserLocationMarker> createState() => _UserLocationMarkerState();
-}
-
-class _UserLocationMarkerState extends State<_UserLocationMarker>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _pulse;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulse = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1500),
-    )..repeat(reverse: true);
-  }
-
-  @override
-  void dispose() {
-    _pulse.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-    animation: _pulse,
-    builder: (_, __) => Stack(
-      alignment: Alignment.center,
-      children: [
-        Container(
-          width: 48 + _pulse.value * 8,
-          height: 48 + _pulse.value * 8,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: _kAccent.withValues(
-                alpha: 0.12 - _pulse.value * 0.08),
-            border: Border.all(
-              color: _kAccent.withValues(alpha: 0.3),
-              width: 1,
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: MileageTracker.instance,
+      builder: (context, _) {
+        final on = MileageTracker.instance.tracking;
+        return GestureDetector(
+          onTap: () {
+            HapticFeedback.selectionClick();
+            final container = ProviderScope.containerOf(context);
+            final dio = container.read(dioProvider);
+            final email = container.read(authProvider).email;
+            MileageTracker.instance.toggle(dio, email: email);
+          },
+          child: Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: on ? _kAccent : Colors.white,
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.12),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Icon(
+              Icons.directions_car_filled_rounded,
+              size: 20,
+              color: on ? Colors.white : _kInk,
             ),
           ),
-        ),
-        Container(
-          width: 18,
-          height: 18,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: _kAccent,
-            border: Border.all(color: Colors.white, width: 2.5),
-            boxShadow: [
-              BoxShadow(
-                color: _kAccent.withValues(alpha: 0.4),
-                blurRadius: 6,
-                spreadRadius: 1,
-              ),
-            ],
-          ),
-        ),
-      ],
-    ),
-  );
+        );
+      },
+    );
+  }
 }
+
+/// Google Maps–style “you are here”: heading cone, white-ringed blue dot.
+/// The translucent accuracy disc is a geographic CircleLayer, so it only
+/// reads as a halo once the map is zoomed in.
+class _GoogleBlueDot extends StatelessWidget {
+  const _GoogleBlueDot({required this.headingDeg, required this.showCone});
+
+  final double headingDeg;
+  final bool showCone;
+
+  @override
+  Widget build(BuildContext context) {
+    final heading = headingDeg.isFinite && headingDeg >= 0 ? headingDeg : 0.0;
+    return Transform.rotate(
+      angle: heading * math.pi / 180,
+      child: CustomPaint(
+        size: const Size(92, 92),
+        painter: _GoogleLocationPainter(showCone: showCone),
+      ),
+    );
+  }
+}
+
+class _GoogleLocationPainter extends CustomPainter {
+  _GoogleLocationPainter({required this.showCone});
+
+  final bool showCone;
+  static const _blue = Color(0xFF1A73E8);
+  static const _halo = Color(0xFF4285F4);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final c = Offset(size.width / 2, size.height / 2);
+    const coneLen = 42.0;
+    const sweep = 0.78;
+
+    // Soft accuracy halo — the light-blue disc from Google Maps.
+    canvas.drawCircle(
+      c,
+      22,
+      Paint()..color = _halo.withValues(alpha: 0.22),
+    );
+
+    if (showCone) {
+      final cone = ui.Path()
+        ..moveTo(c.dx, c.dy)
+        ..arcTo(
+          Rect.fromCircle(center: c, radius: coneLen),
+          -math.pi / 2 - sweep / 2,
+          sweep,
+          false,
+        )
+        ..close();
+      canvas.drawPath(
+        cone,
+        Paint()
+          ..shader = ui.Gradient.radial(
+            c,
+            coneLen,
+            [
+              _halo.withValues(alpha: 0.42),
+              _halo.withValues(alpha: 0.18),
+              _halo.withValues(alpha: 0.0),
+            ],
+            const [0.0, 0.48, 1.0],
+          ),
+      );
+    }
+
+    canvas.drawCircle(
+      c,
+      10,
+      Paint()
+        ..color = Colors.black.withValues(alpha: 0.16)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.2),
+    );
+    canvas.drawCircle(c, 8.4, Paint()..color = Colors.white);
+    canvas.drawCircle(c, 5.6, Paint()..color = _blue);
+  }
+
+  @override
+  bool shouldRepaint(covariant _GoogleLocationPainter oldDelegate) =>
+      oldDelegate.showCone != showCone;
+}
+

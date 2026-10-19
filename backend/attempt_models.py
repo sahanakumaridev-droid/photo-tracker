@@ -55,6 +55,8 @@ def define_attempt_model(Base):
         completed_at = Column(DateTime, nullable=True)
         user_id = Column(Integer, nullable=True)
         location_group_id = Column(Integer, nullable=True, index=True)
+        # One save on the phone. Retries and extra photos reuse this attempt.
+        client_batch_id = Column(String, nullable=True, index=True)
 
         taken_at = Column(DateTime, nullable=True)
         original_timestamp = Column(DateTime, nullable=True)
@@ -98,6 +100,18 @@ def ensure_attempts_schema(engine, Base, Attempt, Photo, pin_profile):
         inspector = inspect(engine)
         if "attempts" not in inspector.get_table_names():
             Base.metadata.create_all(bind=engine)
+        inspector = inspect(engine)
+        if "attempts" in inspector.get_table_names():
+            attempt_cols = {c["name"] for c in inspector.get_columns("attempts")}
+            if "client_batch_id" not in attempt_cols:
+                try:
+                    conn.execute(text(
+                        "ALTER TABLE attempts ADD COLUMN client_batch_id VARCHAR"
+                    ))
+                    conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    print(f"[migrate] skip attempts.client_batch_id: {e}")
 
         # Backfill: one Attempt per (profile, location_group) or per photo.
         # Use raw SQL via ORM session in caller for portability.

@@ -101,7 +101,7 @@ abstract class AppLocalizations {
   /// Application title
   ///
   /// In en, this message translates to:
-  /// **'Geo Tag'**
+  /// **'SRVBOARD'**
   String get appTitle;
 
   /// Bottom nav: Home tab

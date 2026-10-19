@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -13,6 +15,9 @@ import 'package:share_plus/share_plus.dart';
 import '../../../config/app_config.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/utils/attempt_status.dart';
+import '../../../core/utils/profile_lifecycle.dart';
+import '../../../data/models/profile_model.dart';
+import '../../providers/profile_provider.dart';
 import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
 import '../../../core/utils/photo_stamp.dart';
@@ -21,6 +26,8 @@ import '../../../core/utils/maps_launcher.dart';
 import '../../../data/models/photo_model.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/photo_provider.dart';
+import '../upload/attempt_limits.dart';
+import '../upload/resume_attempt_screen.dart';
 import '../../widgets/ai/note_suggestion_chips.dart';
 import '../../widgets/ai/voice_mic_button.dart';
 
@@ -93,7 +100,12 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
   }
 
   // ── F10: job lifecycle status ─────────────────────────────────────────────
-  static const _statusSteps = ['open', 'in_progress', 'completed', 'archived'];
+  static const _statusSteps = [
+    kProfilePending,
+    kProfileInProgress,
+    kProfileCompleted,
+    kProfileArchived,
+  ];
 
   Color _statusColor(String status) {
     switch (status) {
@@ -130,7 +142,47 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
       case 'archived':
         return 'Archived';
       default:
-        return 'Open';
+        return 'Pending';
+    }
+  }
+
+  Future<void> _archiveFromDetail(ProfileModel profile) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Archive this profile?'),
+        content: const Text(
+          'Use archive after you have independently verified payment. '
+          'This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Archive'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      await ref.read(setProfileStatusProvider((
+        profileId: profile.id,
+        status: kProfileArchived,
+      )).future);
+      ref.invalidate(profilesProvider);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Profile archived')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString().replaceAll('Exception: ', ''))),
+      );
     }
   }
 
@@ -725,9 +777,42 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
   }
 
   int? _viewingPhotoId;
+  /// Index into newest-first attempt groups. 0 is the latest attempt.
+  int _shownAttempt = 0;
   PageController? _photoPageCtrl;
   PageController? _attemptPageCtrl;
   int _photoCtrlAttemptKey = -999;
+  bool _startingNewAttempt = false;
+  bool _attemptPagerReady = false;
+
+  String _photoTime(PhotoModel p) =>
+      (p.takenAt ?? p.timestamp ?? p.createdAt ?? '').trim();
+
+  int _attemptGroupKey(PhotoModel p) {
+    if (p.attemptId != null && p.attemptId != 0) return p.attemptId!;
+    // location_group_id falls back to photo id on the API — that is not a
+    // real group, so don't treat it as one.
+    if (p.locationGroupId != null &&
+        p.locationGroupId != 0 &&
+        p.locationGroupId != p.id) {
+      return p.locationGroupId!;
+    }
+    return p.id;
+  }
+
+  bool _isUngroupedShot(PhotoModel p) {
+    final hasAttempt = p.attemptId != null && p.attemptId != 0;
+    final hasRealGroup = p.locationGroupId != null &&
+        p.locationGroupId != 0 &&
+        p.locationGroupId != p.id;
+    return !hasAttempt && !hasRealGroup;
+  }
+
+  DateTime? _photoDate(PhotoModel p) {
+    final raw = _photoTime(p);
+    if (raw.isEmpty) return null;
+    return DateTime.tryParse(raw);
+  }
 
   List<List<PhotoModel>> _attemptGroups(
       PhotoModel current, List<PhotoModel> all) {
@@ -738,21 +823,74 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
     if (pool.isEmpty) pool = [current];
     final map = <int, List<PhotoModel>>{};
     for (final p in pool) {
-      final key = (p.attemptId != null && p.attemptId != 0)
-          ? p.attemptId!
-          : p.id;
-      map.putIfAbsent(key, () => []).add(p);
+      map.putIfAbsent(_attemptGroupKey(p), () => []).add(p);
     }
     for (final list in map.values) {
-      list.sort((a, b) => (b.timestamp ?? '').compareTo(a.timestamp ?? ''));
-    }
-    final keys = map.keys.toList()
-      ..sort((a, b) {
-        final ta = map[a]!.first.timestamp ?? '';
-        final tb = map[b]!.first.timestamp ?? '';
-        return tb.compareTo(ta);
+      list.sort((a, b) {
+        final byTime = _photoTime(b).compareTo(_photoTime(a));
+        if (byTime != 0) return byTime;
+        return b.id.compareTo(a.id);
       });
-    return [for (final k in keys) map[k]!];
+    }
+
+    final linked = <List<PhotoModel>>[];
+    final lonelies = <PhotoModel>[];
+    for (final list in map.values) {
+      if (list.length == 1 && _isUngroupedShot(list.first)) {
+        lonelies.add(list.first);
+      } else {
+        linked.add(list);
+      }
+    }
+    lonelies.sort((a, b) {
+      final byTime = _photoTime(b).compareTo(_photoTime(a));
+      if (byTime != 0) return byTime;
+      return b.id.compareTo(a.id);
+    });
+    final clustered = <List<PhotoModel>>[];
+    for (final p in lonelies) {
+      if (clustered.isEmpty) {
+        clustered.add([p]);
+        continue;
+      }
+      final cluster = clustered.last;
+      final head = _photoDate(cluster.first);
+      final next = _photoDate(p);
+      final sameWindow = head != null &&
+          next != null &&
+          head.difference(next).abs() <= const Duration(minutes: 45);
+      if (sameWindow) {
+        cluster.add(p);
+      } else {
+        clustered.add([p]);
+      }
+    }
+
+    final groups = [...linked, ...clustered];
+    for (final list in groups) {
+      list.sort((a, b) {
+        final byTime = _photoTime(b).compareTo(_photoTime(a));
+        if (byTime != 0) return byTime;
+        return b.id.compareTo(a.id);
+      });
+    }
+    DateTime when(List<PhotoModel> g) {
+      DateTime? best;
+      for (final p in g) {
+        final d = _photoDate(p);
+        if (d == null) continue;
+        if (best == null || d.isAfter(best)) best = d;
+      }
+      return best ?? DateTime.fromMillisecondsSinceEpoch(0);
+    }
+
+    // Newest attempt first so it is the card on top. Number is n, n-1, … 1.
+    groups.sort((a, b) {
+      final byTime = when(b).compareTo(when(a));
+      if (byTime != 0) return byTime;
+      return b.first.id.compareTo(a.first.id);
+    });
+    return groups;
   }
 
   // ── Edit actions ──────────────────────────────────────────────────────────
@@ -813,16 +951,95 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
   }
 
   void _ensureSwipeControllers({
-    required int attemptIdx,
+    required int attemptPage,
     required int photoIdx,
+    required int attemptIdx,
   }) {
-    _attemptPageCtrl ??= PageController(initialPage: attemptIdx);
+    _attemptPageCtrl ??= PageController(initialPage: attemptPage);
     if (_photoPageCtrl == null || _photoCtrlAttemptKey != attemptIdx) {
       final old = _photoPageCtrl;
       _photoPageCtrl = PageController(initialPage: photoIdx);
       _photoCtrlAttemptKey = attemptIdx;
       if (old != null) {
         WidgetsBinding.instance.addPostFrameCallback((_) => old.dispose());
+      }
+    }
+  }
+
+  Future<void> _openNewAttempt(PhotoModel photo) async {
+    if (_startingNewAttempt) return;
+    final pid = photo.profileId ??
+        ((photo.profiles?.isNotEmpty ?? false) ? photo.profiles!.first.id : null);
+    if (pid == null || pid == 0) return;
+    _startingNewAttempt = true;
+    HapticFeedback.mediumImpact();
+    try {
+      ProfileModel? profile;
+      for (final p in ref.read(profilesProvider).valueOrNull ?? const []) {
+        if (p.id == pid) {
+          profile = p;
+          break;
+        }
+      }
+      final points = <(double, double)>[
+        if (photo.latitude != 0 || photo.longitude != 0)
+          (photo.latitude, photo.longitude),
+        if (profile != null && profile.hasLocation)
+          (profile.latitude!, profile.longitude!),
+      ];
+      if (points.isNotEmpty) {
+        final gps = await LocationService.getFreshFix();
+        if (!mounted) return;
+        double? feet;
+        if (gps != null) {
+          for (final pt in points) {
+            final d = LocationService.distanceFeet(
+                gps.latitude, gps.longitude, pt.$1, pt.$2);
+            if (feet == null || d < feet) feet = d;
+          }
+        }
+        if (feet == null || feet > LocationService.kAttemptProximityFt) {
+          await showDialog<void>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Move closer'),
+              content: Text(
+                feet == null
+                    ? 'Turn on location. An attempt can only be added within 500 feet of this profile.'
+                    : 'You are ${feet.round()} ft away. Get within 500 feet of this profile to add an attempt.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('OK'),
+                ),
+              ],
+            ),
+          );
+          return;
+        }
+      }
+      final ok = await ensureCanStartNewAttempt(
+        context,
+        ref,
+        profileId: pid,
+        knownCount: null,
+      );
+      if (!ok || !mounted) return;
+      await Navigator.of(context, rootNavigator: true).push(
+        MaterialPageRoute<void>(
+          fullscreenDialog: true,
+          builder: (_) => ResumeAttemptScreen(
+            initialProfileId: pid,
+            initialProfile: profile,
+          ),
+        ),
+      );
+      if (mounted) refreshProfileWork(ref, profileId: pid);
+    } finally {
+      _startingNewAttempt = false;
+      if (mounted && _attemptPageCtrl != null && _attemptPageCtrl!.hasClients) {
+        _attemptPageCtrl!.jumpToPage(1);
       }
     }
   }
@@ -965,7 +1182,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
               ),
               const SizedBox(height: 24),
               ElevatedButton(
-                onPressed: context.pop,
+                onPressed: () => _goBack(context),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: _accent,
                   foregroundColor: Colors.white,
@@ -997,26 +1214,54 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
       }
     }
     final attemptPhotos = groups[attemptIdx];
-    _ensureSwipeControllers(attemptIdx: attemptIdx, photoIdx: photoIdx);
+    // Open on the newest attempt. Later swipes update [_shownAttempt].
+    if (_attemptPageCtrl == null) _shownAttempt = 0;
+    final shown = _shownAttempt.clamp(0, groups.length - 1);
+    final attemptNumber = groups.length - shown;
+    // Page 0 is an off-screen "new attempt" slot to the left of the newest.
+    final attemptPage = shown + 1;
+    if (_viewingPhotoId == null && groups.isNotEmpty) {
+      final latestId = groups.first.first.id;
+      if (photo.id != latestId) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) setState(() => _viewingPhotoId = latestId);
+        });
+      }
+    }
+    _ensureSwipeControllers(
+      attemptPage: attemptPage,
+      photoIdx: photoIdx,
+      attemptIdx: attemptIdx,
+    );
+    if (!_attemptPagerReady) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() => _attemptPagerReady = true);
+      });
+    }
 
     final topPad = MediaQuery.paddingOf(context).top;
-    final photoH = (_imageExpanded ? 420.0 : 300.0) + topPad;
+    final photoH = (_imageExpanded ? 420.0 : 300.0) + topPad + 8;
 
     Widget photoDots() {
-      if (attemptPhotos.length < 2) return const SizedBox.shrink();
+      if (attemptPhotos.isEmpty) return const SizedBox.shrink();
       return Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           for (var i = 0; i < attemptPhotos.length; i++)
-            Container(
-              width: i == photoIdx ? 7 : 6,
-              height: i == photoIdx ? 7 : 6,
-              margin: const EdgeInsets.symmetric(horizontal: 3),
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              width: i == photoIdx ? 8 : 7,
+              height: i == photoIdx ? 8 : 7,
+              margin: const EdgeInsets.symmetric(horizontal: 3.5),
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: i == photoIdx
                     ? Colors.white
-                    : Colors.white.withValues(alpha: 0.4),
+                    : Colors.white.withValues(alpha: 0.45),
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.9),
+                  width: i == photoIdx ? 0 : 0.8,
+                ),
               ),
             ),
         ],
@@ -1036,7 +1281,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                   color: Colors.black,
                   child: PageView.builder(
                     controller: _photoPageCtrl,
-                    physics: attemptPhotos.length < 2
+                    physics: attemptPhotos.length <= 1
                         ? const NeverScrollableScrollPhysics()
                         : const PageScrollPhysics(),
                     itemCount: attemptPhotos.length,
@@ -1149,44 +1394,94 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                   profileName: photo.profileName,
                   latitude: photo.latitude,
                   longitude: photo.longitude,
-                  below: attemptPhotos.length > 1 ? photoDots() : null,
+                  below: photoDots(),
                 ),
               ],
             ),
           ),
-          if (groups.length > 1)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-              child: Text(
-                'Attempt ${attemptIdx + 1} of ${groups.length}  ·  swipe below for older attempts',
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: _inkMuted,
-                ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+            child: Text(
+              groups.length <= 1
+                  ? 'Attempt 1 of 1  ·  swipe this card right for a new attempt'
+                  : shown == 0
+                      ? 'Attempt $attemptNumber of ${groups.length}  ·  swipe left for older'
+                      : shown == groups.length - 1
+                          ? 'Attempt $attemptNumber of ${groups.length}  ·  first attempt'
+                          : 'Attempt $attemptNumber of ${groups.length}  ·  swipe left for older',
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: _inkMuted,
               ),
             ),
+          ),
           Expanded(
-            child: PageView.builder(
-              controller: _attemptPageCtrl,
-              physics: groups.length < 2
-                  ? const NeverScrollableScrollPhysics()
-                  : const PageScrollPhysics(),
-              itemCount: groups.length,
-              onPageChanged: (i) {
-                HapticFeedback.selectionClick();
-                setState(() => _viewingPhotoId = groups[i].first.id);
+            child: RawGestureDetector(
+              behavior: HitTestBehavior.opaque,
+              gestures: <Type, GestureRecognizerFactory>{
+                _AttemptSwipe:
+                    GestureRecognizerFactoryWithHandlers<_AttemptSwipe>(
+                  _AttemptSwipe.new,
+                  (_AttemptSwipe instance) {
+                    instance.onUpdate = (d) {
+                      final ctrl = _attemptPageCtrl;
+                      if (ctrl == null || !ctrl.hasClients) return;
+                      final pos = ctrl.position;
+                      final next = (pos.pixels - d.delta.dx)
+                          .clamp(pos.minScrollExtent, pos.maxScrollExtent);
+                      pos.jumpTo(next);
+                    };
+                    instance.onEnd = (d) {
+                      final ctrl = _attemptPageCtrl;
+                      if (ctrl == null || !ctrl.hasClients) return;
+                      final page = ctrl.page ?? 0;
+                      final velocity = d.primaryVelocity ?? 0;
+                      var target = page.round();
+                      if (velocity.abs() > 280) {
+                        target = velocity > 0 ? page.floor() : page.ceil();
+                      }
+                      target = target.clamp(0, groups.length);
+                      unawaited(ctrl.animateToPage(
+                        target,
+                        duration: const Duration(milliseconds: 220),
+                        curve: Curves.easeOutCubic,
+                      ));
+                    };
+                  },
+                ),
               },
-              itemBuilder: (_, i) {
-                final shown = i == attemptIdx ? photo : groups[i].first;
-                return SingleChildScrollView(
-                  padding: const EdgeInsets.all(16),
-                  child: _buildAttemptDetails(
-                    shown,
-                    categoryOf(shown.category).color,
-                  ),
-                );
-              },
+              child: PageView.builder(
+                controller: _attemptPageCtrl,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: groups.length + 1,
+                onPageChanged: (i) {
+                  if (!_attemptPagerReady) return;
+                  if (i == 0) {
+                    unawaited(_openNewAttempt(photo));
+                    return;
+                  }
+                  HapticFeedback.selectionClick();
+                  setState(() {
+                    _shownAttempt = i - 1;
+                    _viewingPhotoId = groups[i - 1].first.id;
+                  });
+                },
+                itemBuilder: (_, i) {
+                  if (i == 0) {
+                    return const _NewAttemptPeek();
+                  }
+                  final shown =
+                      (i - 1) == attemptIdx ? photo : groups[i - 1].first;
+                  return SingleChildScrollView(
+                    padding: const EdgeInsets.all(16),
+                    child: _buildAttemptDetails(
+                      shown,
+                      categoryOf(shown.category).color,
+                    ),
+                  );
+                },
+              ),
             ),
           ),
         ],
@@ -1427,12 +1722,32 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
   }
 
   // ── F10: job lifecycle status card ────────────────────────────────────────
+  ProfileModel? _profileFor(PhotoModel photo) {
+    final id = photo.profileId ??
+        ((photo.profiles != null && photo.profiles!.isNotEmpty)
+            ? photo.profiles!.first.id
+            : null);
+    if (id != null) {
+      for (final p in ref.watch(profilesProvider).valueOrNull ?? const []) {
+        if (p.id == id) return p;
+      }
+    }
+    if (photo.profiles != null && photo.profiles!.isNotEmpty) {
+      return photo.profiles!.first;
+    }
+    return null;
+  }
+
   Widget _buildStatusCard(PhotoModel photo) {
-    final current = photo.status ?? 'open';
+    final profile = _profileFor(photo);
+    final current = normalizeProfileStatus(profile?.status ?? photo.status);
     final currentIndex = _statusSteps.indexOf(current);
     final color = _statusColor(current);
+    final attempts = profile?.attemptsCount ?? 0;
+    final cap = profile?.attemptCap ?? 5;
 
     return Container(
+      width: double.infinity,
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
       decoration: BoxDecoration(
         color: _surface,
@@ -1495,7 +1810,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
-                  '${currentIndex + 1} / ${_statusSteps.length}',
+                  '$attempts / $cap',
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w700,
@@ -1518,15 +1833,17 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
               color: const Color(0xFFF9FAFB),
               borderRadius: BorderRadius.circular(9),
             ),
-            child: const Row(
+            child: Row(
               children: [
-                Icon(Icons.touch_app_rounded,
+                const Icon(Icons.info_outline_rounded,
                     size: 13, color: _inkSubtle),
-                SizedBox(width: 6),
+                const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    'Tap any stage to change status — you\'ll be asked to confirm',
-                    style: TextStyle(
+                    'The first unsuccessful attempt sets In Progress. '
+                    'After $cap unsuccessful attempts, or one successful attempt, '
+                    'the job is Completed. Archive only after payment is confirmed.',
+                    style: const TextStyle(
                       fontSize: 11,
                       color: _inkSubtle,
                       fontWeight: FontWeight.w500,
@@ -1578,10 +1895,12 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
     final isFuture = index > currentIndex;
     final stepColor = _statusColor(step);
 
+    final profile = _profileFor(photo);
+    final canArchive = step == kProfileArchived &&
+        profile != null &&
+        profile.canArchive;
     return GestureDetector(
-      // Any stage is tappable now — forward, backward, or jump. The confirm
-      // dialog in _setStatus guards against accidental changes.
-      onTap: isActive ? null : () => _setStatus(photo, step),
+      onTap: canArchive ? () => _archiveFromDetail(profile) : null,
       behavior: HitTestBehavior.opaque,
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -1685,6 +2004,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
     ];
 
     return Container(
+      width: double.infinity,
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
       decoration: BoxDecoration(
         color: _surface,
@@ -1792,26 +2112,24 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        isArchived ? 'Job Closed & Archived' : 'Job Closed',
-                        style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                          color: _accent,
-                        ),
-                      ),
-                    ),
-                    Text(
-                      _formatTs(photo.completedAt),
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: _inkMuted,
-                      ),
-                    ),
-                  ],
+                Text(
+                  isArchived ? 'Job Closed & Archived' : 'Job Closed',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: _accent,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  _formatTs(photo.completedAt),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: _inkMuted,
+                    height: 1.3,
+                  ),
                 ),
                 if (details.isNotEmpty) ...[
                   const SizedBox(height: 4),
@@ -2274,7 +2592,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
               try {
                 await ref.read(deletePhotoProvider(photo.id).future);
                 if (mounted) {
-                  context.pop();
+                  _goBack(context);
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: const Text('Photo deleted'),
@@ -2317,12 +2635,22 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
   }
 
   // ── Back button ───────────────────────────────────────────────────────────
+  void _goBack(BuildContext context) {
+    HapticFeedback.lightImpact();
+    if (Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+      return;
+    }
+    if (context.canPop()) {
+      context.pop();
+      return;
+    }
+    context.go('/');
+  }
+
   Widget _backButton(BuildContext context, {bool dark = true}) =>
       GestureDetector(
-        onTap: () {
-          HapticFeedback.lightImpact();
-          context.pop();
-        },
+        onTap: () => _goBack(context),
         child: Container(
           margin: const EdgeInsets.all(8),
           width: 36,
@@ -2374,7 +2702,7 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
   final _imagePicker = ImagePicker();
 
   bool _isSavingNote = false;
-  bool _isSavingAddress = false;
+  final bool _isSavingAddress = false;
   bool _isReplacingImage = false;
   bool _isFetchingAddress = false;
 
@@ -2496,42 +2824,6 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
     }
   }
 
-  // ── Save address + ZIP (combined) ─────────────────────────────────────────
-  Future<void> _saveAddress() async {
-    final raw = _addressController.text.trim();
-    if (raw.isEmpty) {
-      _snack('Please enter an address', isError: true);
-      return;
-    }
-    HapticFeedback.mediumImpact();
-    setState(() => _isSavingAddress = true);
-    try {
-      final zipMatch = RegExp(r'\b(\d{5}(?:-\d{4})?)\b').allMatches(raw);
-      final zip = zipMatch.isNotEmpty ? zipMatch.last.group(0) ?? '' : '';
-
-      await widget.parentRef.read(
-        updatePhotoAddressProvider((widget.photo.id, raw, zip)).future,
-      );
-      // Invalidate and wait for refresh so the detail screen rebuilds
-      // with the new address before the sheet closes.
-      widget.parentRef.invalidate(photosProvider);
-      await widget.parentRef.read(photosProvider.future);
-
-      if (mounted) {
-        HapticFeedback.heavyImpact();
-        _snack('Address saved');
-        await Future<void>.delayed(const Duration(milliseconds: 400));
-        if (mounted) Navigator.of(context).pop();
-      }
-    } catch (e) {
-      if (mounted) {
-        _snack(e.toString().replaceAll('Exception: ', ''), isError: true);
-      }
-    } finally {
-      if (mounted) setState(() => _isSavingAddress = false);
-    }
-  }
-
   // ── Replace image ─────────────────────────────────────────────────────────
   Future<void> _replaceImage(ImageSource source) async {
     // Check permissions
@@ -2540,13 +2832,6 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
       if (status.isPermanentlyDenied) {
         _snack('Camera access blocked. Enable it in Settings.', isError: true);
         return;
-      }
-      if (status.isDenied || status.isRestricted) {
-        final result = await Permission.camera.request();
-        if (!result.isGranted) {
-          _snack('Camera permission required.', isError: true);
-          return;
-        }
       }
     } else {
       final status = await Permission.photos.status;
@@ -2799,87 +3084,35 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
                     onTap: _saveNote,
                   ),
                   const SizedBox(height: 20),
-
-                  // ── Address + ZIP (combined single field) ─────────────────
-                  Row(
-                    children: [
-                      _label('Address & ZIP'),
-                      const Spacer(),
-                      if (_isFetchingAddress)
-                        const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            SizedBox(
-                              width: 12, height: 12,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: _accent),
+                  _label('Address'),
+                  const SizedBox(height: 8),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: _canvas,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.lock_outline_rounded,
+                            size: 16, color: _inkSubtle),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _addressController.text.trim().isEmpty
+                                ? 'Address comes from the GPS geotag and cannot be changed.'
+                                : _addressController.text.trim(),
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: _ink,
+                              height: 1.35,
                             ),
-                            SizedBox(width: 6),
-                            Text('Locating…',
-                                style: TextStyle(
-                                    fontSize: 11, color: _accent)),
-                          ],
-                        )
-                      else
-                        GestureDetector(
-                          onTap: _autoFetchAddress,
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.location_on_outlined,
-                                  size: 13, color: _accent),
-                              SizedBox(width: 4),
-                              Text('Auto-fill',
-                                  style: TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w600,
-                                      color: _accent)),
-                            ],
                           ),
                         ),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    'Include ZIP at the end — e.g. 123 Main St, Dallas, TX 75001',
-                    style: TextStyle(fontSize: 11, color: _inkSubtle),
-                  ),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: _addressController,
-                    maxLines: 2,
-                    textCapitalization: TextCapitalization.words,
-                    inputFormatters: const [TitleCaseInputFormatter()],
-                    style: const TextStyle(fontSize: 14, color: _ink),
-                    decoration: InputDecoration(
-                      hintText: '123 Main St, Dallas, TX 75001',
-                      hintStyle: const TextStyle(color: _inkSubtle),
-                      prefixIcon: const Padding(
-                        padding: EdgeInsets.only(left: 12, right: 8),
-                        child: Icon(Icons.location_on_rounded,
-                            size: 18, color: _inkSubtle),
-                      ),
-                      prefixIconConstraints: const BoxConstraints(
-                          minWidth: 40, minHeight: 40),
-                      filled: true,
-                      fillColor: _canvas,
-                      contentPadding: const EdgeInsets.fromLTRB(0, 12, 14, 12),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide.none,
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(
-                            color: _accent, width: 1.5),
-                      ),
+                      ],
                     ),
-                  ),
-                  const SizedBox(height: 10),
-                  _saveBtn(
-                    label: 'Save Address',
-                    isLoading: _isSavingAddress,
-                    onTap: _saveAddress,
                   ),
                   const SizedBox(height: 24),
 
@@ -2887,21 +3120,17 @@ class _EditPhotoSheetState extends ConsumerState<_EditPhotoSheet> {
                   const Divider(height: 1, color: _separator),
                   const SizedBox(height: 20),
 
-                  // ── Edit location ────────────────────────────────────────
                   _sectionCard(
                     icon: Icons.location_on_rounded,
                     iconColor: const Color(0xFF6B7280),
-                    title: 'Edit Location',
+                    title: 'Location locked',
                     subtitle:
-                        '${widget.photo.latitude.toStringAsFixed(5)}, ${widget.photo.longitude.toStringAsFixed(5)}',
+                        '${widget.photo.latitude.toStringAsFixed(5)}, ${widget.photo.longitude.toStringAsFixed(5)} · from geotag',
                     trailing: const Icon(
-                      Icons.chevron_right_rounded,
+                      Icons.lock_outline_rounded,
                       color: _inkSubtle,
+                      size: 18,
                     ),
-                    onTap: () {
-                      Navigator.of(context).pop();
-                      context.push('/edit-location', extra: widget.photo);
-                    },
                   ),
                   const SizedBox(height: 10),
 
@@ -3068,4 +3297,70 @@ class _SummaryStep {
   final IconData icon;
   final String? timestamp;
   final Color color;
+}
+
+/// Horizontal swipe between attempts. A mostly vertical drag stays with
+/// the details scroll.
+class _AttemptSwipe extends HorizontalDragGestureRecognizer {
+  double _dx = 0;
+  double _dy = 0;
+
+  @override
+  void addPointer(PointerDownEvent event) {
+    _dx = 0;
+    _dy = 0;
+    super.addPointer(event);
+  }
+
+  @override
+  void handleEvent(PointerEvent event) {
+    if (event is PointerMoveEvent) {
+      _dx += event.delta.dx;
+      _dy += event.delta.dy;
+    }
+    super.handleEvent(event);
+  }
+
+  @override
+  void rejectGesture(int pointer) {
+    if (_dx.abs() > 10 && _dx.abs() > _dy.abs()) {
+      acceptGesture(pointer);
+    } else {
+      super.rejectGesture(pointer);
+    }
+  }
+}
+
+class _NewAttemptPeek extends StatelessWidget {
+  const _NewAttemptPeek();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.add_a_photo_outlined, size: 36, color: Color(0xFF4A90E2)),
+            SizedBox(height: 12),
+            Text(
+              'New attempt',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w800,
+                color: Color(0xFF1A2130),
+              ),
+            ),
+            SizedBox(height: 6),
+            Text(
+              'Release to start a new attempt for this profile',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 13, color: Color(0xFF5C6778)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

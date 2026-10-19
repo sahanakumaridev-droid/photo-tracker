@@ -24,10 +24,10 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   // ── Design tokens ──────────────────────────────────────────────────────────
   static const Color _accent = Color(0xFF4A90E2);
   static const Color _accent2 = Color(0xFF1E88E5);
-  static const Color _ink = Color(0xFF1A2130);
-  static const Color _inkMuted = Color(0xFF5C6778);
-  static const Color _inkSubtle = Color(0xFF8B95A5);
-  static const Color _canvas = Color(0xFFF2F4F7);
+  static const Color _ink = Color(0xFFF4F7FB);
+  static const Color _inkMuted = Color(0xFFD5DEEA);
+  static const Color _inkSubtle = Color(0xFFB7C3D4);
+  static const Color _canvas = Color(0xFF022C5C);
 
   final PageController _controller = PageController();
   int _page = 0;
@@ -361,7 +361,6 @@ class _CategoryIllustration extends StatelessWidget {
       children: [
         const _Backdrop(color: accent),
         const _IconBadge(icon: CupertinoIcons.tag_fill, color: accent),
-        // The four real category chips, fanned around the badge.
         for (var i = 0; i < kPhotoCategories.length; i++)
           _categoryChipPositioned(kPhotoCategories[i], i),
       ],
@@ -369,13 +368,14 @@ class _CategoryIllustration extends StatelessWidget {
   }
 
   Widget _categoryChipPositioned(PhotoCategory c, int i) {
-    // top-left, top-right, bottom-left, bottom-right
     final positions = <Map<String, double?>>[
-      {'top': 16, 'left': 0},
-      {'top': 30, 'right': 0},
-      {'bottom': 30, 'left': 6},
-      {'bottom': 14, 'right': 8},
+      {'top': 12, 'left': 0},
+      {'top': 24, 'right': 0},
+      {'bottom': 36, 'left': 4},
+      {'bottom': 12, 'right': 4},
+      {'top': 92, 'left': 72},
     ];
+    if (i >= positions.length) return const SizedBox.shrink();
     final p = positions[i];
     return Positioned(
       top: p['top'],

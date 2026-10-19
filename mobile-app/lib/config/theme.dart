@@ -88,19 +88,19 @@ class AppTheme {
         canvasColor: lightBg,
         dividerColor: lightBorder,
         splashFactory: InkRipple.splashFactory,
-        appBarTheme: AppBarTheme(
+        appBarTheme: const AppBarTheme(
           backgroundColor: lightBg,
           foregroundColor: lightText,
           elevation: 0,
           scrolledUnderElevation: 0,
           centerTitle: false,
           systemOverlayStyle: overlayDark,
-          titleTextStyle: const TextStyle(
+          titleTextStyle: TextStyle(
             color: lightText,
             fontSize: 18,
             fontWeight: FontWeight.w700,
           ),
-          iconTheme: const IconThemeData(color: lightText),
+          iconTheme: IconThemeData(color: lightText),
         ),
         cardTheme: CardThemeData(
           color: lightSurface,

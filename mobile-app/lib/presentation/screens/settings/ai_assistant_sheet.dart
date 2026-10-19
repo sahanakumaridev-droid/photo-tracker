@@ -240,7 +240,7 @@ class _AiAssistantSheetState extends ConsumerState<AiAssistantSheet> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('GeoTag AI',
+                Text('SRVBOARD AI',
                     style: TextStyle(
                         fontSize: 17,
                         fontWeight: FontWeight.w800,
@@ -395,7 +395,7 @@ class _AiAssistantSheetState extends ConsumerState<AiAssistantSheet> {
                   VoiceMicButton(
                     controller: _controller,
                     mode: VoiceFillMode.replace,
-                    tooltip: 'Talk to GeoTag AI',
+                    tooltip: 'Talk to SRVBOARD AI',
                   ),
                   Expanded(
                     child: TextField(

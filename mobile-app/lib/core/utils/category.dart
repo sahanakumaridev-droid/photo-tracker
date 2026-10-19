@@ -45,6 +45,13 @@ const List<PhotoCategory> kPhotoCategories = <PhotoCategory>[
     softColor: Color(0x26B45309),
     icon: CupertinoIcons.calendar,
   ),
+  PhotoCategory(
+    value: 'stake_out',
+    label: 'Stake Out',
+    color: Color(0xFF7C3AED),
+    softColor: Color(0x267C3AED),
+    icon: CupertinoIcons.eye_fill,
+  ),
 ];
 
 const String kDefaultCategory = 'standard';

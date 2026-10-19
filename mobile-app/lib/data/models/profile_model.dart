@@ -25,10 +25,15 @@ class ProfileModel {
     this.latitude,
     this.longitude,
     this.attemptsCount = 0,
+    this.createdAt,
   });
 
-  factory ProfileModel.fromJson(Map<String, dynamic> json) =>
-      _$ProfileModelFromJson(json);
+  factory ProfileModel.fromJson(Map<String, dynamic> json) {
+    final m = Map<String, dynamic>.from(json);
+    m['name'] = '${m['name'] ?? ''}';
+    m['service_type'] = '${m['service_type'] ?? 'standard'}';
+    return _$ProfileModelFromJson(m);
+  }
 
   final int id;
   final String name;
@@ -77,8 +82,19 @@ class ProfileModel {
   @JsonKey(name: 'attempts_count', defaultValue: 0)
   final int attemptsCount;
 
+  @JsonKey(name: 'created_at')
+  final String? createdAt;
+
   /// Resolved [Company] config for this profile (falls back to default).
   Company get companyConfig => companyOrDefault(company);
+
+  /// Label for lists — only the stored company, never a First Legal default.
+  String? get displayCompanyName {
+    final fromSlug = companyById(company)?.name;
+    if (fromSlug != null) return fromSlug;
+    final n = (companyName ?? '').trim();
+    return n.isEmpty ? null : n;
+  }
 
   /// True when this profile is still waiting on its first attempt.
   bool get isAwaitingAttempt =>
@@ -113,6 +129,7 @@ class ProfileModel {
     double? latitude,
     double? longitude,
     int? attemptsCount,
+    String? createdAt,
   }) =>
       ProfileModel(
         id: id ?? this.id,
@@ -132,5 +149,6 @@ class ProfileModel {
         latitude: latitude ?? this.latitude,
         longitude: longitude ?? this.longitude,
         attemptsCount: attemptsCount ?? this.attemptsCount,
+        createdAt: createdAt ?? this.createdAt,
       );
 }

@@ -6,16 +6,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
-import '../../../config/theme.dart';
+import '../../../core/mileage/mileage_tracker.dart';
 import '../../../core/network/api_client.dart';
-import '../../../data/models/photo_model.dart';
-import '../../../data/models/profile_model.dart';
-import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
-import '../../widgets/ai/ai_spark_button.dart';
-import '../../widgets/common/loading_skeleton.dart';
 
-/// Wallet-style earnings: one number, a daily chart, and a payout ledger.
 class EarningsScreen extends ConsumerStatefulWidget {
   const EarningsScreen({super.key});
 
@@ -24,29 +18,18 @@ class EarningsScreen extends ConsumerStatefulWidget {
 }
 
 class _EarningsScreenState extends ConsumerState<EarningsScreen> {
-  static const _bg = AppTheme.darkBg;
-  static const _surface = AppTheme.darkSurface;
-  static const _elevated = AppTheme.darkElevated;
-  static const _ink = AppTheme.darkText;
-  static const _muted = AppTheme.darkTextSecondary;
-  static const _subtle = AppTheme.darkTextTertiary;
-  static const _hair = AppTheme.darkBorder;
-  static const _accent = AppTheme.primary;
-  static const _success = Color(0xFF34D399);
-
-  static const _easeOut = Cubic(0.23, 1, 0.32, 1);
+  static const _bg = Color(0xFFF3F6FB);
+  static const _ink = Color(0xFF12203A);
+  static const _muted = Color(0xFF7A8494);
+  static const _blue = Color(0xFF1A56C4);
   static const _periods = [
     ('today', 'Today'),
     ('week', 'Week'),
-    ('biweekly', '2 Wks'),
+    ('biweekly', '2 Weeks'),
     ('month', 'Month'),
+    ('custom', 'Custom'),
   ];
-
-  static final _usd = NumberFormat.simpleCurrency(
-    name: 'USD',
-    decimalDigits: 0,
-  );
-  static const _tabular = [FontFeature.tabularFigures()];
+  static final _usd = NumberFormat.simpleCurrency(name: 'USD', decimalDigits: 0);
 
   String _period = 'week';
   DateTimeRange? _customRange;
@@ -54,8 +37,6 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
   Map<String, dynamic>? _payouts;
   bool _loading = true;
   String? _error;
-  int? _selectedBar;
-  final Set<String> _openDays = {};
 
   @override
   void initState() {
@@ -66,22 +47,18 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
   }
 
   Future<void> _load() async {
-    final first = _summary == null;
-    if (first) {
+    if (_summary == null) {
       setState(() {
         _loading = true;
         _error = null;
       });
-    } else {
-      setState(() => _error = null);
     }
-
     ref.invalidate(profilesProvider);
     final api = ref.read(apiServiceProvider);
     try {
       final results = await Future.wait([
         api.getEarnings(
-          period: _period,
+          period: _period == 'custom' ? 'custom' : _period,
           startDate: _period == 'custom' && _customRange != null
               ? DateFormat('yyyy-MM-dd').format(_customRange!.start)
               : null,
@@ -92,17 +69,11 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
         api.getPayouts(),
       ]);
       if (!mounted) return;
-      final payouts = results[1];
-      final days = (payouts['daily'] as List?) ?? [];
       setState(() {
         _summary = results[0];
-        _payouts = payouts;
+        _payouts = results[1];
         _loading = false;
         _error = null;
-        _selectedBar = null;
-        if (_openDays.isEmpty && days.isNotEmpty) {
-          _openDays.add('${days.first['date']}');
-        }
       });
     } catch (_) {
       if (!mounted) return;
@@ -114,18 +85,20 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
   }
 
   Future<void> _setPeriod(String key) async {
+    if (key == 'custom') {
+      await _pickCustomRange();
+      return;
+    }
     if (key == _period) return;
     unawaited(HapticFeedback.selectionClick());
     setState(() {
       _period = key;
       _customRange = null;
-      _selectedBar = null;
     });
     await _load();
   }
 
   Future<void> _pickCustomRange() async {
-    unawaited(HapticFeedback.selectionClick());
     final now = DateTime.now();
     final picked = await showDateRangePicker(
       context: context,
@@ -133,23 +106,11 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
       lastDate: now,
       initialDateRange: _customRange ??
           DateTimeRange(start: now.subtract(const Duration(days: 6)), end: now),
-      builder: (ctx, child) => Theme(
-        data: Theme.of(ctx).copyWith(
-          colorScheme: const ColorScheme.light(
-            primary: _accent,
-            onPrimary: Colors.white,
-            surface: _surface,
-            onSurface: _ink,
-          ),
-        ),
-        child: child!,
-      ),
     );
     if (picked == null) return;
     setState(() {
       _period = 'custom';
       _customRange = picked;
-      _selectedBar = null;
     });
     await _load();
   }
@@ -219,930 +180,796 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
     return out;
   }
 
-  List<dynamic> _payoutsInPeriod(List<dynamic> days) {
+  List<_EarnRow> _rows() {
+    final days = (_payouts?['daily'] as List?) ?? [];
     final start = _periodStart;
     final end = _periodEnd;
-    return days.where((d) {
-      final date = _parseDate(d['date']);
-      if (date == null) return false;
-      final day = DateTime(date.year, date.month, date.day);
-      return !day.isBefore(start) && !day.isAfter(end);
-    }).toList();
-  }
-
-  String get _chartTitle {
-    switch (_period) {
-      case 'today':
-        return 'Today';
-      case 'week':
-        return 'This week';
-      case 'biweekly':
-        return 'Last 2 weeks';
-      case 'month':
-        return 'This month';
-      case 'custom':
-        return 'Selected range';
-      default:
-        return 'Daily';
+    final out = <_EarnRow>[];
+    for (final d in days) {
+      final map = d as Map<String, dynamic>;
+      DateTime? date;
+      try {
+        date = DateTime.parse('${map['date']}');
+      } catch (_) {}
+      if (date != null) {
+        final day = DateTime(date.year, date.month, date.day);
+        if (day.isBefore(start) || day.isAfter(end)) continue;
+      }
+      final entries = (map['entries'] as List?) ?? [];
+      if (entries.isEmpty) {
+        out.add(_EarnRow(
+          name: 'Payout',
+          subtitle: date != null ? DateFormat('MMM d, y').format(date) : '',
+          date: date,
+          amount: (map['amount'] ?? 0) as num,
+        ));
+      } else {
+        for (final e in entries) {
+          final m = e as Map<String, dynamic>;
+          out.add(_EarnRow(
+            name: '${m['profile_name'] ?? 'Attempt'}',
+            subtitle: '${m['address'] ?? m['job'] ?? ''}',
+            date: date,
+            amount: (m['amount'] ?? map['amount'] ?? 0) as num,
+          ));
+        }
+      }
     }
+    return out;
   }
 
-  String get _periodLabel {
+  String get _weekChip {
     if (_period == 'custom' && _customRange != null) {
-      return '${DateFormat('MMM d').format(_customRange!.start)}'
-          ' – ${DateFormat('MMM d').format(_customRange!.end)}';
+      return '${DateFormat('MMM d').format(_customRange!.start)} – ${DateFormat('MMM d').format(_customRange!.end)}';
     }
     switch (_period) {
       case 'today':
         return 'Today';
       case 'week':
-        return 'This week';
+        return 'This Week';
       case 'biweekly':
-        return 'Last 2 weeks';
+        return '2 Weeks';
       case 'month':
-        return 'This month';
+        return 'This Month';
       default:
-        return 'This week';
+        return 'This Week';
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final daily = _chartDays((_summary?['daily_totals'] as List?) ?? []);
-    final payoutDays =
-        _payoutsInPeriod((_payouts?['daily'] as List?) ?? []);
-    final totalEarnings = (_summary?['total_earnings'] ?? 0) as num;
-    final profiles = ref.watch(profilesProvider).valueOrNull ?? const [];
-    final photos = ref.watch(photosProvider).valueOrNull ?? const [];
-    final openJobs = _openJobs(profiles, photos);
-    final jobsDone = (_summary?['jobs_completed'] ?? 0) as num;
-    final avgPerJob = (_summary?['average_per_job'] ?? 0) as num;
-    final highest = _summary?['highest_paying_job'] as Map<String, dynamic>?;
-    final bottomPad = MediaQuery.of(context).padding.bottom + 88;
-    final showSkeleton = _loading && _summary == null;
+    final earned = (_summary?['total_earnings'] ?? 0) as num;
+    final available = (_summary?['available_earnings'] ?? 0) as num;
+    final jobsDone = ((_summary?['jobs_completed'] ?? 0) as num).toInt();
+    final rows = _rows();
+    final top = MediaQuery.paddingOf(context).top;
+    final bottomPad = MediaQuery.paddingOf(context).bottom + 88;
+    final mileage = MileageTracker.instance;
 
     return Scaffold(
       backgroundColor: _bg,
-      body: SafeArea(
-        bottom: false,
-        child: RefreshIndicator(
-          onRefresh: _load,
-          color: _accent,
-          backgroundColor: _surface,
-          child: CustomScrollView(
-            physics: const AlwaysScrollableScrollPhysics(
-              parent: BouncingScrollPhysics(),
-            ),
-            slivers: [
-              SliverToBoxAdapter(child: _header()),
-              SliverToBoxAdapter(child: _periodControl()),
-              if (_error != null && _summary == null)
-                SliverToBoxAdapter(child: _errorState())
-              else if (showSkeleton)
-                SliverToBoxAdapter(child: _skeleton())
-              else ...[
-                SliverToBoxAdapter(
-                  child: _hero(total: totalEarnings, jobsDone: jobsDone),
+      body: RefreshIndicator(
+        onRefresh: _load,
+        color: _blue,
+        child: ListView(
+          padding: EdgeInsets.only(bottom: bottomPad),
+          children: [
+            Container(
+              padding: EdgeInsets.fromLTRB(20, top + 12, 16, 88),
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF163EA8), Color(0xFF3B82F6)],
                 ),
-                if (openJobs.isNotEmpty)
-                  SliverToBoxAdapter(child: _openJobsCard(openJobs)),
-                SliverToBoxAdapter(
-                  child: _trendCard(daily),
+                borderRadius: BorderRadius.vertical(
+                  bottom: Radius.circular(28),
                 ),
-                SliverToBoxAdapter(
-                  child: _statsStrip(
-                    jobsDone: jobsDone,
-                    avgPerJob: avgPerJob,
-                    highest: highest,
-                  ),
-                ),
-                SliverToBoxAdapter(
-                  child: _activity(payoutDays),
-                ),
-              ],
-              SliverToBoxAdapter(child: SizedBox(height: bottomPad)),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _header() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 12, 16, 0),
-      child: Row(
-        children: [
-          const Expanded(
-            child: Text(
-              'Earnings',
-              style: TextStyle(
-                fontSize: 34,
-                fontWeight: FontWeight.w800,
-                color: _ink,
-                letterSpacing: -1.2,
-                height: 1.1,
               ),
-            ),
-          ),
-          const AiSparkButton(),
-        ],
-      ),
-    );
-  }
-
-  Widget _periodControl() {
-    final selectedIndex = _periods.indexWhere((p) => p.$1 == _period);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-      child: Row(
-        children: [
-          Expanded(
-            child: SizedBox(
-              height: 40,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: _elevated,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Stack(
-                  children: [
-                    if (selectedIndex >= 0)
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: FractionallySizedBox(
-                          widthFactor: 1 / _periods.length,
-                          heightFactor: 1,
-                          child: AnimatedSlide(
-                            offset: Offset(selectedIndex.toDouble(), 0),
-                            duration: const Duration(milliseconds: 200),
-                            curve: _easeOut,
-                            child: Padding(
-                              padding: const EdgeInsets.all(3),
-                              child: DecoratedBox(
-                                decoration: BoxDecoration(
-                                  color: _surface,
-                                  borderRadius: BorderRadius.circular(9),
-                                  boxShadow: const [
-                                    BoxShadow(
-                                      color: Color(0x33000000),
-                                      blurRadius: 6,
-                                      offset: Offset(0, 1),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Payouts',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 32,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: -0.8,
                           ),
                         ),
-                      ),
-                    Row(
-                      children: [
-                        for (var i = 0; i < _periods.length; i++)
-                          Expanded(
-                            child: _Pressable(
-                              onTap: () => _setPeriod(_periods[i].$1),
-                              child: SizedBox.expand(
-                                child: Center(
-                                  child: Text(
-                                    _periods[i].$2,
-                                    style: TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w600,
-                                      color: selectedIndex == i
-                                          ? _ink
-                                          : _muted,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
+                        SizedBox(height: 4),
+                        Text(
+                          'Track your earnings and progress',
+                          style: TextStyle(
+                            color: Color(0xCCFFFFFF),
+                            fontSize: 14,
                           ),
+                        ),
                       ],
                     ),
-                  ],
-                ),
+                  ),
+                  GestureDetector(
+                    onTap: () => _setPeriod(
+                      _period == 'week' ? 'month' : 'week',
+                    ),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.18),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(CupertinoIcons.calendar,
+                              size: 16, color: Colors.white),
+                          const SizedBox(width: 6),
+                          Text(
+                            _weekChip,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 13,
+                            ),
+                          ),
+                          const Icon(CupertinoIcons.chevron_down,
+                              size: 14, color: Colors.white),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
-          ),
-          const SizedBox(width: 8),
-          _Pressable(
-            onTap: _pickCustomRange,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 160),
-              curve: Curves.easeOut,
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                color: _period == 'custom' ? _accent : _elevated,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(
-                CupertinoIcons.calendar,
-                size: 18,
-                color: _period == 'custom' ? Colors.white : _muted,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _hero({
-    required num total,
-    required num jobsDone,
-  }) {
-    final jobs = jobsDone.toInt();
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 28, 20, 0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            _periodLabel,
-            style: const TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              color: _muted,
-            ),
-          ),
-          const SizedBox(height: 6),
-          FittedBox(
-            fit: BoxFit.scaleDown,
-            alignment: Alignment.centerLeft,
-            child: Text(
-              _money(total),
-              style: const TextStyle(
-                fontSize: 56,
-                fontWeight: FontWeight.w800,
-                color: _ink,
-                letterSpacing: -2.4,
-                height: 1,
-                fontFeatures: _tabular,
-              ),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            jobs == 0
-                ? 'No completed attempts yet'
-                : '$jobs attempt${jobs == 1 ? '' : 's'} completed',
-            style: const TextStyle(fontSize: 15, color: _subtle, height: 1.2),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// Profiles that still have a pay rate and are not fully closed out.
-  List<({String name, int pay})> _openJobs(
-    List<ProfileModel> profiles,
-    List<PhotoModel> photos,
-  ) {
-    final apiJobs = _summary?['open_jobs'] as List?;
-    if (apiJobs != null && apiJobs.isNotEmpty) {
-      return [
-        for (final j in apiJobs)
-          (
-            name: '${j['name'] ?? 'Job'}',
-            pay: ((j['pay_rate'] ?? 0) as num).toInt(),
-          ),
-      ].where((j) => j.pay > 0).toList();
-    }
-
-    final byProfile = <int, List<PhotoModel>>{};
-    for (final ph in photos) {
-      final id = ph.profileId;
-      if (id == null) continue;
-      byProfile.putIfAbsent(id, () => []).add(ph);
-    }
-
-    final out = <({String name, int pay})>[];
-    for (final p in profiles) {
-      final rate = p.payRate;
-      if (rate == null || rate <= 0) continue;
-      final shots = byProfile[p.id] ?? const <PhotoModel>[];
-      if (shots.isNotEmpty &&
-          shots.every((ph) {
-            final s = (ph.status ?? '').toLowerCase();
-            return s == 'completed' || s == 'archived';
-          })) {
-        continue;
-      }
-      out.add((name: p.name, pay: rate));
-    }
-    return out;
-  }
-
-  Widget _openJobsCard(List<({String name, int pay})> jobs) {
-    final total = jobs.fold<int>(0, (s, j) => s + j.pay);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
-      child: _group(
-        title: 'Unfinished jobs',
-        trailing: Text(
-          _money(total),
-          style: const TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w700,
-            color: _ink,
-            fontFeatures: _tabular,
-          ),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(0, 8, 0, 12),
-              child: Text(
-                'Pay assigned to jobs you have not closed out. '
-                'This is not a payout — it moves into the total above when you complete them.',
-                style: TextStyle(fontSize: 13, height: 1.35, color: _muted),
-              ),
-            ),
-            const Divider(height: 1, color: _hair),
-            for (var i = 0; i < jobs.length; i++) ...[
-              if (i > 0) const Divider(height: 1, color: _hair),
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                child: Row(
+            Transform.translate(
+              offset: const Offset(0, -64),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Column(
                   children: [
-                    Expanded(
-                      child: Text(
-                        jobs[i].name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                          color: _ink,
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: _heroMoney(
+                            label: 'Total Earnings',
+                            value: _loading && _summary == null
+                                ? '—'
+                                : _money(earned),
+                            caption: 'Completed profiles',
+                            tint: const Color(0xFFE8F0FF),
+                            icon: CupertinoIcons.money_dollar,
+                            iconColor: _blue,
+                          ),
                         ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: _heroMoney(
+                            label: 'Total Available Earnings',
+                            value: _loading && _summary == null
+                                ? '—'
+                                : _money(available),
+                            caption: 'Pending and in progress',
+                            tint: const Color(0xFFE8F8EE),
+                            icon: CupertinoIcons.money_dollar_circle,
+                            iconColor: const Color(0xFF16A34A),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          for (final p in _periods)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: ChoiceChip(
+                                label: Text(p.$2),
+                                selected: _period == p.$1,
+                                onSelected: (_) => _setPeriod(p.$1),
+                                selectedColor: _blue,
+                                labelStyle: TextStyle(
+                                  color: _period == p.$1
+                                      ? Colors.white
+                                      : _ink,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 13,
+                                ),
+                                backgroundColor: Colors.white,
+                                side: BorderSide.none,
+                                shape: const StadiumBorder(),
+                              ),
+                            ),
+                        ],
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Text(
-                      _money(jobs[i].pay),
-                      style: const TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                        color: _ink,
-                        fontFeatures: _tabular,
+                    const SizedBox(height: 14),
+                    ListenableBuilder(
+                      listenable: mileage,
+                      builder: (_, __) => Row(
+                        children: [
+                          Expanded(
+                            child: _statTile(
+                              color: const Color(0xFFE8F8EE),
+                              icon: CupertinoIcons.car_detailed,
+                              iconColor: const Color(0xFF16A34A),
+                              title: 'Mileage',
+                              value: '${mileage.totalMiles.toStringAsFixed(1)} mi',
+                              sub:
+                                  'Today ${mileage.todayMiles.toStringAsFixed(1)} · Week ${mileage.weekMiles.toStringAsFixed(1)}',
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: _statTile(
+                              color: const Color(0xFFF1E8FF),
+                              icon: CupertinoIcons.checkmark_seal_fill,
+                              iconColor: const Color(0xFF7C3AED),
+                              title: 'Completed Jobs',
+                              value: '$jobsDone',
+                              sub: jobsDone == 0
+                                  ? 'No completed attempts yet'
+                                  : 'This period',
+                            ),
+                          ),
+                        ],
                       ),
                     ),
+                    if (_error != null && _summary == null) ...[
+                      const SizedBox(height: 16),
+                      Text(_error!,
+                          style: const TextStyle(color: Color(0xFFDC2626))),
+                    ],
+                    const SizedBox(height: 22),
+                    Row(
+                      children: [
+                        const Text(
+                          'Earnings Trend',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
+                            color: _ink,
+                          ),
+                        ),
+                        const Spacer(),
+                        TextButton(
+                          onPressed: () => _openAll(rows, earned, available),
+                          child: const Text('View Details →'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    _trend(daily),
+                    const SizedBox(height: 22),
+                    Row(
+                      children: [
+                        const Text(
+                          'Recent Earnings',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
+                            color: _ink,
+                          ),
+                        ),
+                        const Spacer(),
+                        OutlinedButton(
+                          onPressed: () => _openAll(rows, earned, available),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: _blue,
+                            side: const BorderSide(color: Color(0xFFB9D0F5)),
+                            shape: const StadiumBorder(),
+                          ),
+                          child: const Text('View All Earnings →'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    if (rows.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 24),
+                        child: Text(
+                          'Close out an attempt and it will land here.',
+                          style: TextStyle(color: _muted),
+                        ),
+                      )
+                    else
+                      for (final r in rows.take(4)) _rowTile(r),
                   ],
                 ),
               ),
-            ],
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _trendCard(List<dynamic> daily) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 28, 16, 0),
-      child: _group(
-        title: _chartTitle,
-        trailing: Text(
-                DateFormat('MMM d').format(_periodStart) ==
-                        DateFormat('MMM d').format(_periodEnd)
-                    ? DateFormat('MMM d').format(_periodStart)
-                    : '${DateFormat('MMM d').format(_periodStart)}'
-                        ' – ${DateFormat('MMM d').format(_periodEnd)}',
-                style: const TextStyle(fontSize: 13, color: _subtle),
-              ),
-        child: daily.isEmpty
-            ? _empty(
-                icon: CupertinoIcons.chart_bar,
-                message: 'Complete an attempt to see a daily trend.',
-              )
-            : _chart(daily),
+  void _openAll(List<_EarnRow> rows, num earned, num available) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => _AllEarningsPage(
+          rows: rows,
+          earned: earned,
+          available: available,
+          mileage: MileageTracker.instance.totalMiles,
+          money: _money,
+        ),
       ),
     );
   }
 
-  Widget _chart(List<dynamic> daily) {
-    final maxAmt = daily.fold<num>(
-      0,
-      (m, d) => ((d['amount'] ?? 0) as num) > m ? (d['amount'] as num) : m,
-    );
-    final selected = () {
-      if (_selectedBar != null &&
-          _selectedBar! >= 0 &&
-          _selectedBar! < daily.length) {
-        return _selectedBar!;
-      }
-      final todayKey = DateFormat('yyyy-MM-dd').format(_today);
-      final todayIdx =
-          daily.indexWhere((d) => '${d['date']}' == todayKey);
-      if (todayIdx >= 0) return todayIdx;
-      for (var i = daily.length - 1; i >= 0; i--) {
-        if (((daily[i]['amount'] ?? 0) as num) > 0) return i;
-      }
-      return daily.isEmpty ? 0 : daily.length - 1;
-    }();
-
-    return SizedBox(
-      height: 176,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          for (var i = 0; i < daily.length; i++)
-            Expanded(
-              child: _DayBar(
-                date: _parseDate(daily[i]['date']),
-                amount: (daily[i]['amount'] ?? 0) as num,
-                fraction: maxAmt > 0
-                    ? ((daily[i]['amount'] ?? 0) as num) / maxAmt
-                    : 0,
-                selected: i == selected,
-                dense: daily.length > 10,
-                money: _money,
-                period: _period,
-                onTap: () {
-                  unawaited(HapticFeedback.selectionClick());
-                  setState(() => _selectedBar = i);
-                },
-              ),
-            ),
+  Widget _heroMoney({
+    required String label,
+    required String value,
+    required String caption,
+    required Color tint,
+    required IconData icon,
+    required Color iconColor,
+  }) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 16, 14, 14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.06),
+            blurRadius: 18,
+            offset: const Offset(0, 8),
+          ),
         ],
       ),
-    );
-  }
-
-  Widget _statsStrip({
-    required num jobsDone,
-    required num avgPerJob,
-    required Map<String, dynamic>? highest,
-  }) {
-    final bits = <String>[
-      '${jobsDone.toInt()} closed',
-      '${_money(avgPerJob)} avg',
-    ];
-    if (highest != null && ((highest['pay_rate'] ?? 0) as num) > 0) {
-      final name = (highest['profile_name']?.toString().trim().isNotEmpty ??
-              false)
-          ? highest['profile_name'].toString()
-          : 'attempt';
-      bits.add('Best ${_money(highest['pay_rate'])} · $name');
-    }
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-      child: Text(
-        bits.join('  ·  '),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontSize: 13, color: _subtle, height: 1.3),
-      ),
-    );
-  }
-
-  Widget _activity(List<dynamic> payoutDays) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 22, 16, 0),
-      child: _group(
-        title: 'Payouts',
-        trailing: payoutDays.isEmpty
-            ? null
-            : Text(
-                '${_money(payoutDays.fold<num>(0, (s, d) => s + ((d['amount'] ?? 0) as num)))}'
-                ' · ${payoutDays.fold<int>(0, (s, d) => s + ((d['jobs'] ?? 0) as num).toInt())}',
-                style: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: _success,
-                  fontFeatures: _tabular,
-                ),
-              ),
-        child: payoutDays.isEmpty
-            ? _empty(
-                icon: CupertinoIcons.doc_text,
-                message: 'Close out an attempt and it will land here.',
-              )
-            : Column(
-                children: [
-                  for (var i = 0; i < payoutDays.length; i++) ...[
-                    if (i > 0)
-                      const Divider(height: 1, indent: 0, color: _hair),
-                    _dayGroup(payoutDays[i] as Map<String, dynamic>),
-                  ],
-                ],
-              ),
-      ),
-    );
-  }
-
-  Widget _dayGroup(Map<String, dynamic> d) {
-    final key = '${d['date']}';
-    final open = _openDays.contains(key);
-    final entries = (d['entries'] as List?) ?? [];
-    final date = _parseDate(d['date']);
-    final dateLabel = date != null
-        ? DateFormat('EEE, MMM d').format(date)
-        : key;
-
-    return Column(
-      children: [
-        _Pressable(
-          onTap: () {
-            unawaited(HapticFeedback.selectionClick());
-            setState(() {
-              if (open) {
-                _openDays.remove(key);
-              } else {
-                _openDays.add(key);
-              }
-            });
-          },
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 14),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        dateLabel,
-                        style: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                          color: _ink,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '${d['jobs']} attempt${d['jobs'] == 1 ? '' : 's'}',
-                        style: const TextStyle(fontSize: 12, color: _subtle),
-                      ),
-                    ],
-                  ),
-                ),
-                Text(
-                  _money(d['amount']),
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
-                    color: _success,
-                    fontFeatures: _tabular,
-                  ),
-                ),
-                const SizedBox(width: 6),
-                AnimatedRotation(
-                  turns: open ? 0.25 : 0,
-                  duration: const Duration(milliseconds: 180),
-                  curve: _easeOut,
-                  child: const Icon(
-                    CupertinoIcons.chevron_right,
-                    size: 14,
-                    color: _subtle,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        if (open && entries.isNotEmpty)
-          ...entries.map((e) => _entryRow(e as Map<String, dynamic>)),
-      ],
-    );
-  }
-
-  Widget _entryRow(Map<String, dynamic> m) {
-    final name = m['profile_name']?.toString().trim();
-    final initial = (name != null && name.isNotEmpty)
-        ? name[0].toUpperCase()
-        : '?';
-    final address = m['address']?.toString().trim() ?? '';
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
             width: 36,
             height: 36,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: const Color(0x1F4A90E2),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Text(
-              initial,
-              style: const TextStyle(
-                fontWeight: FontWeight.w700,
-                fontSize: 14,
-                color: _accent,
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  (name == null || name.isEmpty) ? 'Attempt' : name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w600,
-                    fontSize: 15,
-                    color: _ink,
-                  ),
-                ),
-                if (address.isNotEmpty) ...[
-                  const SizedBox(height: 1),
-                  Text(
-                    address,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12, color: _subtle),
-                  ),
-                ],
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          Text(
-            _money(m['pay_rate']),
-            style: const TextStyle(
-              fontWeight: FontWeight.w600,
-              fontSize: 15,
-              color: _ink,
-              fontFeatures: _tabular,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _group({
-    required String title,
-    Widget? trailing,
-    required Widget child,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
-          child: Row(
-            children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: _muted,
-                ),
-              ),
-              const Spacer(),
-              if (trailing != null) trailing,
-            ],
-          ),
-        ),
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-          decoration: BoxDecoration(
-            color: _surface,
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: child,
-        ),
-      ],
-    );
-  }
-
-  Widget _empty({required IconData icon, required String message}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 28),
-      child: Column(
-        children: [
-          Icon(icon, size: 22, color: _subtle),
-          const SizedBox(height: 10),
-          Text(
-            message,
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: _subtle, fontSize: 14, height: 1.4),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _errorState() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 48, 20, 0),
-      child: Column(
-        children: [
-          const Icon(
-            CupertinoIcons.exclamationmark_circle,
-            size: 28,
-            color: _subtle,
+            decoration: BoxDecoration(color: tint, shape: BoxShape.circle),
+            child: Icon(icon, color: iconColor, size: 18),
           ),
           const SizedBox(height: 12),
           Text(
-            _error ?? 'Something went wrong',
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: _muted, fontSize: 15, height: 1.4),
-          ),
-          const SizedBox(height: 16),
-          _Pressable(
-            onTap: _load,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-              decoration: BoxDecoration(
-                color: _elevated,
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: const Text(
-                'Try again',
-                style: TextStyle(
-                  fontWeight: FontWeight.w600,
-                  color: _ink,
-                  fontSize: 14,
-                ),
-              ),
+            label,
+            style: const TextStyle(
+              fontSize: 12,
+              color: _muted,
+              fontWeight: FontWeight.w600,
+              height: 1.25,
             ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 26,
+              fontWeight: FontWeight.w800,
+              color: _ink,
+              letterSpacing: -0.8,
+              height: 1.05,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            caption,
+            style: const TextStyle(fontSize: 11, color: _muted, height: 1.3),
           ),
         ],
       ),
     );
   }
 
-  Widget _skeleton() {
-    return const Padding(
-      padding: EdgeInsets.fromLTRB(20, 32, 20, 0),
+  Widget _statTile({
+    required Color color,
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String value,
+    required String sub,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(18),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          LoadingSkeleton(
-            width: 72,
-            height: 14,
-            borderRadius: BorderRadius.all(Radius.circular(4)),
-          ),
-          SizedBox(height: 12),
-          LoadingSkeleton(
-            width: 180,
-            height: 48,
-            borderRadius: BorderRadius.all(Radius.circular(8)),
-          ),
-          SizedBox(height: 10),
-          LoadingSkeleton(
-            width: 140,
-            height: 14,
-            borderRadius: BorderRadius.all(Radius.circular(4)),
-          ),
-          SizedBox(height: 24),
-          LoadingSkeleton(
-            width: double.infinity,
-            height: 176,
-            borderRadius: BorderRadius.all(Radius.circular(16)),
-          ),
+          Icon(icon, color: iconColor, size: 22),
+          const SizedBox(height: 10),
+          Text(title,
+              style: const TextStyle(
+                  fontSize: 12, color: _muted, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 4),
+          Text(value,
+              style: const TextStyle(
+                  fontSize: 20, fontWeight: FontWeight.w800, color: _ink)),
+          const SizedBox(height: 2),
+          Text(sub, style: const TextStyle(fontSize: 11, color: _muted)),
         ],
       ),
     );
   }
 
-  DateTime? _parseDate(dynamic raw) {
-    try {
-      return DateTime.parse('$raw');
-    } catch (_) {
-      return null;
-    }
-  }
-}
-
-class _DayBar extends StatelessWidget {
-  const _DayBar({
-    required this.date,
-    required this.amount,
-    required this.fraction,
-    required this.selected,
-    required this.dense,
-    required this.money,
-    required this.period,
-    required this.onTap,
-  });
-
-  final DateTime? date;
-  final num amount;
-  final num fraction;
-  final bool selected;
-  final bool dense;
-  final String Function(dynamic) money;
-  final String period;
-  final VoidCallback onTap;
-
-  static const _easeOut = Cubic(0.23, 1, 0.32, 1);
-
-  String get _label {
-    if (date == null) return '';
-    if (period == 'today') return DateFormat('EEE').format(date!);
-    if (period == 'month' || dense) return DateFormat('d').format(date!);
-    return DateFormat('E').format(date!).substring(0, 1);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final frac = fraction <= 0 ? 0.03 : fraction.clamp(0.03, 1.0).toDouble();
-
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 3),
-        child: Column(
-          children: [
-            SizedBox(
-              height: 18,
-              child: selected
-                  ? Text(
-                      money(amount),
-                      maxLines: 1,
-                      overflow: TextOverflow.clip,
-                      style: const TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                        color: _EarningsScreenState._ink,
-                        fontFeatures: _EarningsScreenState._tabular,
-                      ),
-                    )
-                  : const SizedBox.shrink(),
-            ),
-            const SizedBox(height: 6),
+  Widget _trend(List<Map<String, dynamic>> daily) {
+    final max = daily.fold<num>(0, (s, d) {
+      final a = d['amount'] as num;
+      return a > s ? a : s;
+    });
+    return SizedBox(
+      height: 168,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          for (final d in daily.take(7))
             Expanded(
-              child: Align(
-                alignment: Alignment.bottomCenter,
-                child: FractionallySizedBox(
-                  heightFactor: frac,
-                  widthFactor: dense ? 0.7 : 0.85,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 160),
-                    curve: _easeOut,
-                    decoration: BoxDecoration(
-                      color: selected
-                          ? _EarningsScreenState._accent
-                          : const Color(0x664A90E2),
-                      borderRadius: const BorderRadius.vertical(
-                        top: Radius.circular(5),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Column(
+                  children: [
+                    Text(
+                      _money(d['amount']),
+                      style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: _ink),
+                    ),
+                    const SizedBox(height: 6),
+                    Expanded(
+                      child: Align(
+                        alignment: Alignment.bottomCenter,
+                        child: FractionallySizedBox(
+                          heightFactor: max <= 0
+                              ? 0.08
+                              : ((d['amount'] as num) / max)
+                                  .clamp(0.08, 1)
+                                  .toDouble(),
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              color: _blue,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                          ),
+                        ),
                       ),
                     ),
-                  ),
+                    const SizedBox(height: 6),
+                    Text(
+                      DateFormat('E').format(DateTime.parse(d['date'] as String)),
+                      style: const TextStyle(fontSize: 11, color: _muted),
+                    ),
+                  ],
                 ),
               ),
             ),
-            const SizedBox(height: 8),
-            Text(
-              _label,
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                color: selected
-                    ? _EarningsScreenState._ink
-                    : _EarningsScreenState._subtle,
-              ),
-            ),
-          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _rowTile(_EarnRow r) {
+    final initial =
+        r.name.isNotEmpty ? r.name[0].toUpperCase() : '?';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        child: ListTile(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          leading: CircleAvatar(
+            backgroundColor: const Color(0xFFE8F0FF),
+            child: Text(initial,
+                style: const TextStyle(
+                    color: _blue, fontWeight: FontWeight.w800)),
+          ),
+          title: Text(r.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontWeight: FontWeight.w700)),
+          subtitle: Text(
+            [
+              if (r.subtitle.trim().isNotEmpty) r.subtitle,
+              if (r.date != null) DateFormat('MMM d, y').format(r.date!),
+            ].join(' · '),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(_money(r.amount),
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w800, fontSize: 16)),
+              const Icon(CupertinoIcons.chevron_right, size: 16, color: _muted),
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-class _Pressable extends StatefulWidget {
-  const _Pressable({required this.onTap, required this.child});
-
-  final VoidCallback onTap;
-  final Widget child;
-
-  @override
-  State<_Pressable> createState() => _PressableState();
+class _EarnRow {
+  const _EarnRow({
+    required this.name,
+    required this.subtitle,
+    required this.date,
+    required this.amount,
+  });
+  final String name;
+  final String subtitle;
+  final DateTime? date;
+  final num amount;
 }
 
-class _PressableState extends State<_Pressable> {
-  bool _down = false;
+class _AllEarningsPage extends StatefulWidget {
+  const _AllEarningsPage({
+    required this.rows,
+    required this.earned,
+    required this.available,
+    required this.mileage,
+    required this.money,
+  });
+
+  final List<_EarnRow> rows;
+  final num earned;
+  final num available;
+  final double mileage;
+  final String Function(dynamic) money;
+
+  @override
+  State<_AllEarningsPage> createState() => _AllEarningsPageState();
+}
+
+class _AllEarningsPageState extends State<_AllEarningsPage> {
+  static const _ink = Color(0xFF12203A);
+  static const _muted = Color(0xFF7A8494);
+  static const _blue = Color(0xFF1A56C4);
+
+  final _search = TextEditingController();
+  String _filter = 'all';
+  int _shown = 10;
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  List<_EarnRow> get _filtered {
+    var list = widget.rows;
+    final q = _search.text.trim().toLowerCase();
+    if (q.isNotEmpty) {
+      list = list
+          .where((r) =>
+              r.name.toLowerCase().contains(q) ||
+              r.subtitle.toLowerCase().contains(q))
+          .toList();
+    }
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    if (_filter == 'today') {
+      list = list
+          .where((r) =>
+              r.date != null &&
+              DateTime(r.date!.year, r.date!.month, r.date!.day) == today)
+          .toList();
+    } else if (_filter == 'week') {
+      final start = today.subtract(Duration(days: today.weekday - 1));
+      list = list
+          .where((r) => r.date != null && !r.date!.isBefore(start))
+          .toList();
+    } else if (_filter == 'month') {
+      list = list
+          .where((r) =>
+              r.date != null &&
+              r.date!.year == today.year &&
+              r.date!.month == today.month)
+          .toList();
+    }
+    return list;
+  }
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTapDown: (_) => setState(() => _down = true),
-      onTapUp: (_) => setState(() => _down = false),
-      onTapCancel: () => setState(() => _down = false),
-      onTap: widget.onTap,
-      child: AnimatedScale(
-        scale: _down ? 0.97 : 1,
-        duration: const Duration(milliseconds: 120),
-        curve: Curves.easeOut,
-        child: widget.child,
+    final rows = _filtered;
+    final visible = rows.take(_shown).toList();
+    return Scaffold(
+      backgroundColor: const Color(0xFFF3F6FB),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFFF3F6FB),
+        elevation: 0,
+        foregroundColor: _ink,
+        title: const Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('All Earnings',
+                style: TextStyle(fontWeight: FontWeight.w800, fontSize: 20)),
+            Text('View your complete earnings history',
+                style: TextStyle(fontSize: 12, color: _muted, fontWeight: FontWeight.w400)),
+          ],
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(CupertinoIcons.share),
+            onPressed: () {},
+          ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+        children: [
+          TextField(
+            controller: _search,
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(
+              hintText: 'Search by name, job or location',
+              prefixIcon: const Icon(CupertinoIcons.search),
+              filled: true,
+              fillColor: Colors.white,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+                borderSide: BorderSide.none,
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                for (final f in [
+                  ('all', 'All'),
+                  ('today', 'Today'),
+                  ('week', 'Week'),
+                  ('month', 'Month'),
+                ])
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: ChoiceChip(
+                      label: Text(f.$2),
+                      selected: _filter == f.$1,
+                      onSelected: (_) => setState(() => _filter = f.$1),
+                      selectedColor: _blue,
+                      labelStyle: TextStyle(
+                        color: _filter == f.$1 ? Colors.white : _ink,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      backgroundColor: Colors.white,
+                      side: BorderSide.none,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: _mini(
+                  const Color(0xFFE8F0FF),
+                  'Total Earnings',
+                  widget.money(widget.earned),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _mini(
+                  const Color(0xFFE8F8EE),
+                  'Available',
+                  widget.money(widget.available),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _mini(
+                  const Color(0xFFF1E8FF),
+                  'Total Mileage',
+                  '${widget.mileage.toStringAsFixed(1)} mi',
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          const Row(
+            children: [
+              Expanded(
+                  child: Text('Name / Job',
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: _muted,
+                          fontWeight: FontWeight.w700))),
+              Text('Date',
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: _muted,
+                      fontWeight: FontWeight.w700)),
+              SizedBox(width: 48),
+              Text('Amount',
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: _muted,
+                      fontWeight: FontWeight.w700)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          for (final r in visible)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Material(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                child: ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: const Color(0xFFE8F0FF),
+                    child: Text(
+                      r.name.isNotEmpty ? r.name[0].toUpperCase() : '?',
+                      style: const TextStyle(
+                          color: _blue, fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                  title: Text(r.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w700)),
+                  subtitle: Text(
+                    r.subtitle.trim().isEmpty ? 'Job' : r.subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(widget.money(r.amount),
+                          style: const TextStyle(fontWeight: FontWeight.w800)),
+                      Text(
+                        r.date == null
+                            ? ''
+                            : DateFormat('MMM d, y · h:mm a').format(r.date!),
+                        style: const TextStyle(fontSize: 11, color: _muted),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          if (rows.length > _shown)
+            TextButton(
+              onPressed: () => setState(() => _shown += 10),
+              child: const Text('Load More'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _mini(Color bg, String label, String value) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(fontSize: 11, color: _muted)),
+          const SizedBox(height: 4),
+          Text(value,
+              style: const TextStyle(
+                  fontWeight: FontWeight.w800, fontSize: 16, color: _ink)),
+        ],
       ),
     );
   }

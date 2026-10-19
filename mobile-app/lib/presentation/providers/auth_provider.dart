@@ -120,10 +120,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('user_email');
-      // Replay the intro screens after logout.
-      await prefs.remove(_kSeenOnboarding);
-      // Fresh state → isAuthenticated=false, seenOnboarding=false.
-      state = AuthState();
+      state = AuthState(seenOnboarding: true);
     } on Exception catch (e) {
       state = state.copyWith(error: 'Logout failed: ${e.toString()}');
     }

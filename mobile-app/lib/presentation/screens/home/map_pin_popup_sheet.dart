@@ -97,7 +97,7 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
   static const _accent = Color(0xFF4A90E2);
   // Radius used to surface nearby profiles first in the profile dropdown —
   // matches the main Upload tab's profile picker.
-  static const double _kProfileProximityFt = 200;
+  static const double _kProfileProximityFt = 300;
 
   int _activeTab = 0;
   int _photoIdx = 0;
@@ -170,16 +170,15 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
     super.dispose();
   }
 
-  // Profile IDs with a photo within _kProfileProximityMi of this pin —
-  // surfaced first in the profile dropdown, matching the main Upload tab.
+  // Profiles whose saved address is within 300 ft of this pin.
   Set<int> _nearbyProfileIds() {
-    final photos = ref.read(photosProvider).valueOrNull ?? const [];
+    final profiles = ref.read(profilesProvider).valueOrNull ?? const [];
     final ids = <int>{};
-    for (final p in photos) {
-      if (p.profileId == null) continue;
+    for (final p in profiles) {
+      if (p.latitude == null || p.longitude == null) continue;
       final km = LocationService.calculateDistance(
-          widget.lat, widget.lng, p.latitude, p.longitude);
-      if (km * 3280.84 <= _kProfileProximityFt) ids.add(p.profileId!);
+          widget.lat, widget.lng, p.latitude!, p.longitude!);
+      if (km * 3280.84 <= _kProfileProximityFt) ids.add(p.id);
     }
     return ids;
   }
@@ -245,6 +244,30 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
     if (fileNumber.isEmpty) return;
     setState(() => _uploading = true);
     try {
+      final gps = await LocationService.getCurrentLocation() ??
+          await LocationService.getLastKnownLocation();
+      if (!mounted) return;
+      if (gps == null) {
+        setState(() => _uploading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not read GPS for this attempt.')),
+        );
+        return;
+      }
+      final tooFar = LocationService.attemptTooFarMessage(
+        gpsLat: gps.latitude,
+        gpsLng: gps.longitude,
+        jobLat: widget.lat,
+        jobLng: widget.lng,
+        gpsAccuracyMeters: gps.accuracy,
+      );
+      if (tooFar != null) {
+        setState(() => _uploading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(tooFar)),
+        );
+        return;
+      }
       final takenAt = _takenAt ?? DateTime.now().toUtc().toIso8601String();
       // Upload the ORIGINAL photo; the watermark is a display overlay + export
       // re-bake now, so baking here would double-stamp beneath the overlay.
@@ -252,8 +275,8 @@ class _PinPopupSheetState extends ConsumerState<_PinPopupSheet> {
       await ref.read(uploadPhotoProvider({
         'filePath': watermarked.path,
         'profileId': _addProfileId,
-        'latitude': widget.lat,
-        'longitude': widget.lng,
+        'latitude': gps.latitude,
+        'longitude': gps.longitude,
         'note': _noteCtrl.text.trim().isEmpty ? null : _noteCtrl.text.trim(),
         'takenAt': takenAt,
         'fileNumber': fileNumber,

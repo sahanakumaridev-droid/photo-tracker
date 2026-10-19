@@ -6,6 +6,8 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../../../config/app_config.dart';
 import '../../providers/ai_prefs_provider.dart';
+import '../../../core/mileage/mileage_tracker.dart';
+import '../../../core/network/api_client.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/locale_provider.dart';
 import '../../providers/theme_provider.dart';
@@ -92,7 +94,7 @@ class SettingsScreenV2 extends ConsumerWidget {
 
           // ── Content ──────────────────────────────────────────────────────
           SliverPadding(
-            padding: const EdgeInsets.fromLTRB(16, 20, 16, 40),
+            padding: const EdgeInsets.fromLTRB(16, 20, 16, 130),
             sliver: SliverList(
               delegate: SliverChildListDelegate([
           _section('AI & Automation', [
@@ -129,6 +131,26 @@ class SettingsScreenV2 extends ConsumerWidget {
 
           // Enhancement features (F4/F8/F9/F10)
           _section('Attempts & Earnings', [
+            ListenableBuilder(
+              listenable: MileageTracker.instance,
+              builder: (context, _) {
+                final m = MileageTracker.instance;
+                return _aiToggleRow(
+                  Icons.directions_car_filled_rounded,
+                  'Track Mileage',
+                  _cTeal,
+                  subtitle:
+                      'Running total ${m.totalMiles.toStringAsFixed(1)} mi · today ${m.todayMiles.toStringAsFixed(1)}',
+                  value: m.tracking,
+                  onChanged: (v) {
+                    final dio = ref.read(dioProvider);
+                    final email = ref.read(authProvider).email;
+                    MileageTracker.instance.toggle(dio, email: email);
+                  },
+                );
+              },
+            ),
+            _divider(),
             _row(Icons.payments_rounded, 'Earnings', _green,
                 subtitle: 'Today, week, bi-weekly & monthly payouts',
                 onTap: () => context.push('/earnings')),
@@ -154,7 +176,7 @@ class SettingsScreenV2 extends ConsumerWidget {
 
           _section('Privacy & Data', [
             _row(Icons.tune_rounded, 'Data & Permissions', _cSlate,
-                subtitle: 'Control what GeoTag can access',
+                subtitle: 'Control what SRVBOARD can access',
                 onTap: openAppSettings),
             _aiToggleRow(
               Icons.model_training_rounded, 'Improve AI with my data', _purple,
@@ -189,7 +211,7 @@ class SettingsScreenV2 extends ConsumerWidget {
 
           _section('About', [
             _row(Icons.info_rounded, 'Version', _purple,
-                subtitle: 'GeoTag mobile',
+                subtitle: 'SRVBOARD mobile',
                 trailing: Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -227,7 +249,7 @@ class SettingsScreenV2 extends ConsumerWidget {
           ),
           const SizedBox(height: 14),
           const Center(
-            child: Text('GeoTag • v${AppConfig.appVersion}',
+            child: Text('SRVBOARD • v${AppConfig.appVersion}',
                 style: TextStyle(
                     fontSize: 12,
                     color: Color(0xFF9CA3AF),
@@ -633,7 +655,7 @@ class SettingsScreenV2 extends ConsumerWidget {
             onPressed: () async {
               Navigator.pop(ctx);
               await ref.read(authProvider.notifier).logout();
-              if (context.mounted) context.go('/onboarding');
+              if (context.mounted) context.go('/login');
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: _red,

@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
-import 'package:photo_tracker/data/models/company.dart' show Company;
+import 'package:photo_tracker/data/models/company.dart';
 
 import '../../core/storage/api_cache.dart';
 import '../../core/storage/local_storage.dart';
@@ -68,7 +68,9 @@ class ProfileRepository {
         data: {
           'name': name,
           'service_type': serviceType,
-          if (company != null && company.isNotEmpty) 'company': company,
+          'company': (company != null && company.isNotEmpty)
+              ? company
+              : kDefaultCompanyId,
           if (payRate != null) 'pay_rate': payRate,
           if (deliveryStyle != null && deliveryStyle.isNotEmpty)
             'delivery_style': deliveryStyle,

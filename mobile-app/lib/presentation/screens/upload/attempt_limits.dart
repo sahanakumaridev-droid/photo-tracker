@@ -130,7 +130,7 @@ Future<void> showMaxAttemptsDialog(BuildContext context, {int? cap}) {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       title: const Text(
         'Maximum attempts reached',
-        style: const TextStyle(
+        style: TextStyle(
           fontSize: 17,
           fontWeight: FontWeight.w700,
           color: Color(0xFF1A2130),
