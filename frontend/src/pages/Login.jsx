@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react'
 
 const USERS = [
-  { email: 'admin@geotagging.com',    password: 'admin123', name: 'Admin User' },
-  { email: 'srvboardadmin@gmail.com', password: 'admin123', name: 'SRVBoard Admin' },
-  { email: 'demo@geotagging.com',     password: 'demo123',  name: 'Demo User'  },
+  { email: 'admin@geotagging.com',     password: 'admin123', name: 'Admin User' },
+  { email: 'srvboardadmin@gmail.com',  password: 'admin123', name: 'SRVBoard Admin' },
+  { email: 'sahanakumaridev@gmail.com', password: 'admin123', name: 'Sahana Dev' },
+  { email: 'demo@geotagging.com',      password: 'demo123',  name: 'Demo User'  },
 ]
 
 const MapSVG = () => (

@@ -7,6 +7,8 @@ class AppConstants {
   static const String demoPassword2 = 'demo123';
   static const String srvboardAdminEmail = 'srvboardadmin@gmail.com';
   static const String srvboardAdminPassword = 'admin123';
+  static const String devAdminEmail = 'sahanakumaridev@gmail.com';
+  static const String devAdminPassword = 'admin123';
 
   // Service types
   static const String serviceTypeRush = 'rush';

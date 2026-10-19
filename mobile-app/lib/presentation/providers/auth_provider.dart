@@ -90,7 +90,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
           (normalizedEmail == AppConstants.demoEmail2 &&
               password == AppConstants.demoPassword2) ||
           (normalizedEmail == AppConstants.srvboardAdminEmail &&
-              password == AppConstants.srvboardAdminPassword);
+              password == AppConstants.srvboardAdminPassword) ||
+          (normalizedEmail == AppConstants.devAdminEmail &&
+              password == AppConstants.devAdminPassword);
 
       if (!isValid) {
         state = state.copyWith(
