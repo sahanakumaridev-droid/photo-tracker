@@ -83,11 +83,14 @@ class AuthNotifier extends StateNotifier<AuthState> {
     state = state.copyWith(isLoading: true, error: null);
 
     try {
-      // Validate demo credentials
-      final isValid = (email == AppConstants.demoEmail1 &&
+      // Validate credentials
+      final normalizedEmail = email.trim().toLowerCase();
+      final isValid = (normalizedEmail == AppConstants.demoEmail1 &&
               password == AppConstants.demoPassword1) ||
-          (email == AppConstants.demoEmail2 &&
-              password == AppConstants.demoPassword2);
+          (normalizedEmail == AppConstants.demoEmail2 &&
+              password == AppConstants.demoPassword2) ||
+          (normalizedEmail == AppConstants.srvboardAdminEmail &&
+              password == AppConstants.srvboardAdminPassword);
 
       if (!isValid) {
         state = state.copyWith(
