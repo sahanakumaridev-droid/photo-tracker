@@ -4,6 +4,7 @@ const USERS = [
   { email: 'admin@geotagging.com',     password: 'admin123', name: 'Admin User' },
   { email: 'srvboardadmin@gmail.com',  password: 'admin123', name: 'SRVBoard Admin' },
   { email: 'sahanakumaridev@gmail.com', password: 'admin123', name: 'Sahana Dev' },
+  { email: 'puneetpalsingh5@gmail.com', password: 'admin123', name: 'Puneet Pal Singh' },
   { email: 'demo@geotagging.com',      password: 'demo123',  name: 'Demo User'  },
 ]
 
