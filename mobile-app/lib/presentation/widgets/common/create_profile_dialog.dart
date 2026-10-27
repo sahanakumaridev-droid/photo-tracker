@@ -111,11 +111,11 @@ class _CreateProfileSheetState extends ConsumerState<_CreateProfileSheet> {
     _pinLng = widget.longitude;
     _fillFromPassedAddress(widget.address);
     _heldAddress = _normalizeAddress(_addressCtrl.text);
-    if (widget.hotRoute) {
-      _addressCtrl.addListener(_onAddressEdited);
-      if (widget.latitude != null && widget.longitude != null) {
-        unawaited(_prefillFromMap());
-      }
+    _addressCtrl.addListener(_onAddressEdited);
+    if (widget.latitude != null && widget.longitude != null) {
+      unawaited(_prefillFromMap());
+    } else if (_addressCtrl.text.trim().isEmpty) {
+      unawaited(_prefillFromCurrentGps());
     }
     _nameCtrl.addListener(() => setState(() {}));
     _fileCtrl.addListener(() => setState(() {}));
@@ -142,7 +142,7 @@ class _CreateProfileSheetState extends ConsumerState<_CreateProfileSheet> {
   }
 
   void _onAddressEdited() {
-    if (!widget.hotRoute || _applyingSuggestion) return;
+    if (_applyingSuggestion) return;
     final typed = _addressCtrl.text.trim();
     _suggestTimer?.cancel();
     if (typed.length < 3) {
@@ -200,6 +200,20 @@ class _CreateProfileSheetState extends ConsumerState<_CreateProfileSheet> {
     final lat = widget.latitude;
     final lng = widget.longitude;
     if (lat == null || lng == null) return;
+    await _prefillCoordinates(lat, lng);
+  }
+
+  Future<void> _prefillFromCurrentGps() async {
+    final pos = await LocationService.getLastKnownLocation() ??
+        await LocationService.getCurrentLocation();
+    if (!mounted || pos == null || _addressCtrl.text.trim().isNotEmpty) return;
+    if (pos.latitude.abs() <= 0.0001 && pos.longitude.abs() <= 0.0001) return;
+    _pinLat = pos.latitude;
+    _pinLng = pos.longitude;
+    await _prefillCoordinates(pos.latitude, pos.longitude);
+  }
+
+  Future<void> _prefillCoordinates(double lat, double lng) async {
     final place = await LocationService.reverseGeocodeDetailed(lat, lng);
     if (!mounted || _applyingSuggestion) return;
     _applyingSuggestion = true;
@@ -258,17 +272,38 @@ class _CreateProfileSheetState extends ConsumerState<_CreateProfileSheet> {
   bool get _fileNa =>
       _fileCtrl.text.trim().toUpperCase() == kFileNumberNA;
 
+  int? get _parsedPayRate {
+    final raw = _payCtrl.text.trim();
+    if (raw.isEmpty) return null;
+    final parsed = int.tryParse(raw) ?? double.tryParse(raw)?.round();
+    if (parsed == null || parsed <= 0) return null;
+    return parsed;
+  }
+
+  bool get _hasInvalidZeroPay {
+    final raw = _payCtrl.text.trim();
+    if (raw.isEmpty) return false;
+    final numVal = double.tryParse(raw);
+    return numVal != null && numVal <= 0;
+  }
+
   bool get _ready =>
       widget.hotRoute
           ? _nameCtrl.text.trim().isNotEmpty &&
               _fileCtrl.text.trim().isNotEmpty &&
               _addressCtrl.text.trim().isNotEmpty &&
-              int.tryParse(_payCtrl.text.trim()) != null
+              _parsedPayRate != null
           : _nameCtrl.text.trim().isNotEmpty &&
               _fileCtrl.text.trim().isNotEmpty &&
-              _deliveryStyle != null;
+              _deliveryStyle != null &&
+              !_hasInvalidZeroPay &&
+              (_payCtrl.text.trim().isEmpty || _parsedPayRate != null);
 
   Future<void> _create() async {
+    if (_hasInvalidZeroPay) {
+      setState(() => _error = 'Payout must be greater than \$0.00.');
+      return;
+    }
     if (!_ready || _saving) return;
     final fn = _fileCtrl.text.trim();
     final name = _nameCtrl.text.trim().toLowerCase();
@@ -302,12 +337,14 @@ class _CreateProfileSheetState extends ConsumerState<_CreateProfileSheet> {
           });
           return;
         }
+      }
+      if (street.isNotEmpty) {
         final typed = _normalizeAddress(street);
         final addressChanged = typed.isNotEmpty && typed != _heldAddress;
         if (addressChanged || lat == null || lng == null) {
           final hit = await LocationService.searchPlace(street);
           if (!mounted) return;
-          if (hit == null) {
+          if (hit == null && widget.hotRoute) {
             setState(() {
               _saving = false;
               _error =
@@ -315,9 +352,18 @@ class _CreateProfileSheetState extends ConsumerState<_CreateProfileSheet> {
             });
             return;
           }
-          lat = hit.lat;
-          lng = hit.lng;
+          if (hit != null) {
+            lat = hit.lat;
+            lng = hit.lng;
+          }
         }
+      }
+      if (lat != null &&
+          lng != null &&
+          lat.abs() <= 0.0001 &&
+          lng.abs() <= 0.0001) {
+        lat = null;
+        lng = null;
       }
       if (widget.hotRoute &&
           (lat == null ||
@@ -333,13 +379,11 @@ class _CreateProfileSheetState extends ConsumerState<_CreateProfileSheet> {
         name: _nameCtrl.text.trim(),
         serviceType: _priority,
         company: _companyId,
-        payRate: widget.hotRoute
-            ? int.parse(_payCtrl.text.trim())
-            : null,
+        payRate: _parsedPayRate,
         deliveryStyle: widget.hotRoute ? null : _deliveryStyle,
         fileNumber: fn,
         status: 'pending',
-        address: widget.hotRoute ? street : widget.address,
+        address: street.isNotEmpty ? street : widget.address,
         city: null,
         state: null,
         postalCode: null,
@@ -637,75 +681,6 @@ class _CreateProfileSheetState extends ConsumerState<_CreateProfileSheet> {
                             },
                           ),
                         ),
-                        if (widget.hotRoute) ...[
-                          const SizedBox(height: 12),
-                          _section(
-                            title: 'Priority',
-                            child: Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: [
-                                for (final c in company.priorityCategories)
-                                  _chip(
-                                    label: c.label,
-                                    selected: _priority == c.value,
-                                    onTap: () =>
-                                        setState(() => _priority = c.value),
-                                  ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          _section(
-                            title: 'Address',
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                TextField(
-                                  controller: _addressCtrl,
-                                  minLines: 3,
-                                  maxLines: 4,
-                                  textCapitalization: TextCapitalization.words,
-                                  decoration: _deco(
-                                    hint: '833 Mission Street\nSan Francisco, CA 94108',
-                                  ),
-                                ),
-                                if (_addressSuggestions.isNotEmpty) ...[
-                                  const SizedBox(height: 8),
-                                  for (final suggestion in _addressSuggestions)
-                                    InkWell(
-                                      onTap: () => _pickAddress(suggestion),
-                                      child: Padding(
-                                        padding: const EdgeInsets.symmetric(
-                                          vertical: 8,
-                                        ),
-                                        child: Text(
-                                          suggestion.label,
-                                          style: const TextStyle(
-                                            fontSize: 14,
-                                            fontWeight: FontWeight.w600,
-                                            color: _ink,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                ],
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          _section(
-                            title: 'Payout',
-                            child: TextField(
-                              controller: _payCtrl,
-                              keyboardType: TextInputType.number,
-                              inputFormatters: [
-                                FilteringTextInputFormatter.digitsOnly
-                              ],
-                              decoration: _deco(hint: r'e.g. $50'),
-                            ),
-                          ),
-                        ] else ...[
                         const SizedBox(height: 12),
                         _section(
                           title: 'Priority',
@@ -723,24 +698,94 @@ class _CreateProfileSheetState extends ConsumerState<_CreateProfileSheet> {
                             ],
                           ),
                         ),
+                        if (!widget.hotRoute) ...[
+                          const SizedBox(height: 12),
+                          _section(
+                            title: 'Delivery style',
+                            child: Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                for (final s in kDeliveryStyles)
+                                  _chip(
+                                    label: s,
+                                    selected: _deliveryStyle == s,
+                                    onTap: () =>
+                                        setState(() => _deliveryStyle = s),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ],
                         const SizedBox(height: 12),
                         _section(
-                          title: 'Delivery style',
-                          child: Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
+                          title: 'Address',
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              for (final s in kDeliveryStyles)
-                                _chip(
-                                  label: s,
-                                  selected: _deliveryStyle == s,
-                                  onTap: () =>
-                                      setState(() => _deliveryStyle = s),
+                              TextField(
+                                controller: _addressCtrl,
+                                minLines: 2,
+                                maxLines: 4,
+                                textCapitalization: TextCapitalization.words,
+                                decoration: _deco(
+                                  hint: '833 Mission Street\nSan Francisco, CA 94108',
                                 ),
+                              ),
+                              if (_addressSuggestions.isNotEmpty) ...[
+                                const SizedBox(height: 8),
+                                for (final suggestion in _addressSuggestions)
+                                  InkWell(
+                                    onTap: () => _pickAddress(suggestion),
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 8,
+                                      ),
+                                      child: Text(
+                                        suggestion.label,
+                                        style: const TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w600,
+                                          color: _ink,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                              ],
                             ],
                           ),
                         ),
-                        ],
+                        const SizedBox(height: 12),
+                        _section(
+                          title: 'Payout',
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              TextField(
+                                controller: _payCtrl,
+                                keyboardType: TextInputType.number,
+                                inputFormatters: [
+                                  FilteringTextInputFormatter.digitsOnly,
+                                  FilteringTextInputFormatter.deny(
+                                    RegExp(r'^0+'),
+                                  ),
+                                ],
+                                decoration: _deco(hint: r'e.g. $50'),
+                              ),
+                              if (_hasInvalidZeroPay) ...[
+                                const SizedBox(height: 6),
+                                const Text(
+                                  'Payout must be greater than \$0.00',
+                                  style: TextStyle(
+                                    color: Color(0xFFDC2626),
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
                       ],
                     ),
                   ),

@@ -628,7 +628,7 @@ class AttemptDetailsScreen extends ConsumerWidget {
                 height: 56,
                 child: OutlinedButton.icon(
                   onPressed: () => controller.isExistingProfileAttempt
-                      ? context.go('/profile/${controller.initialProfileId}')
+                      ? context.go('/log')
                       : context.go('/home'),
                   icon: const Icon(Icons.home_rounded, size: 18),
                   label: const Text('Done',

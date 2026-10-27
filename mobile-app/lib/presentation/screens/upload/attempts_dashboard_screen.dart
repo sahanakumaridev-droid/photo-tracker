@@ -219,8 +219,17 @@ class _AttemptsDashboardScreenState
                             const SizedBox(height: 8),
                         itemBuilder: (context, i) => _ProfileDashCard(
                           row: section.$2[i],
-                          onOpen: () =>
-                              context.push('/profile/${section.$2[i].profile.id}'),
+                          onOpen: () {
+                            final row = section.$2[i];
+                            if (row.latest != null && row.latest!.id > 0) {
+                              context.push('/photo/${row.latest!.id}');
+                            } else {
+                              context.push(
+                                '/new-attempt?profileId=${row.profile.id}',
+                                extra: row.profile,
+                              );
+                            }
+                          },
                         ),
                       ),
                     ),

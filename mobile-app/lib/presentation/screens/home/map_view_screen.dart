@@ -18,6 +18,7 @@ import '../../../core/utils/attempt_status.dart';
 import '../../../core/utils/profile_lifecycle.dart';
 import '../../../core/utils/category.dart';
 import '../../../core/utils/location_service.dart';
+import '../../../core/utils/maps_launcher.dart';
 import '../../../core/utils/file_number.dart';
 import '../../../core/utils/place_search.dart';
 import '../../../data/models/photo_model.dart';
@@ -28,7 +29,6 @@ import '../../providers/ai_prefs_provider.dart';
 import '../../widgets/ai/ai_spark_button.dart';
 import '../../widgets/ai/voice_mic_button.dart';
 import '../../widgets/common/photo_preview_gallery.dart';
-import '../profiles/profile_detail_screen.dart';
 import '../upload/attempt_draft_controller.dart';
 import 'photo_detail_screen.dart';
 import '../upload/attempt_limits.dart';
@@ -300,7 +300,8 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
     _fetchUserLocation(moveCamera: false);
   }
 
-  /// Close: 250 ft of map on each side of the user (500 ft across the screen).
+  /// Close: street-level zoom so the user's current location marker and
+  /// surrounding 500-ft area are clearly visible.
   void _fitCloseToUser(Position pos) {
     if (!_mapHasSize) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -311,13 +312,11 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
     final widthPx = _mapController.camera.size.x;
     final cosLat =
         math.cos(pos.latitude * math.pi / 180).abs().clamp(0.2, 1.0);
-    // Zoomed in, but wide enough that a 500 ft radius is a medium ring
-    // (~45% of the screen), not a disc that fills the map.
-    const feetAcross = 2200.0;
+    const feetAcross = 900.0;
     const ftPerDegLat = 364000.0;
     final degAcross = feetAcross / (ftPerDegLat * cosLat);
     final zoom = (math.log(360 * widthPx / (256 * degAcross)) / math.ln2)
-        .clamp(4.0, 18.0);
+        .clamp(17.2, 18.5);
     _mapController.move(LatLng(pos.latitude, pos.longitude), zoom);
   }
 
@@ -506,6 +505,9 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
         },
         onMyLocation: () async {
           setState(() => _followUser = true);
+          if (_userPosition != null) {
+            _fitCloseToUser(_userPosition!);
+          }
           _startWatching();
           await _fetchUserLocation(moveCamera: true);
         },
@@ -1557,13 +1559,7 @@ class _MapBodyState extends ConsumerState<_MapBody> {
         );
         return;
       }
-      if (pid != null && pid != 0) {
-        await Navigator.of(context, rootNavigator: true).push(
-          MaterialPageRoute<void>(
-            builder: (_) => ProfileDetailScreen(profileId: pid),
-          ),
-        );
-      }
+      setState(() => _selectedJob = job);
       return;
     }
     setState(() => _selectedJob = job);
@@ -1968,10 +1964,15 @@ class _MapBodyState extends ConsumerState<_MapBody> {
               return FlutterMap(
             mapController: widget.mapController,
             options: MapOptions(
-              initialCenter: const LatLng(39.8, -98.6),
-              initialZoom: 5,
+              initialCenter: widget.userPosition != null
+                  ? LatLng(
+                      widget.userPosition!.latitude,
+                      widget.userPosition!.longitude,
+                    )
+                  : const LatLng(39.8, -98.6),
+              initialZoom: widget.userPosition != null ? 17.5 : 5,
               minZoom: 4,
-              maxZoom: 18,
+              maxZoom: 19,
               // contain keeps the whole screen inside the US. containCenter
               // only holds the center, which still shows Europe and Asia.
               cameraConstraint: CameraConstraint.containCenter(
@@ -2167,6 +2168,8 @@ class _MapBodyState extends ConsumerState<_MapBody> {
                   distance: _distanceLabelFor(
                       _selectedJob!.lat, _selectedJob!.lng),
                   address: _selectedJob!.address,
+                  lat: _selectedJob!.lat,
+                  lng: _selectedJob!.lng,
                   title: _selectedJob!.pinSummaryTitle,
                   pending: _selectedJob!.isPending,
                   attemptEnabled: _inAttemptRange(_selectedJob!),
@@ -2507,6 +2510,8 @@ class _JobPreviewCard extends StatefulWidget {
     super.key,
     required this.attempts,
     required this.address,
+    required this.lat,
+    required this.lng,
     required this.title,
     required this.onNewAttempt,
     required this.onPreviewPhoto,
@@ -2523,6 +2528,8 @@ class _JobPreviewCard extends StatefulWidget {
   final bool attemptEnabled;
   final String? distance;
   final String address;
+  final double lat;
+  final double lng;
   final String title;
   final List<PhotoModel> photos;
   final VoidCallback onNewAttempt;
@@ -2711,10 +2718,11 @@ class _JobPreviewCardState extends State<_JobPreviewCard> {
           const SizedBox(height: 6),
           GestureDetector(
             onTap: () {
-              final query = Uri.encodeComponent(widget.address);
-              launchUrl(
-                Uri.parse('https://maps.apple.com/?q=$query'),
-                mode: LaunchMode.externalApplication,
+              HapticFeedback.lightImpact();
+              MapsLauncher.openLocation(
+                address: widget.address,
+                lat: widget.lat,
+                lng: widget.lng,
               );
             },
             child: Text(

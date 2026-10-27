@@ -1509,7 +1509,7 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
               'Job Status',
               (photo.status ?? 'open').replaceAll('_', ' '),
             ),
-            if (photo.payRate != null)
+            if (photo.payRate != null && photo.payRate! > 0)
               _detailRow('Payout', '\$${photo.payRate}'),
           ],
         ),
@@ -1652,6 +1652,38 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                 ],
               ),
             ),
+            if ((photo.profileId ?? 0) > 0 ||
+                (photo.profiles?.isNotEmpty ?? false)) ...[
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: () => unawaited(_openNewAttempt(photo)),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: _accent,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.add_rounded, size: 15, color: Colors.white),
+                      SizedBox(width: 4),
+                      Text(
+                        'Attempt',
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       );

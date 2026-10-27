@@ -223,11 +223,13 @@ class _JobsScreenState extends ConsumerState<JobsScreen> {
                           }
                         },
                         onViewJob: () {
-                          final pid = job.profile?.id;
-                          if (pid != null) {
-                            context.push('/profile/$pid');
-                          } else if (job.photos.isNotEmpty) {
+                          if (job.photos.isNotEmpty) {
                             context.push('/photo/${job.photos.first.id}');
+                          } else if (job.profile?.id != null) {
+                            context.push(
+                              '/new-attempt?profileId=${job.profile!.id}',
+                              extra: job.profile,
+                            );
                           }
                         },
                       );

@@ -306,12 +306,15 @@ class _ProfilesManagementScreenState
       );
       return;
     }
-    final payRate = widget.profileToEdit?.payRate;
-    // Only treated as set when BOTH parse — a partially-edited pair is
-    // treated as "not set" rather than silently saving a mismatched point.
+    final typedPay = int.tryParse(_payRateController.text.trim());
+    final rawPay = typedPay ?? widget.profileToEdit?.payRate;
+    final payRate = (rawPay != null && rawPay > 0) ? rawPay : null;
+    // Only treated as set when BOTH parse and are not (0, 0)
     final lat = double.tryParse(_latController.text.trim());
     final lng = double.tryParse(_lngController.text.trim());
-    final hasCoords = lat != null && lng != null;
+    final hasCoords = lat != null &&
+        lng != null &&
+        (lat.abs() > 0.0001 || lng.abs() > 0.0001);
 
     String? orNull(TextEditingController c) =>
         c.text.trim().isEmpty ? null : c.text.trim();

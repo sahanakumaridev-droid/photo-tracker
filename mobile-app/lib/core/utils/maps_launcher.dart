@@ -10,22 +10,41 @@ import 'package:url_launcher/url_launcher.dart';
 class MapsLauncher {
   const MapsLauncher._();
 
-  /// Returns `true` if maps was launched, `false` if no handler was available.
+  /// Returns `true` if Google Maps was launched, `false` if no handler was available.
   static Future<bool> openLocation({
     String? address,
     required double lat,
     required double lng,
   }) async {
-    final hasAddress = address != null && address.trim().isNotEmpty;
+    final cleanedAddress = address
+        ?.replaceAll('\n', ', ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    final hasAddress = cleanedAddress != null &&
+        cleanedAddress.isNotEmpty &&
+        cleanedAddress != 'No address set' &&
+        cleanedAddress != 'Location not set' &&
+        !RegExp(r'^0\.0+\s*,\s*0\.0+$').hasMatch(cleanedAddress);
+    final hasCoords = lat.abs() > 0.0001 || lng.abs() > 0.0001;
+    if (!hasAddress && !hasCoords) return false;
+
     final query = hasAddress
-        ? Uri.encodeComponent(address.trim())
-        : '$lat,$lng';
+        ? Uri.encodeComponent(cleanedAddress)
+        : '${lat.toStringAsFixed(6)},${lng.toStringAsFixed(6)}';
     final uri = Uri.parse(
       'https://www.google.com/maps/search/?api=1&query=$query',
     );
-    if (await canLaunchUrl(uri)) {
-      return launchUrl(uri, mode: LaunchMode.externalApplication);
+    try {
+      final launched = await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+      );
+      if (launched) return true;
+    } catch (_) {}
+    try {
+      return await launchUrl(uri, mode: LaunchMode.platformDefault);
+    } catch (_) {
+      return false;
     }
-    return false;
   }
 }

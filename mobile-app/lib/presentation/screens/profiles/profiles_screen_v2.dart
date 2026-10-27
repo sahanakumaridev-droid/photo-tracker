@@ -190,7 +190,10 @@ class _ProfilesScreenV2State extends ConsumerState<ProfilesScreenV2> {
             ),
           ],
         ),
-        onTap: () => context.push('/profile/${profile.id}'),
+        onTap: () => context.push(
+          '/new-attempt?profileId=${profile.id}',
+          extra: profile,
+        ),
       ),
     );
   }

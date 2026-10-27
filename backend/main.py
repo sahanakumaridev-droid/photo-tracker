@@ -823,6 +823,14 @@ def _parse_profile_location(data, profile):
             if field == "longitude" and not (-180 <= value <= 180):
                 raise HTTPException(status_code=422, detail="longitude must be between -180 and 180")
             setattr(profile, field, value)
+    if (
+        profile.latitude is not None
+        and profile.longitude is not None
+        and abs(profile.latitude) <= 0.0001
+        and abs(profile.longitude) <= 0.0001
+    ):
+        profile.latitude = None
+        profile.longitude = None
 
 
 try:
@@ -1026,6 +1034,8 @@ async def create_profile(data: dict = Body(...)):
             pay_rate = int(round(float(pay_rate)))
         except (TypeError, ValueError):
             raise HTTPException(status_code=422, detail="pay_rate must be a whole dollar number")
+        if pay_rate <= 0:
+            raise HTTPException(status_code=422, detail="pay_rate must be greater than 0")
 
     delivery_style = (data.get("delivery_style") or "").strip() or None
     file_number = (data.get("file_number") or "").strip() or None
@@ -1116,6 +1126,9 @@ async def update_profile(profile_id: int, data: dict = Body(...)):
             except (TypeError, ValueError):
                 db.close()
                 raise HTTPException(status_code=422, detail="pay_rate must be a whole dollar number")
+            if pay_rate <= 0:
+                db.close()
+                raise HTTPException(status_code=422, detail="pay_rate must be greater than 0")
         profile.pay_rate = pay_rate
     if "delivery_style" in data:
         style = data["delivery_style"]
@@ -1518,7 +1531,8 @@ async def upload_photo(
     pay_val = None
     if pay_rate.strip():
         try:
-            pay_val = int(round(float(pay_rate.strip())))
+            parsed_pay = int(round(float(pay_rate.strip())))
+            pay_val = parsed_pay if parsed_pay > 0 else None
         except ValueError:
             pay_val = None
 

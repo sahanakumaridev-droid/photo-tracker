@@ -21,11 +21,13 @@ import '../../../data/models/log_entry_model.dart';
 import '../../../data/models/profile_model.dart';
 import '../../providers/location_provider.dart';
 import '../../providers/log_provider.dart';
+import '../../providers/photo_provider.dart';
 import '../../providers/profile_provider.dart';
 import '../../widgets/ai/voice_mic_button.dart';
 import '../../widgets/common/create_profile_dialog.dart';
 import '../../widgets/common/pill_chip.dart';
 import '../upload/attempt_draft_controller.dart';
+import '../upload/attempt_limits.dart';
 
 class LogScreenV2 extends ConsumerStatefulWidget {
   const LogScreenV2({super.key, this.initialCategory});
@@ -1367,6 +1369,30 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
             : null,
       );
 
+  Future<void> _startAttemptForProfile(
+    ProfileModel? profile,
+    LogEntryModel log,
+  ) async {
+    final pid = profile?.id ?? log.profileId;
+    if (pid == null || pid <= 0) return;
+    HapticFeedback.mediumImpact();
+    final ok = await ensureCanStartNewAttempt(
+      context,
+      ref,
+      profileId: pid,
+      knownCount: profile?.attemptsCount,
+    );
+    if (!ok || !mounted) return;
+    await context.push(
+      '/new-attempt?profileId=$pid',
+      extra: profile,
+    );
+    if (!mounted) return;
+    ref.invalidate(logProvider(_filters));
+    ref.invalidate(profilesProvider);
+    ref.invalidate(photosProvider);
+  }
+
   // ── Log card ──────────────────────────────────────────────────────────────
   Widget _buildLogCard(LogEntryModel log, int index, [dynamic userPos]) {
     // Priority reflects the per-photo category (the profile serviceType is a
@@ -1410,18 +1436,25 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     }
     final profile = catalogMatch ?? nested;
     final companyName = profile?.displayCompanyName;
-    final attemptMax = profile?.attemptsCount ?? 0;
-    final attemptN = attemptMax;
+    final attemptCount = profile?.attemptsCount ?? (log.id > 0 ? 1 : 0);
+    final attemptCap = attemptCapForProfile(profile);
     final attemptLabel =
-        attemptMax == 0 ? 'No attempt' : '$attemptN of $attemptMax';
+        attemptCount == 0 ? 'No attempt' : '$attemptCount of $attemptCap';
+    final canAddAttempt = pid != null &&
+        pid > 0 &&
+        (profile == null || profile.canAddAttempts) &&
+        attemptCount < attemptCap;
+    final payRate = (profile?.payRate != null && profile!.payRate! > 0)
+        ? profile.payRate
+        : null;
 
     return GestureDetector(
       onTap: _selectionMode
           ? () => _toggleLogSelected(log.id)
           : () {
               HapticFeedback.selectionClick();
-              if (log.id < 0 && log.profileId != null) {
-                context.push('/profile/${log.profileId}');
+              if (log.id < 0 && pid != null) {
+                _startAttemptForProfile(profile, log);
               } else {
                 context.push('/photo/${log.id}');
               }
@@ -1598,6 +1631,25 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                                     horizontal: 8, vertical: 3),
                                 fontSize: 10.5,
                               ),
+                              if (payRate != null) ...[
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 7, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFECFDF5),
+                                    borderRadius: BorderRadius.circular(7),
+                                  ),
+                                  child: Text(
+                                    '\$$payRate',
+                                    style: const TextStyle(
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w700,
+                                      color: Color(0xFF059669),
+                                    ),
+                                  ),
+                                ),
+                              ],
                               if (distLabel != null) ...[
                                 const SizedBox(width: 6),
                                 Container(
@@ -1691,6 +1743,61 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                                 ),
                               ],
                             ),
+                          if (!_selectionMode && pid != null && pid > 0) ...[
+                            const SizedBox(height: 10),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.end,
+                              children: [
+                                GestureDetector(
+                                  onTap: canAddAttempt
+                                      ? () => _startAttemptForProfile(
+                                            profile,
+                                            log,
+                                          )
+                                      : null,
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                      vertical: 7,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: canAddAttempt
+                                          ? _accent
+                                          : const Color(0xFFE3E7EE),
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          canAddAttempt
+                                              ? CupertinoIcons.add
+                                              : CupertinoIcons.checkmark_seal_fill,
+                                          size: 13,
+                                          color: canAddAttempt
+                                              ? Colors.white
+                                              : _inkMuted,
+                                        ),
+                                        const SizedBox(width: 5),
+                                        Text(
+                                          canAddAttempt
+                                              ? 'Add Attempt'
+                                              : 'Completed',
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                            color: canAddAttempt
+                                                ? Colors.white
+                                                : _inkMuted,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -1932,10 +2039,14 @@ class _LocationTextState extends State<_LocationText> {
     _resolve();
   }
 
+  bool get _hasValidCoords =>
+      widget.log.latitude.abs() > 0.0001 ||
+      widget.log.longitude.abs() > 0.0001;
+
   void _resolve() async {
     final log = widget.log;
-    if (log.address != null && log.address!.isNotEmpty) {
-      final addr = log.address!;
+    if (log.address != null && log.address!.trim().isNotEmpty) {
+      final addr = log.address!.trim();
       if (log.zipCode != null && log.zipCode!.isNotEmpty && !addr.contains(log.zipCode!)) {
         setState(() {
           _resolvedAddress = '$addr, ${log.zipCode}';
@@ -1953,7 +2064,7 @@ class _LocationTextState extends State<_LocationText> {
       setState(() => _resolvedAddress = 'ZIP ${log.zipCode}');
       return;
     }
-    if (_fetching) return;
+    if (!_hasValidCoords || _fetching) return;
     _fetching = true;
     try {
       final addr = await LocationService.reverseGeocode(log.latitude, log.longitude);
@@ -1968,6 +2079,7 @@ class _LocationTextState extends State<_LocationText> {
   }
 
   void _openMaps() {
+    if (_queryAddress == null && !_hasValidCoords) return;
     HapticFeedback.lightImpact();
     MapsLauncher.openLocation(
       address: _queryAddress,
@@ -1978,7 +2090,31 @@ class _LocationTextState extends State<_LocationText> {
 
   @override
   Widget build(BuildContext context) {
-    final text = _resolvedAddress ?? '${widget.log.latitude.toStringAsFixed(4)}, ${widget.log.longitude.toStringAsFixed(4)}';
+    final hasLink = _resolvedAddress != null || _hasValidCoords;
+    final text = _resolvedAddress ??
+        (_hasValidCoords
+            ? '${widget.log.latitude.toStringAsFixed(4)}, ${widget.log.longitude.toStringAsFixed(4)}'
+            : 'No address set');
+    if (!hasLink) {
+      return const Row(
+        children: [
+          Icon(CupertinoIcons.location, size: 13, color: Color(0xFF8B95A5)),
+          SizedBox(width: 4),
+          Expanded(
+            child: Text(
+              'No address set',
+              style: TextStyle(
+                fontSize: 13,
+                color: Color(0xFF8B95A5),
+                fontWeight: FontWeight.w500,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      );
+    }
     return GestureDetector(
       onTap: _openMaps,
       behavior: HitTestBehavior.opaque,

@@ -22,7 +22,6 @@ import '../screens/schedule/schedule_screen.dart';
 import '../screens/settings/profiles_list_screen.dart';
 import '../screens/settings/profiles_management_screen.dart';
 import '../screens/settings/settings_screen_v2.dart';
-import '../screens/profiles/profile_detail_screen.dart';
 import '../screens/upload/attempts_dashboard_screen.dart';
 import '../screens/upload/resume_attempt_screen.dart';
 import '../widgets/common/bottom_nav.dart';
@@ -158,13 +157,6 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/profiles-list',
         builder: (context, state) => const ProfilesListScreen(),
-      ),
-      GoRoute(
-        path: '/profile/:id',
-        builder: (context, state) {
-          final id = int.tryParse(state.pathParameters['id'] ?? '') ?? 0;
-          return ProfileDetailScreen(profileId: id);
-        },
       ),
       GoRoute(
         path: '/photo/:id',

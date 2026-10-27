@@ -994,7 +994,7 @@ class _AttemptComposerScreenState extends ConsumerState<AttemptComposerScreen> {
     if (Navigator.of(context).canPop()) {
       Navigator.of(context).pop();
     } else if (controller.isExistingProfileAttempt) {
-      context.go('/profile/${controller.initialProfileId}');
+      context.go('/log');
     } else {
       context.go('/upload');
     }

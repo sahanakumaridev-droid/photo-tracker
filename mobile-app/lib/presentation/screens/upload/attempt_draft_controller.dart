@@ -784,6 +784,7 @@ class AttemptDraftController extends ChangeNotifier {
       if (force || deliveryStyle == null) deliveryStyle = style;
     }
     if (p.payRate != null &&
+        p.payRate! > 0 &&
         (force || payRateController.text.trim().isEmpty)) {
       payRateController.text = '${p.payRate}';
     }
@@ -1394,7 +1395,9 @@ class AttemptDraftController extends ChangeNotifier {
     uploadedCount = 0;
     notifyListeners();
 
-    final payRate = int.tryParse(payRateController.text.trim());
+    final rawPayRate = int.tryParse(payRateController.text.trim());
+    final payRate =
+        (rawPayRate != null && rawPayRate > 0) ? rawPayRate : null;
     final address = addressController.text.trim().isEmpty
         ? null
         : addressController.text.trim();

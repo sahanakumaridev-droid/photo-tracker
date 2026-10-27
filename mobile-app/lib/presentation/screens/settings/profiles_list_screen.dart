@@ -345,8 +345,11 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
                           final photoUrl = pPhotos.isNotEmpty
                               ? _fullUrl(pPhotos.first.imageUrl)
                               : null;
+                          final latestPhotoId = pPhotos.isNotEmpty
+                              ? pPhotos.first.id
+                              : null;
                           return _buildProfileCard(
-                              context, profile, dist, photoUrl);
+                              context, profile, dist, photoUrl, latestPhotoId);
                         },
                       ),
               ),
@@ -366,8 +369,9 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
     BuildContext context,
     ProfileModel profile,
     double? distKm,
-    String? photoUrl,
-  ) {
+    String? photoUrl, [
+    int? latestPhotoId,
+  ]) {
     final svcColor = _svcColor(profile.serviceType);
 
     return Container(
@@ -386,7 +390,16 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          onTap: () => context.push('/profile/${profile.id}'),
+          onTap: () {
+            if (latestPhotoId != null && latestPhotoId > 0) {
+              context.push('/photo/$latestPhotoId');
+            } else {
+              context.push(
+                '/new-attempt?profileId=${profile.id}',
+                extra: profile,
+              );
+            }
+          },
           borderRadius: BorderRadius.circular(12),
           child: Padding(
             padding: const EdgeInsets.all(14),
@@ -527,12 +540,13 @@ class _ProfilesListScreenState extends ConsumerState<ProfilesListScreen> {
                         child: const Text('Add Attempt',
                             style: TextStyle(fontSize: 12)),
                       ),
-                      TextButton(
-                        onPressed: () =>
-                            context.push('/profile/${profile.id}'),
-                        child: const Text('View Attempts',
-                            style: TextStyle(fontSize: 11)),
-                      ),
+                      if (latestPhotoId != null && latestPhotoId > 0)
+                        TextButton(
+                          onPressed: () =>
+                              context.push('/photo/$latestPhotoId'),
+                          child: const Text('View Attempts',
+                              style: TextStyle(fontSize: 11)),
+                        ),
                     ],
                   ),
                 ],

@@ -31,7 +31,9 @@ class ProfileFactsCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final company = companyOrDefault(profile.company);
-    final payout = profile.payRate != null ? '\$${profile.payRate}' : '—';
+    final payout = (profile.payRate != null && profile.payRate! > 0)
+        ? '\$${profile.payRate}'
+        : '—';
     final delivery = (profile.deliveryStyle ?? '').trim();
     final fn = inheritedFileNumber(
       profileFileNumber: profile.fileNumber,
