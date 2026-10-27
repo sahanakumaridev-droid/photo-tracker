@@ -1399,13 +1399,40 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     // legacy field and is now always 'standard' — see the Category badge).
     final cat = categoryOf(log.category);
 
-    // Distance badge — only shown when GPS is available and pin is within 25 mi
+    final ProfileModel? nested = (log.profiles != null && log.profiles!.isNotEmpty)
+        ? log.profiles!.first
+        : null;
+    ProfileModel? catalogMatch;
+    final pid = log.profileId ?? nested?.id;
+    if (pid != null) {
+      for (final p in ref.watch(profilesProvider).valueOrNull ?? const []) {
+        if (p.id == pid) {
+          catalogMatch = p;
+          break;
+        }
+      }
+    }
+    final profile = catalogMatch ?? nested;
+
     String? distLabel;
-    final hasPin = log.latitude.abs() > 0.0001 || log.longitude.abs() > 0.0001;
+    double? distFeet;
+    final pinLat = (log.latitude.abs() > 0.0001 || log.longitude.abs() > 0.0001)
+        ? log.latitude
+        : (profile?.latitude ?? 0.0);
+    final pinLng = (log.latitude.abs() > 0.0001 || log.longitude.abs() > 0.0001)
+        ? log.longitude
+        : (profile?.longitude ?? 0.0);
+    final hasPin = pinLat.abs() > 0.0001 || pinLng.abs() > 0.0001;
     if (userPos != null && hasPin) {
+      distFeet = LocationService.distanceFeet(
+        userPos.latitude,
+        userPos.longitude,
+        pinLat,
+        pinLng,
+      );
       final km = LocationService.calculateDistance(
         userPos.latitude, userPos.longitude,
-        log.latitude, log.longitude,
+        pinLat, pinLng,
       );
       final mi = km * 0.621371;
       if (mi < 0.1) {
@@ -1421,29 +1448,18 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
     final selected = _selectedLogIds.contains(log.id);
     final unsuccessful =
         normalizeAttemptStatus(log.attemptStatus) == kAttemptStatusUnsuccessful;
-    final ProfileModel? nested = (log.profiles != null && log.profiles!.isNotEmpty)
-        ? log.profiles!.first
-        : null;
-    ProfileModel? catalogMatch;
-    final pid = log.profileId ?? nested?.id;
-    if (pid != null) {
-      for (final p in ref.watch(profilesProvider).valueOrNull ?? const []) {
-        if (p.id == pid) {
-          catalogMatch = p;
-          break;
-        }
-      }
-    }
-    final profile = catalogMatch ?? nested;
     final companyName = profile?.displayCompanyName;
     final attemptCount = profile?.attemptsCount ?? (log.id > 0 ? 1 : 0);
     final attemptCap = attemptCapForProfile(profile);
     final attemptLabel =
         attemptCount == 0 ? 'No attempt' : '$attemptCount of $attemptCap';
+    final withinRange = !hasPin ||
+        (distFeet != null && distFeet <= LocationService.kAttemptProximityFt);
     final canAddAttempt = pid != null &&
         pid > 0 &&
         (profile == null || profile.canAddAttempts) &&
-        attemptCount < attemptCap;
+        attemptCount < attemptCap &&
+        withinRange;
     final payRate = (profile?.payRate != null && profile!.payRate! > 0)
         ? profile.payRate
         : null;
@@ -1454,7 +1470,13 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
           : () {
               HapticFeedback.selectionClick();
               if (log.id < 0 && pid != null) {
-                _startAttemptForProfile(profile, log);
+                if (canAddAttempt) {
+                  _startAttemptForProfile(profile, log);
+                } else {
+                  _showSnack(
+                    'Move within 500 feet of this profile to add an attempt.',
+                  );
+                }
               } else {
                 context.push('/photo/${log.id}');
               }
