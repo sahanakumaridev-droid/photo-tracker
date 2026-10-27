@@ -1652,27 +1652,6 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
                 ],
               ),
             ),
-            if ((photo.profileId ?? 0) > 0 ||
-                (photo.profiles?.isNotEmpty ?? false)) ...[
-              const SizedBox(width: 8),
-              GestureDetector(
-                onTap: () => unawaited(_openNewAttempt(photo)),
-                child: Container(
-                  width: 38,
-                  height: 38,
-                  decoration: BoxDecoration(
-                    color: _accent,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  alignment: Alignment.center,
-                  child: const Icon(
-                    Icons.add_rounded,
-                    size: 20,
-                    color: Colors.white,
-                  ),
-                ),
-              ),
-            ],
           ],
         ),
       );
