@@ -1658,28 +1658,17 @@ class _PhotoDetailScreenState extends ConsumerState<PhotoDetailScreen> {
               GestureDetector(
                 onTap: () => unawaited(_openNewAttempt(photo)),
                 child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
+                  width: 38,
+                  height: 38,
                   decoration: BoxDecoration(
                     color: _accent,
-                    borderRadius: BorderRadius.circular(10),
+                    borderRadius: BorderRadius.circular(12),
                   ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.add_rounded, size: 15, color: Colors.white),
-                      SizedBox(width: 4),
-                      Text(
-                        'Attempt',
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w700,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ],
+                  alignment: Alignment.center,
+                  child: const Icon(
+                    Icons.add_rounded,
+                    size: 20,
+                    color: Colors.white,
                   ),
                 ),
               ),

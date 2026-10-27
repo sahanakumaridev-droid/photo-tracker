@@ -1743,64 +1743,48 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                                 ),
                               ],
                             ),
-                          if (!_selectionMode && pid != null && pid > 0) ...[
-                            const SizedBox(height: 10),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.end,
-                              children: [
-                                GestureDetector(
-                                  onTap: canAddAttempt
-                                      ? () => _startAttemptForProfile(
-                                            profile,
-                                            log,
-                                          )
-                                      : null,
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                      vertical: 7,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: canAddAttempt
-                                          ? _accent
-                                          : const Color(0xFFE3E7EE),
-                                      borderRadius: BorderRadius.circular(10),
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(
-                                          canAddAttempt
-                                              ? CupertinoIcons.add
-                                              : CupertinoIcons.checkmark_seal_fill,
-                                          size: 13,
-                                          color: canAddAttempt
-                                              ? Colors.white
-                                              : _inkMuted,
-                                        ),
-                                        const SizedBox(width: 5),
-                                        Text(
-                                          canAddAttempt
-                                              ? 'Add Attempt'
-                                              : 'Completed',
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w700,
-                                            color: canAddAttempt
-                                                ? Colors.white
-                                                : _inkMuted,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
                         ],
                       ),
                     ),
+                    if (!_selectionMode && pid != null && pid > 0) ...[
+                      const SizedBox(width: 10),
+                      Padding(
+                        padding: const EdgeInsets.only(top: 12),
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: canAddAttempt
+                              ? () => _startAttemptForProfile(profile, log)
+                              : null,
+                          child: Container(
+                            width: 38,
+                            height: 38,
+                            decoration: BoxDecoration(
+                              color: canAddAttempt
+                                  ? _accent
+                                  : const Color(0xFFE3E7EE),
+                              borderRadius: BorderRadius.circular(12),
+                              boxShadow: canAddAttempt
+                                  ? [
+                                      BoxShadow(
+                                        color: _accent.withValues(alpha: 0.25),
+                                        blurRadius: 8,
+                                        offset: const Offset(0, 2),
+                                      ),
+                                    ]
+                                  : null,
+                            ),
+                            alignment: Alignment.center,
+                            child: Icon(
+                              canAddAttempt
+                                  ? CupertinoIcons.add
+                                  : CupertinoIcons.checkmark_alt,
+                              size: 18,
+                              color: canAddAttempt ? Colors.white : _inkMuted,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
