@@ -1507,55 +1507,135 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                     // ── Thumbnail ──────────────────────────────────────
                     Column(
                       children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: hasPhoto
-                          ? CachedNetworkImage(
-                        imageUrl: imageUrl,
-                        width: 60,
-                        height: 60,
-                        fit: BoxFit.cover,
-                        placeholder: (_, __) => Shimmer.fromColors(
-                          baseColor: const Color(0xFFE5E7EB),
-                          highlightColor: const Color(0xFFF9FAFB),
-                          child: Container(
-                            width: 60,
-                            height: 60,
-                            color: _canvas,
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: (!hasPhoto && canAddAttempt)
+                              ? () => _startAttemptForProfile(profile, log)
+                              : null,
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: hasPhoto
+                                ? CachedNetworkImage(
+                                    imageUrl: imageUrl,
+                                    width: 60,
+                                    height: 60,
+                                    fit: BoxFit.cover,
+                                    placeholder: (_, __) => Shimmer.fromColors(
+                                      baseColor: const Color(0xFFE5E7EB),
+                                      highlightColor: const Color(0xFFF9FAFB),
+                                      child: Container(
+                                        width: 60,
+                                        height: 60,
+                                        color: _canvas,
+                                      ),
+                                    ),
+                                    errorWidget: (_, __, ___) => Container(
+                                      width: 60,
+                                      height: 60,
+                                      color: _canvas,
+                                      child: const Icon(
+                                        CupertinoIcons
+                                            .photo_fill_on_rectangle_fill,
+                                        color: _inkSubtle,
+                                        size: 22,
+                                      ),
+                                    ),
+                                  )
+                                : Container(
+                                    width: 60,
+                                    height: 60,
+                                    color: const Color(0xFFE8EEF6),
+                                    alignment: Alignment.center,
+                                    child: const Icon(
+                                      CupertinoIcons.placemark_fill,
+                                      color: Color(0xFF4A90E2),
+                                      size: 26,
+                                    ),
+                                  ),
                           ),
                         ),
-                        errorWidget: (_, __, ___) => Container(
-                          width: 60,
-                          height: 60,
-                          color: _canvas,
-                          child: const Icon(
-                            CupertinoIcons.photo_fill_on_rectangle_fill,
-                            color: _inkSubtle,
-                            size: 22,
-                          ),
-                        ),
-                      )
-                      : Container(
-                          width: 60,
-                          height: 60,
-                          color: const Color(0xFFE8EEF6),
-                          alignment: Alignment.center,
-                          child: const Icon(
-                            CupertinoIcons.placemark_fill,
-                            color: Color(0xFF4A90E2),
-                            size: 26,
-                          ),
-                        ),
-                    ),
                         const SizedBox(height: 6),
-                        Text(
-                          attemptLabel,
-                          style: const TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                            color: _inkMuted,
+                        if (attemptCount == 0 && canAddAttempt)
+                          GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () => _startAttemptForProfile(profile, log),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 3,
+                              ),
+                              decoration: BoxDecoration(
+                                color: _accentSoft,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    CupertinoIcons.add,
+                                    size: 10,
+                                    color: _accent,
+                                  ),
+                                  SizedBox(width: 2),
+                                  Text(
+                                    'Add attempt',
+                                    style: TextStyle(
+                                      fontSize: 9.5,
+                                      fontWeight: FontWeight.w700,
+                                      color: _accent,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          )
+                        else ...[
+                          Text(
+                            attemptLabel,
+                            style: const TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              color: _inkMuted,
+                            ),
                           ),
-                        ),
+                          if (canAddAttempt) ...[
+                            const SizedBox(height: 4),
+                            GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTap: () =>
+                                  _startAttemptForProfile(profile, log),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 3,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: _accentSoft,
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      CupertinoIcons.add,
+                                      size: 10,
+                                      color: _accent,
+                                    ),
+                                    SizedBox(width: 2),
+                                    Text(
+                                      'Add attempt',
+                                      style: TextStyle(
+                                        fontSize: 9.5,
+                                        fontWeight: FontWeight.w700,
+                                        color: _accent,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
                       ],
                     ),
                     const SizedBox(width: 12),
@@ -1602,9 +1682,12 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                           ),
                           const SizedBox(height: 6),
                           // Priority (category) badge + distance badge
-                          Row(
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 6,
+                            crossAxisAlignment: WrapCrossAlignment.center,
                             children: [
-                              if (unsuccessful) ...[
+                              if (unsuccessful)
                                 Container(
                                   padding: const EdgeInsets.symmetric(
                                       horizontal: 7, vertical: 3),
@@ -1621,8 +1704,6 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                                           fontWeight: FontWeight.w700,
                                           color: Color(0xFFDC2626))),
                                 ),
-                                const SizedBox(width: 6),
-                              ],
                               PriorityChip(
                                 category: log.category,
                                 radius: 7,
@@ -1631,8 +1712,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                                     horizontal: 8, vertical: 3),
                                 fontSize: 10.5,
                               ),
-                              if (payRate != null) ...[
-                                const SizedBox(width: 6),
+                              if (payRate != null)
                                 Container(
                                   padding: const EdgeInsets.symmetric(
                                       horizontal: 7, vertical: 3),
@@ -1649,9 +1729,7 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                                     ),
                                   ),
                                 ),
-                              ],
-                              if (distLabel != null) ...[
-                                const SizedBox(width: 6),
+                              if (distLabel != null)
                                 Container(
                                   padding: const EdgeInsets.symmetric(
                                       horizontal: 7, vertical: 3),
@@ -1674,7 +1752,6 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                                     ],
                                   ),
                                 ),
-                              ],
                             ],
                           ),
                           const SizedBox(height: 6),
@@ -1746,45 +1823,6 @@ class _LogScreenV2State extends ConsumerState<LogScreenV2>
                         ],
                       ),
                     ),
-                    if (!_selectionMode && pid != null && pid > 0) ...[
-                      const SizedBox(width: 10),
-                      Padding(
-                        padding: const EdgeInsets.only(top: 12),
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: canAddAttempt
-                              ? () => _startAttemptForProfile(profile, log)
-                              : null,
-                          child: Container(
-                            width: 38,
-                            height: 38,
-                            decoration: BoxDecoration(
-                              color: canAddAttempt
-                                  ? _accent
-                                  : const Color(0xFFE3E7EE),
-                              borderRadius: BorderRadius.circular(12),
-                              boxShadow: canAddAttempt
-                                  ? [
-                                      BoxShadow(
-                                        color: _accent.withValues(alpha: 0.25),
-                                        blurRadius: 8,
-                                        offset: const Offset(0, 2),
-                                      ),
-                                    ]
-                                  : null,
-                            ),
-                            alignment: Alignment.center,
-                            child: Icon(
-                              canAddAttempt
-                                  ? CupertinoIcons.add
-                                  : CupertinoIcons.checkmark_alt,
-                              size: 18,
-                              color: canAddAttempt ? Colors.white : _inkMuted,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
                   ],
                 ),
               ),
