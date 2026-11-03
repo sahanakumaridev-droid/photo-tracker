@@ -9,8 +9,6 @@ class AppConstants {
   static const String srvboardAdminPassword = 'admin123';
   static const String devAdminEmail = 'sahanakumaridev@gmail.com';
   static const String devAdminPassword = 'admin123';
-  static const String puneetAdminEmail = 'puneetpalsingh5@gmail.com';
-  static const String puneetAdminPassword = 'admin123';
 
   // Service types
   static const String serviceTypeRush = 'rush';
